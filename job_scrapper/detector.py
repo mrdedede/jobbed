@@ -1,20 +1,9 @@
 """Detect which Applicant Tracking System serves a job page.
 
-The detector asks "how many independent, vendor-specific fingerprints agree?"
-rather than "how often does the vendor's name appear?". Three things follow
-from that:
-
-  * Signals are kept apart by *source* (hostname, script URL, DOM attribute,
-    visible text, ...). A vendor domain in a `<script src>` is real evidence;
-    the same word in a job description is nearly worthless.
-  * Each fingerprint scores once, and each source is capped, so one fact
-    cannot be counted from five angles to manufacture confidence.
-  * A generic URL shape (`/job/x`, `/jobs/123`, `/apply`) only counts when the
-    page is already on that vendor's hostname. Ungated, those shapes match a
-    large share of ordinary career sites.
-
-Fingerprints live in ATS_REGISTRY as data; detect() is a fixed engine over it.
-Adding an ATS is a dict entry.
+This module scores vendor-specific fingerprints to identify ATSs. It asks
+"how many independent signals agree?" rather than "how often does the vendor's
+name appear?". Fingerprints live in ATS_REGISTRY as data; detect() is a fixed
+engine over it. Adding an ATS is a dict entry.
 """
 
 from __future__ import annotations
@@ -31,35 +20,48 @@ from bs4 import BeautifulSoup
 
 RULESET_VERSION = "2026.08.1"
 
-#: Maximum points one source may contribute to one ATS. Stops a single fact
-#: (a vendor domain appearing in six places) from stacking.
+# Maximum points one source may contribute to one ATS. Stops a single fact
+# (a vendor domain in six places) from stacking.
 SOURCE_CAP = 70
 
-#: Maximum total points for one ATS, for the same reason across sources.
+# Maximum total points for one ATS, for the same reason across sources.
 ATS_CAP = 100
 
-#: Bound on DOM traversal for pathological documents.
 MAX_ELEMENTS = 20_000
-
-#: Bound on collected outbound links.
 MAX_ANCHORS = 500
 
-#: URLs inside inline script payloads.
 _SCRIPT_URL_RE = re.compile(r"""https?://[^\s"'<>\\)]+""")
+
+# Generic web infrastructure: CDNs, analytics, consent, social. Used only to
+# keep the unknown-vendor report readable; never affects scoring.
+INFRA_DENYLIST: Tuple[str, ...] = (
+    "google", "gstatic", "googleapis", "doubleclick", "gtm", "bing",
+    "facebook", "linkedin", "twitter", "x.com", "bsky.app", "instagram",
+    "tiktok", "youtube", "vimeo", "apple.com", "amazon.com", "aws.amazon",
+    "cloudflare", "cloudfront", "akamai", "fastly", "azurefd", "b-cdn.net",
+    "jsdelivr", "unpkg", "bootstrapcdn", "jquery", "icomoon", "typography",
+    "typekit", "fontawesome", "weglot",
+    "hubspot", "hs-scripts", "hs-analytics", "hsforms", "hubapi",
+    "segment", "sentry", "newrelic", "hotjar", "matomo", "piwik", "posthog",
+    "clarity.ms", "atinternet", "aticdn", "elfsight", "tidio", "wp.com",
+    "usercentrics", "trustarc", "cookieyes", "onetrust", "tarteaucitron",
+    "axeptio", "cookiebot", "hcaptcha", "recaptcha", "cookielaw", "iubenda",
+    # Site builders and generic object storage: never an ATS.
+    "website-editor.net", "website-files.com", "windows.net", "bugherd",
+    "cr-relay.com", "s81c.com",
+    "cloudinary", "adobeaemcloud", "brightcove", "mux.com",
+    "indeed.com", "glassdoor", "welcometothejungle", "jobijoba",
+    "hellowork",
+)
 
 TIER_DEFINITIVE = 1
 TIER_STRONG = 2
 TIER_SUPPORTING = 3
 
 
-# ======================================================================
-# PAGE
-# ======================================================================
-
-
 @dataclass
 class Page:
-    """Everything the rules are allowed to look at, split by source."""
+    """Page structure split by evidence source."""
 
     input_url: str = ""
     final_url: str = ""
@@ -95,15 +97,8 @@ class Page:
         return getattr(self, URL_SOURCES[source][0], [])
 
 
-#: source name -> (Page attribute, points, tier, min_hits) for the rules that
-#: look for a vendor-owned domain in a URL. The ordering encodes the priority
-#: every analysis converged on: where the browser ended up beats what the page
-#: links to, which beats what it says.
-#:
-#: `min_hits` is the discriminator for the two weakest sources. Anything can
-#: mention a vendor URL once; a career site whose postings *systematically*
-#: point at one ATS is running that ATS. An aggregator linking to several
-#: vendors trips the conflict check instead.
+# source -> (Page attribute, points, tier, min_hits). Ordered by priority:
+# hostname beats links beats text. min_hits discriminates weaker sources.
 URL_SOURCES: Dict[str, Tuple[str, int, int, int]] = {
     "redirect": ("redirect_chain", 55, TIER_DEFINITIVE, 1),
     "canonical": ("canonical_urls", 50, TIER_DEFINITIVE, 1),
@@ -116,13 +111,10 @@ URL_SOURCES: Dict[str, Tuple[str, int, int, int]] = {
 }
 
 
-# ======================================================================
-# RESULT
-# ======================================================================
-
-
 @dataclass
 class Evidence:
+    """One fired rule and its score."""
+
     ats: ATSName
     points: int
     tier: int
@@ -134,30 +126,26 @@ class Evidence:
 
 @dataclass
 class DetectionResult:
+    """Detection verdict and supporting evidence."""
+
     input_url: str
     final_url: str
     detected_ats: Optional[ATSName]
-    #: Ranking score in [0, 1]. NOT a calibrated probability -- it orders
-    #: results by evidence quality, nothing more.
     confidence: float
     scores: Dict[ATSName, int]
-    status: str = "unknown"          # detected | ambiguous | unknown
+    status: str = "unknown"
     evidence: List[Evidence] = field(default_factory=list)
     conflicts: List[ATSName] = field(default_factory=list)
     redirect_chain: List[str] = field(default_factory=list)
     source_scores: Dict[ATSName, Dict[str, int]] = field(default_factory=dict)
     needs_rendering: bool = False
+    unknown_vendor: Optional[str] = None
     status_code: Optional[int] = None
     error: Optional[str] = None
     ruleset_version: str = RULESET_VERSION
 
 
-# ======================================================================
-# MATCHERS
-# ======================================================================
-
-#: A matcher receives the page and the ATS definition it belongs to, and
-#: returns the matched value (for the evidence trail) or None.
+# Matcher: (Page, ATS) -> Optional[str]. Returns matched value or None.
 Matcher = Callable[[Page, "ATS"], Optional[str]]
 
 
@@ -166,9 +154,14 @@ def _normalize_host(host: str) -> str:
 
 
 def _host_hit(host: str, domains: Sequence[str]) -> Optional[str]:
-    """Exact or subdomain match. Never a substring match.
+    """Check if host exactly or subdomains match any domain in list.
 
-    `notreallytaleo.net` must not match `taleo.net`.
+    Args:
+        host: Hostname to check.
+        domains: List of domains to match against.
+
+    Returns:
+        The normalized host if matched, None otherwise.
     """
     host = _normalize_host(host)
 
@@ -192,11 +185,14 @@ def host_is() -> Matcher:
 
 
 def url_host_in(source: str, min_hits: int = 1) -> Matcher:
-    """A vendor-owned domain appears in one of the page's URL sources.
+    """Match vendor-owned domain in a URL source.
 
-    This is what identifies custom career domains: the page is
-    careers.example.com but its assets, canonical URL or apply links point at
-    the ATS.
+    Args:
+        source: URL source name (script_src, link_href, etc).
+        min_hits: Minimum distinct URLs required to match.
+
+    Returns:
+        A matcher function.
     """
     def test(page: Page, ats: "ATS") -> Optional[str]:
         domains = ats.hosts + ats.assets
@@ -205,15 +201,10 @@ def url_host_in(source: str, min_hits: int = 1) -> Matcher:
         for url in page.urls_for(source):
             host = _normalize_host(urlparse(url).hostname or "")
 
-            # A URL on the page's own host tells us nothing the hostname rule
-            # has not already scored. Counting it again would be the same
-            # fact wearing a second source's hat.
             if host == page.host:
                 continue
 
             if _host_hit(host, domains):
-                # Distinct URLs, so one link repeated in a nav bar cannot
-                # satisfy a multi-hit threshold on its own.
                 hits.add(url)
 
                 if len(hits) >= min_hits:
@@ -225,11 +216,14 @@ def url_host_in(source: str, min_hits: int = 1) -> Matcher:
 
 
 def path_re(pattern: str, gated: bool = True) -> Matcher:
-    """Match the URL path.
+    """Match URL path by regex.
 
-    `gated` (the default) requires the page to be on a vendor hostname. Only
-    pass gated=False for a path that no other platform plausibly serves --
-    `/careersection/`, not `/jobs/`.
+    Args:
+        pattern: Regex pattern to search in path.
+        gated: If True, only match on vendor-owned hostname.
+
+    Returns:
+        A matcher function.
     """
     compiled = re.compile(pattern, re.I)
 
@@ -246,14 +240,24 @@ def path_re(pattern: str, gated: bool = True) -> Matcher:
 
 def qparam(name: str, value_pattern: Optional[str] = None,
            gated: bool = False) -> Matcher:
-    """Match a query parameter, parsed rather than regexed out of the string."""
+    """Match query parameter by name and optional value pattern.
+
+    Args:
+        name: Parameter name.
+        value_pattern: Optional regex to match parameter value.
+        gated: If True, only match on vendor-owned hostname.
+
+    Returns:
+        A matcher function.
+    """
     compiled = re.compile(value_pattern, re.I) if value_pattern else None
+    lowered = name.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
         if gated and not on_vendor_host(page, ats):
             return None
 
-        for value in page.query.get(name, []):
+        for value in page.query.get(lowered, []):
             if compiled is None or compiled.fullmatch(value):
                 return f"{name}={value}"
 
@@ -263,7 +267,16 @@ def qparam(name: str, value_pattern: Optional[str] = None,
 
 
 def in_text(source: str, needle: str, gated: bool = False) -> Matcher:
-    """Substring match inside one named text source."""
+    """Substring match in text source.
+
+    Args:
+        source: Text source attribute name (text, script_text, etc).
+        needle: Substring to find.
+        gated: If True, only match on vendor-owned hostname.
+
+    Returns:
+        A matcher function.
+    """
     lowered = needle.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -281,7 +294,15 @@ def in_text(source: str, needle: str, gated: bool = False) -> Matcher:
 
 
 def in_urls(source: str, needle: str) -> Matcher:
-    """Substring match against one of the URL collections."""
+    """Substring match in URL collection.
+
+    Args:
+        source: URL source name.
+        needle: Substring to find.
+
+    Returns:
+        A matcher function.
+    """
     lowered = needle.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -295,6 +316,14 @@ def in_urls(source: str, needle: str) -> Matcher:
 
 
 def has_class(name: str) -> Matcher:
+    """Match if element class exists.
+
+    Args:
+        name: CSS class name.
+
+    Returns:
+        A matcher function.
+    """
     lowered = name.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -304,6 +333,14 @@ def has_class(name: str) -> Matcher:
 
 
 def has_id(name: str) -> Matcher:
+    """Match if element ID exists.
+
+    Args:
+        name: Element ID.
+
+    Returns:
+        A matcher function.
+    """
     lowered = name.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -314,10 +351,14 @@ def has_id(name: str) -> Matcher:
 
 def has_data_attr(name: str,
                   value_pattern: Optional[str] = None) -> Matcher:
-    """Match a data-* attribute, optionally constraining its value.
+    """Match data-* attribute with optional value constraint.
 
-    Distinguishes data-automation-id="jobPosting" from the mere presence of
-    the attribute name somewhere in the markup.
+    Args:
+        name: Attribute name (without data- prefix).
+        value_pattern: Optional regex to match attribute value.
+
+    Returns:
+        A matcher function.
     """
     lowered = name.lower()
     compiled = re.compile(value_pattern, re.I) if value_pattern else None
@@ -341,6 +382,14 @@ def has_data_attr(name: str,
 
 
 def in_meta(needle: str) -> Matcher:
+    """Substring match in meta tags.
+
+    Args:
+        needle: Substring to find.
+
+    Returns:
+        A matcher function.
+    """
     lowered = needle.lower()
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -354,7 +403,14 @@ def in_meta(needle: str) -> Matcher:
 
 
 def any_of(matchers) -> Matcher:
-    """First matcher that hits wins. Keeps synonyms one signal, not many."""
+    """Try matchers in order; return first match.
+
+    Args:
+        matchers: Sequence of matcher functions.
+
+    Returns:
+        A matcher function that returns first non-None match.
+    """
     options = tuple(matchers)
 
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -370,11 +426,10 @@ def any_of(matchers) -> Matcher:
 
 
 def jsonld_url_host() -> Matcher:
-    """A vendor domain appears in a URL-valued JSON-LD field.
+    """Match vendor domain in JSON-LD URL-valued field.
 
-    Structured data is often written by the employer's SEO tooling, so the
-    vendor *name* in JSON-LD proves nothing -- but a posting URL on the
-    vendor's domain does.
+    Returns:
+        A matcher function.
     """
     def test(page: Page, ats: "ATS") -> Optional[str]:
         domains = ats.hosts + ats.assets
@@ -392,7 +447,15 @@ def jsonld_url_host() -> Matcher:
 
 
 def _walk_strings(node: object, depth: int = 0):
-    """Yield every string in a nested JSON structure."""
+    """Recursively yield strings from nested JSON structure.
+
+    Args:
+        node: JSON-like object (dict, list, or string).
+        depth: Current recursion depth.
+
+    Yields:
+        String values found in the structure.
+    """
     if depth > 12:
         return
 
@@ -406,15 +469,12 @@ def _walk_strings(node: object, depth: int = 0):
             yield from _walk_strings(value, depth + 1)
 
 
-# ======================================================================
-# RULES
-# ======================================================================
-
-
 @dataclass(frozen=True)
 class Rule:
-    signal_id: str          # dedup key: scored at most once
-    source: str             # cap bucket
+    """A single fingerprint rule."""
+
+    signal_id: str
+    source: str
     points: int
     tier: int
     reason: str
@@ -422,11 +482,7 @@ class Rule:
 
 
 class ATSName(StrEnum):
-    """The platforms this detector knows about.
-
-    StrEnum, so members compare and serialize as their lowercase name and
-    every existing string consumer keeps working unchanged.
-    """
+    """Supported ATS platforms."""
 
     WORKDAY = auto()
     SMARTRECRUITERS = auto()
@@ -450,28 +506,37 @@ class ATSName(StrEnum):
     JOBVITE = auto()
     JAZZHR = auto()
 
+    # Enterprise career-site platforms. These almost always run on the
+    # employer's own domain, so they are identified by vendor infrastructure
+    # in `assets` rather than by a hostname of their own.
+    PHENOM = auto()
+    RADANCY = auto()
+    AVATURE = auto()
+    HIBOB = auto()
+    SOFTGARDEN = auto()
+    NJOYN = auto()
+    DIGITALRECRUITERS = auto()
+
 
 @dataclass(frozen=True)
 class ATS:
+    """ATS platform definition."""
+
     name: ATSName
-    #: Hostnames the vendor itself serves. A page on one of these is that ATS.
     hosts: Tuple[str, ...] = ()
-    #: Vendor infrastructure (CDNs, APIs, apply domains) that custom career
-    #: domains reference. Not page hosts, but vendor-owned.
     assets: Tuple[str, ...] = ()
-    #: Fingerprints specific to this platform.
     rules: Tuple[Rule, ...] = ()
-    #: Words identifying the vendor in prose. Deliberately near-worthless.
     terms: Tuple[str, ...] = ()
 
 
 def rule(signal_id: str, source: str, points: int, tier: int,
          reason: str, test: Matcher) -> Rule:
+    """Create a Rule."""
     return Rule(signal_id, source, points, tier, reason, test)
 
 
 def _expand(ats: ATS) -> List[Rule]:
-    """Build the full rule list for one ATS: generic + bespoke."""
+    """Build complete rule list: generic + platform-specific."""
     rules: List[Rule] = []
 
     if ats.hosts:
@@ -507,9 +572,6 @@ def _expand(ats: ATS) -> List[Rule]:
     rules.extend(ats.rules)
 
     if ats.terms:
-        # One rule for all synonyms: "the vendor is named somewhere" is a
-        # single fact however many spellings it has. Tier 3 and 2 points --
-        # enough to break a tie, never enough to decide.
         rules.append(rule(
             f"{ats.name}.text",
             "text",
@@ -529,11 +591,6 @@ def _expand(ats: ATS) -> List[Rule]:
         ))
 
     return rules
-
-
-# ======================================================================
-# FINGERPRINT REGISTRY
-# ======================================================================
 
 ATS_REGISTRY: Tuple[ATS, ...] = (
     ATS(
@@ -615,11 +672,10 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         name=ATSName.SUCCESSFACTORS,
         hosts=("jobs.hr.cloud.sap", "jobs.hr.sapcloud.cn"),
         assets=("jobs.hr.cloud.sap", "jobs.hr.sapcloud.cn",
-                "successfactors.com", "successfactors.eu"),
+                "successfactors.com", "successfactors.eu",
+                "sapsf.com", "sapsf.eu", "sapsf.cn"),
         terms=("successfactors",),
         rules=(
-            # SuccessFactors supports custom domains, so this path carries
-            # the detection on employer-branded career sites.
             rule(
                 "successfactors.recruiting_path", "path", 45, TIER_DEFINITIVE,
                 "SuccessFactors /sf/recruiting/ endpoint",
@@ -644,8 +700,6 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         assets=("taleo.net",),
         terms=("taleo",),
         rules=(
-            # Taleo's .ftl endpoints and /careersection/ are unique enough to
-            # identify the platform on an employer's own domain.
             rule(
                 "taleo.careersection", "path", 55, TIER_DEFINITIVE,
                 "Taleo /careersection/ path",
@@ -701,8 +755,6 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "Teamtailor job URL structure",
                 path_re(r"/(?:careers/)?jobs/\d+-[^/?#]+"),
             ),
-            # Ungated the same shape is only a hint: plenty of platforms use
-            # /jobs/<id>-<slug>. It supports, it never decides.
             rule(
                 "teamtailor.job_path_generic", "path", 8, TIER_SUPPORTING,
                 "Teamtailor-style job path on a non-Teamtailor host",
@@ -734,8 +786,6 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         assets=("ashbyhq.com",),
         terms=("ashbyhq",),
         rules=(
-            # The old broad `/<a>/<b>` rule matched any two-segment path on
-            # any site and was this detector's largest false-positive source.
             rule(
                 "ashby.posting_uuid", "path", 30, TIER_STRONG,
                 "Ashby posting UUID in job path",
@@ -783,8 +833,6 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         assets=("talentsoft.com", "cegid.com", "cegid-hr.com"),
         terms=("talentsoft", "cegid talent"),
         rules=(
-            # The named endpoints are Talentsoft's Front Office API. The old
-            # `/api/token` rule was dropped: that path is everywhere.
             rule(
                 "talentsoft.api", "path", 50, TIER_DEFINITIVE,
                 "Talentsoft Front Office API endpoint",
@@ -953,29 +1001,98 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
             ),
         ),
     ),
+
+    # ------------------------------------------------------------------
+    # Enterprise career-site platforms.
+    #
+    # These serve the employer's own domain, so there is usually no vendor
+    # hostname to match -- the giveaway is their CDN or API in a script_src
+    # or link_href. Domains only, deliberately: the whole point is that the
+    # page URL looks like an ordinary corporate careers site, so any path
+    # shape we invented here would match half the web.
+    # ------------------------------------------------------------------
+
+    ATS(
+        name=ATSName.PHENOM,
+        assets=("phenompeople.com",),
+        terms=("phenom people",),
+    ),
+    ATS(
+        name=ATSName.RADANCY,
+        assets=("talentbrew.com", "tmpwebeng.com",
+                "radancy.net", "radancy.eu"),
+        terms=("radancy", "talentbrew"),
+    ),
+    ATS(
+        name=ATSName.AVATURE,
+        hosts=("avature.net",),
+        assets=("avature.net", "avacdn.net"),
+        terms=("avature",),
+    ),
+    ATS(
+        name=ATSName.HIBOB,
+        hosts=("careers.hibob.com",),
+        assets=("hibob.com",),
+        terms=("hibob",),
+    ),
+    ATS(
+        name=ATSName.SOFTGARDEN,
+        hosts=("softgarden.de", "softgarden.io"),
+        assets=("softgarden.de", "softgarden.io"),
+        terms=("softgarden",),
+    ),
+    ATS(
+        name=ATSName.NJOYN,
+        hosts=("njoyn.com",),
+        assets=("njoyn.com",),
+        terms=("njoyn",),
+    ),
+    ATS(
+        name=ATSName.DIGITALRECRUITERS,
+        hosts=("digitalrecruiters.com",),
+        assets=("digitalrecruiters.com",),
+        terms=("digitalrecruiters",),
+    ),
 )
 
 ATS_NAMES: Tuple[ATSName, ...] = tuple(ats.name for ats in ATS_REGISTRY)
 
-#: ATS name -> (definition, expanded rules). Built once at import.
 COMPILED: Dict[ATSName, Tuple[ATS, List[Rule]]] = {
     ats.name: (ats, _expand(ats))
     for ats in ATS_REGISTRY
 }
 
+KNOWN_DOMAINS: frozenset = frozenset(
+    domain
+    for ats in ATS_REGISTRY
+    for domain in ats.hosts + ats.assets
+)
 
-# ======================================================================
-# DETECTOR
-# ======================================================================
+assert len({
+    item.signal_id for _, rules in COMPILED.values() for item in rules
+}) == sum(len(rules) for _, rules in COMPILED.values()), \
+    "duplicate signal_id in ATS_REGISTRY"
+
+
+Renderer = Callable[[str], Optional[str]]
 
 
 class ATSDetector:
-    """Fetch a job page and identify the ATS behind it."""
+    """Fetch a job page and identify the ATS behind it.
+
+    Args:
+        timeout: Request timeout in seconds.
+        max_bytes: Maximum response body size.
+        max_redirects: Maximum redirect chain length.
+        render: Optional browser renderer for JS-rendered pages.
+    """
 
     def __init__(self, timeout: int = 15, max_bytes: int = 5_000_000,
-                 max_redirects: int = 5):
+                 max_redirects: int = 5,
+                 render: Optional[Renderer] = None):
         self.timeout = timeout
         self.max_bytes = max_bytes
+        self.render = render
 
         self.session = requests.Session()
         self.session.max_redirects = max_redirects
@@ -990,87 +1107,129 @@ class ATSDetector:
             ),
         })
 
-    # ------------------------------------------------------------------
-    # Fetch
-    # ------------------------------------------------------------------
-
     def detect(self, url: str) -> DetectionResult:
+        """Fetch a URL and detect its ATS.
+
+        Args:
+            url: Job posting URL.
+
+        Returns:
+            DetectionResult with verdict and evidence.
+        """
         try:
-            response = self.session.get(
+            with self.session.get(
                 url,
                 timeout=self.timeout,
                 allow_redirects=True,
                 stream=True,
-            )
+            ) as response:
+                response.raise_for_status()
 
-            response.raise_for_status()
+                content_type = response.headers.get(
+                    "Content-Type", ""
+                ).lower()
 
-            content_type = response.headers.get("Content-Type", "").lower()
+                if content_type and not any(
+                    kind in content_type
+                    for kind in ("text/html", "application/xhtml")
+                ):
+                    return self._failed(
+                        url, response.url,
+                        f"Non-HTML content type: {content_type}",
+                        response.status_code,
+                    )
 
-            if content_type and not any(
-                kind in content_type
-                for kind in ("text/html", "application/xhtml")
-            ):
-                return self._failed(
-                    url, response.url,
-                    f"Non-HTML content type: {content_type}",
-                    response.status_code,
+                declared = response.headers.get("Content-Length")
+
+                if declared and declared.isdigit() and \
+                        int(declared) > self.max_bytes:
+                    return self._failed(
+                        url, response.url,
+                        "Response exceeds maximum allowed size",
+                        response.status_code,
+                    )
+
+                raw = response.raw.read(
+                    self.max_bytes + 1,
+                    decode_content=True,
                 )
 
-            declared = response.headers.get("Content-Length")
+                if len(raw) > self.max_bytes:
+                    return self._failed(
+                        url, response.url,
+                        "Response exceeds maximum allowed size",
+                        response.status_code,
+                    )
 
-            if declared and declared.isdigit() and \
-                    int(declared) > self.max_bytes:
-                return self._failed(
-                    url, response.url,
-                    "Response exceeds maximum allowed size",
-                    response.status_code,
+                html = raw.decode(
+                    response.encoding or "utf-8",
+                    errors="replace",
                 )
 
-            # requests hands urllib3 decode_content=False, so reading `raw`
-            # directly yields gzip/deflate framing unless we ask for the
-            # decompressed body.
-            raw = response.raw.read(
-                self.max_bytes + 1,
-                decode_content=True,
-            )
+                redirects = [item.url for item in response.history]
 
-            if len(raw) > self.max_bytes:
-                return self._failed(
-                    url, response.url,
-                    "Response exceeds maximum allowed size",
-                    response.status_code,
+                result = self.detect_html(
+                    html,
+                    response.url,
+                    headers=dict(response.headers),
+                    input_url=url,
+                    redirect_chain=redirects + [response.url],
+                    status_code=response.status_code,
                 )
 
-            html = raw.decode(
-                response.encoding or response.apparent_encoding or "utf-8",
-                errors="replace",
-            )
-
-            redirects = [item.url for item in response.history]
-
-            return self.detect_html(
-                html,
-                response.url,
-                headers=dict(response.headers),
-                input_url=url,
-                redirect_chain=redirects + [response.url],
-                status_code=response.status_code,
-            )
+                return self._maybe_render(result, response.url, url)
 
         except requests.RequestException as exc:
             return self._failed(url, url, str(exc), None)
 
-    # ------------------------------------------------------------------
-    # Offline entry point
-    # ------------------------------------------------------------------
+    def _maybe_render(self, result: DetectionResult, final_url: str,
+                      input_url: str) -> DetectionResult:
+        """Retry rendering if page appears to be JS-rendered.
+
+        Args:
+            result: Initial detection result.
+            final_url: Final URL after redirects.
+            input_url: Original input URL.
+
+        Returns:
+            Updated DetectionResult or original if rendering not needed.
+        """
+        if self.render is None or not result.needs_rendering:
+            return result
+
+        rendered = self.render(final_url)
+
+        if not rendered:
+            return result
+
+        second = self.detect_html(
+            rendered,
+            final_url,
+            input_url=input_url,
+            redirect_chain=result.redirect_chain,
+            status_code=result.status_code,
+        )
+
+        return second if second.status != "unknown" else result
 
     def detect_html(self, html: str, url: str,
                     headers: Optional[Dict[str, str]] = None,
                     input_url: Optional[str] = None,
                     redirect_chain: Optional[List[str]] = None,
                     status_code: Optional[int] = None) -> DetectionResult:
-        """Score already-fetched HTML. Used by detect() and by the tests."""
+        """Score already-fetched HTML.
+
+        Args:
+            html: HTML content.
+            url: Document URL.
+            headers: HTTP response headers.
+            input_url: Original request URL.
+            redirect_chain: Redirect URLs.
+            status_code: HTTP status code.
+
+        Returns:
+            DetectionResult with verdict and evidence.
+        """
         page = extract(
             html,
             url,
@@ -1084,6 +1243,7 @@ class ATSDetector:
     @staticmethod
     def _failed(input_url: str, final_url: str, error: str,
                 status_code: Optional[int]) -> DetectionResult:
+        """Return failure result."""
         return DetectionResult(
             input_url=input_url,
             final_url=final_url,
@@ -1096,16 +1256,22 @@ class ATSDetector:
         )
 
 
-# ======================================================================
-# EXTRACTION
-# ======================================================================
-
-
 def extract(html: str, url: str,
             headers: Optional[Dict[str, str]] = None,
             input_url: Optional[str] = None,
             redirect_chain: Optional[List[str]] = None) -> Page:
-    """Pull every signal source out of the document, keeping them apart."""
+    """Extract signal sources from HTML, keeping them apart by type.
+
+    Args:
+        html: HTML content.
+        url: Document URL.
+        headers: HTTP response headers.
+        input_url: Original request URL.
+        redirect_chain: Redirect URLs.
+
+    Returns:
+        Page structure with all signal sources.
+    """
     soup = BeautifulSoup(html, "html.parser")
     parsed = urlparse(url)
 
@@ -1159,8 +1325,6 @@ def extract(html: str, url: str,
 
         rel = " ".join(tag.get("rel") or []).lower()
 
-        # canonical/alternate name the page's real home; other <link>s are
-        # stylesheets and icons, which still carry vendor CDNs.
         if "canonical" in rel or "alternate" in rel:
             page.canonical_urls.append(found)
         else:
@@ -1227,17 +1391,12 @@ def extract(html: str, url: str,
         if not tag.get("src")
     )
 
-    # URLs embedded in inline JSON/JS payloads -- an "applyUrl" pointing at
-    # the vendor is how an employer-branded career page gives itself away.
     page.script_urls = list(dict.fromkeys(
-        # JSON escapes slashes, so https:\/\/host has to be unescaped first.
         _SCRIPT_URL_RE.findall(page.script_text.replace("\\/", "/"))
     ))[:MAX_ANCHORS]
 
     page.text = soup.get_text(" ", strip=True)
 
-    # A JobPosting confirms this is a job page. It says nothing about which
-    # ATS built it -- every platform emits the same schema.
     page.is_job_page = any(
         "jobposting" in value.lower()
         for value in _walk_strings(page.jsonld)
@@ -1248,15 +1407,17 @@ def extract(html: str, url: str,
     return page
 
 
-# ======================================================================
-# SCORING
-# ======================================================================
-
-
 def score(page: Page) -> Tuple[
     Dict[ATSName, int], List[Evidence], Dict[ATSName, Dict[str, int]]
 ]:
-    """Run every rule, deduplicating signals and capping each source."""
+    """Run every rule, deduplicating and capping by source.
+
+    Args:
+        page: Extracted page signals.
+
+    Returns:
+        Tuple of (scores dict, evidence list, source_scores dict).
+    """
     scores = {name: 0 for name in ATS_NAMES}
     source_scores: Dict[ATSName, Dict[str, int]] = {
         name: {} for name in ATS_NAMES
@@ -1303,15 +1464,19 @@ def score(page: Page) -> Tuple[
 
 
 def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
-    """Turn scores into a verdict: detected, ambiguous or unknown."""
+    """Convert scores to verdict: detected, ambiguous, or unknown.
+
+    Args:
+        page: Extracted page signals.
+        status_code: HTTP status code from fetch.
+
+    Returns:
+        DetectionResult with verdict and evidence.
+    """
     scores, evidence, source_scores = score(page)
 
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
 
-    # Being served *from* a vendor's hostname settles it. Anything the page
-    # embeds or links to is a weaker claim than where the page itself lives,
-    # so a Greenhouse-hosted board that embeds a Lever widget is Greenhouse.
-    # At most one ATS can own the hostname -- the domain lists are disjoint.
     host_owner = next(
         (item.ats for item in evidence if item.source == "hostname"),
         None,
@@ -1333,12 +1498,8 @@ def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
     tier1 = strong_sources(winner, TIER_DEFINITIVE)
     tier2 = strong_sources(winner, TIER_STRONG)
 
-    # Tier-3 evidence can never decide, however much of it there is: three
-    # mentions of a vendor's name are not one vendor-owned hostname.
     qualified = bool(tier1) or len(tier2) >= 2
 
-    # A competitor only creates doubt if it also holds structural evidence
-    # and is close behind -- and never against the host owner.
     rival_qualified = (
         host_owner is None
         and bool(strong_sources(runner_up, TIER_STRONG))
@@ -1362,13 +1523,16 @@ def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
     )
     diversity = min(len(source_scores.get(winner, {})) / 3.0, 1.0)
 
-    confidence = (
-        0.40 * tier_quality
-        + 0.30 * margin
-        + 0.30 * diversity
-    ) if status == "detected" else (
-        0.20 * tier_quality + 0.20 * diversity
-    )
+    if winner_score <= 0:
+        confidence = 0.0
+    elif status == "detected":
+        confidence = (
+            0.40 * tier_quality
+            + 0.30 * margin
+            + 0.30 * diversity
+        )
+    else:
+        confidence = 0.20 * tier_quality + 0.20 * diversity
 
     return DetectionResult(
         input_url=page.input_url,
@@ -1391,12 +1555,22 @@ def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
         needs_rendering=(
             status == "unknown" and _looks_unrendered(page)
         ),
+        unknown_vendor=(
+            _unknown_vendor(page) if status == "unknown" else None
+        ),
         status_code=status_code,
     )
 
 
 def _looks_unrendered(page: Page) -> bool:
-    """A JS shell: little text, external scripts, an empty app container."""
+    """Check if page appears to be a JS shell.
+
+    Args:
+        page: Extracted page signals.
+
+    Returns:
+        True if page has external scripts but little text or JS app markers.
+    """
     if len(page.text) > 2000:
         return False
 
@@ -1406,12 +1580,75 @@ def _looks_unrendered(page: Page) -> bool:
     )
 
 
-# ======================================================================
-# CLI
-# ======================================================================
+_VENDOR_SOURCES = (
+    "script_srcs", "iframe_srcs", "form_actions",
+    "link_hrefs", "canonical_urls",
+)
+
+
+def _is_infra(host: str) -> bool:
+    """Check if host is generic web infrastructure.
+
+    Args:
+        host: Hostname to check.
+
+    Returns:
+        True if host matches infrastructure denylist.
+    """
+    for marker in INFRA_DENYLIST:
+        if "." in marker:
+            if host == marker or host.endswith("." + marker):
+                return True
+        elif marker in host:
+            return True
+
+    return False
+
+
+def _unknown_vendor(page: Page) -> Optional[str]:
+    """Find the top third-party domain on an undetected page.
+
+    Args:
+        page: Extracted page signals.
+
+    Returns:
+        The most-referenced third-party domain, or None.
+    """
+    counts: Dict[str, Set[str]] = {}
+
+    for source in _VENDOR_SOURCES:
+        for url in getattr(page, source, []):
+            host = _normalize_host(urlparse(url).hostname or "")
+
+            if not host or host == page.host or host.endswith("." + page.host):
+                continue
+
+            if _is_infra(host):
+                continue
+
+            if _host_hit(host, tuple(KNOWN_DOMAINS)):
+                continue
+
+            domain = ".".join(host.split(".")[-2:])
+            counts.setdefault(domain, set()).add(url)
+
+    ranked = sorted(
+        counts.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    )
+
+    return next(
+        (domain for domain, urls in ranked if len(urls) >= 2),
+        None,
+    )
 
 
 def print_result(result: DetectionResult) -> None:
+    """Print detection result in human-readable format.
+
+    Args:
+        result: DetectionResult to print.
+    """
     print(f"\nInput URL:    {result.input_url}")
     print(f"Final URL:    {result.final_url}")
     print(f"HTTP status:  {result.status_code}")
@@ -1432,6 +1669,10 @@ def print_result(result: DetectionResult) -> None:
 
     if result.conflicts:
         print(f"Conflicts:    {', '.join(result.conflicts)}")
+
+    if result.unknown_vendor:
+        print(f"Unknown vendor: {result.unknown_vendor}  "
+              f"(unrecognized platform -- candidate for the registry)")
 
     if result.needs_rendering:
         print("Note:         page looks JavaScript-rendered")

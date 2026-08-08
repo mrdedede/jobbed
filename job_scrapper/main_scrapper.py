@@ -1,74 +1,76 @@
-import requests
+"""Scrape all boards from job_boards.csv into jobs.csv.
+
+Usage:
+    python job_scrapper/main_scrapper.py [--limit N]
+
+Outputs jobs.csv with detected ATS and scraping strategy (via) for each row.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+from dataclasses import asdict
+from pathlib import Path
+
 import pandas as pd
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
-INPUT_FILE = "job_pages.csv"
-OUTPUT_FILE = "jobs.csv"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-headers = {
-    "User-Agent": "Mozilla/5.0"
-}
+from job_scrapper.board_scrapper import Board  # noqa: E402
 
-links = pd.read_csv(INPUT_FILE)
-
-jobs = []
-
-for _, row in links.iterrows():
-
-    company = row["company"]
-    url = row["url"]
-
-    print(f"Processing {company}: {url}")
-
-    try:
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=20
-        )
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        for link in soup.find_all("a", href=True):
-
-            href = link["href"]
-            title = link.get_text(" ", strip=True)
-
-            # Ignore empty links
-            if not title:
-                continue
-
-            # Convert relative URLs to absolute URLs
-            job_url = urljoin(response.url, href)
-
-            # Basic heuristic: keep links that look like job postings
-            if (
-                "/jobs/" in job_url
-                or "/job/" in job_url
-                or "/offre" in job_url.lower()
-                or "/career" in job_url.lower()
-                or "/careers" in job_url.lower()
-            ):
-                jobs.append({
-                    "company": company,
-                    "title": title,
-                    "url": job_url
-                })
-
-    except requests.RequestException as e:
-        print(f"Request failed: {e}")
-
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+ROOT = Path(__file__).resolve().parent.parent
+INPUT_FILE = ROOT / "job_boards.csv"
+OUTPUT_FILE = ROOT / "jobs.csv"
 
 
-# Remove duplicates
-jobs_df = pd.DataFrame(jobs)
-jobs_df = jobs_df.drop_duplicates(subset=["company", "url"])
+def main() -> int:
+    """Scrape all boards and write results to CSV.
 
-jobs_df.to_csv(OUTPUT_FILE, index=False, encoding="utf-8")
+    Returns:
+        0 on success.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=0,
+                        help="only scrape the first N boards")
+    parser.add_argument("--input", type=Path, default=INPUT_FILE)
+    parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    args = parser.parse_args()
 
-print(f"\nFound {len(jobs_df)} job postings.")
-print(f"Saved to {OUTPUT_FILE}")
+    with args.input.open(newline="", encoding="utf-8") as handle:
+        boards = list(csv.DictReader(handle))
+
+    if args.limit:
+        boards = boards[:args.limit]
+
+    rows = []
+
+    for index, entry in enumerate(boards, start=1):
+        company, url = entry["company"], entry["url"]
+        board = Board(company, url)
+
+        try:
+            ats = board.detect_ats()
+            jobs = board.scrap_board()
+        except Exception as exc:
+            print(f"[{index}/{len(boards)}] FAIL   {company}: {exc}")
+            continue
+
+        via = jobs[0].via if jobs else "none"
+        print(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
+              f"{company:24} {ats or 'unknown':16} via {via}")
+
+        rows.extend({**asdict(job), "ats": ats or ""} for job in jobs)
+
+    frame = pd.DataFrame(rows)
+    frame.to_csv(args.output, index=False, encoding="utf-8")
+
+    print(f"\n{len(frame)} postings from {len(boards)} boards "
+          f"-> {args.output}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,11 +1,6 @@
-"""One-off fixture builder.
+"""Build test fixtures from live URLs.
 
-Samples URLs from jobs.csv / job_boards.csv, saves the HTML under
-tests/fixtures/ and writes labels.csv. Tests then run offline.
-
-    python tests/fetch_fixtures.py [--per-host 2] [--limit 120]
-
-Fixture HTML is gitignored; labels.csv is committed.
+Saves HTML samples under tests/fixtures/ and writes labels.csv for offline testing.
 """
 
 from __future__ import annotations
@@ -25,17 +20,12 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-# jobs.csv labels its rows by scrape source, not by ATS. Only these map onto
-# an ATS the detector knows about; everything else is a negative example.
 PLATFORM_TO_ATS = {
     "lever": "lever",
     "teamtailor": "teamtailor",
     "recruitee": "recruitee",
 }
 
-# A URL that resolves onto one of these domains *is* that ATS, by definition.
-# This is the only ground truth we can assert without hand-labeling, and it is
-# what makes job_boards.csv (which carries no platform column) usable.
 ATS_OWNED_HOSTS = {
     "myworkdayjobs.com": "workday",
     "smartrecruiters.com": "smartrecruiters",
@@ -59,6 +49,11 @@ ATS_OWNED_HOSTS = {
     "jobs.jobvite.com": "jobvite",
     "applytojob.com": "jazzhr",
     "app.jazz.co": "jazzhr",
+    "avature.net": "avature",
+    "careers.hibob.com": "hibob",
+    "njoyn.com": "njoyn",
+    "softgarden.de": "softgarden",
+    "digitalrecruiters.com": "digitalrecruiters",
 }
 
 
@@ -84,14 +79,27 @@ ATS_ASSET_MARKERS = {
     "jobs.personio.de": "personio",
     "applytojob.com": "jazzhr",
     "myworkdayjobs.com": "workday",
+    # Enterprise career-site platforms: the employer's own domain loads the
+    # vendor's CDN. No hostname of their own to key on.
+    "cdn.phenompeople.com": "phenom",
+    "tbcdn.talentbrew.com": "radancy",
+    "tmpwebeng.com": "radancy",
+    "front.hibob.com": "hibob",
+    "api.digitalrecruiters.com": "digitalrecruiters",
+    "career.softgarden.de": "softgarden",
 }
 
 
 def ground_truth(url: str, html: str, fallback: str) -> str:
-    """Label a fixture from evidence independent of the detector's rules.
+    """Determine ATS label from page hostname and vendor markers.
 
-    The page's own hostname wins; otherwise vendor infrastructure referenced
-    by the page identifies custom-domain deployments.
+    Args:
+        url: Page URL.
+        html: Page HTML content.
+        fallback: Default label if uncertain.
+
+    Returns:
+        ATS name or fallback.
     """
     host = (urlparse(url).hostname or "").lower().rstrip(".")
 
@@ -107,7 +115,6 @@ def ground_truth(url: str, html: str, fallback: str) -> str:
         if marker in lowered
     }
 
-    # Two vendors referenced: can't call it, leave the existing label.
     if len(hits) == 1:
         return hits.pop()
 
@@ -127,6 +134,11 @@ HEADERS = {
 
 
 def rows_from_jobs() -> list[dict]:
+    """Load rows from jobs.csv.
+
+    Returns:
+        List of {url, expected, origin} dicts.
+    """
     path = ROOT / "jobs.csv"
 
     if not path.exists():
@@ -140,8 +152,6 @@ def rows_from_jobs() -> list[dict]:
 
             out.append({
                 "url": row["url"],
-                # "generic" and unmapped scrape sources are negatives: the
-                # detector must return None for them.
                 "expected": PLATFORM_TO_ATS.get(platform, ""),
                 "origin": f"jobs.csv:{platform}",
             })
@@ -150,6 +160,11 @@ def rows_from_jobs() -> list[dict]:
 
 
 def rows_from_boards() -> list[dict]:
+    """Load rows from job_boards.csv.
+
+    Returns:
+        List of {url, expected, origin} dicts.
+    """
     path = ROOT / "job_boards.csv"
 
     if not path.exists():
@@ -159,8 +174,6 @@ def rows_from_boards() -> list[dict]:
         return [
             {
                 "url": row["url"],
-                # Career-board landing pages are unlabeled; the ATS is
-                # filled in by hand in labels.csv where it is obvious.
                 "expected": "",
                 "origin": "job_boards.csv",
             }
@@ -169,6 +182,16 @@ def rows_from_boards() -> list[dict]:
 
 
 def sample(rows: list[dict], per_host: int, limit: int) -> list[dict]:
+    """Sample rows uniformly by hostname.
+
+    Args:
+        rows: Input rows.
+        per_host: Maximum rows per hostname.
+        limit: Total row limit.
+
+    Returns:
+        Sampled rows.
+    """
     """Keep at most `per_host` URLs per hostname, for variety over volume."""
     random.seed(0)
     random.shuffle(rows)

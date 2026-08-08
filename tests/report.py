@@ -1,9 +1,9 @@
-"""Corpus report: precision / recall / unknown-rate per ATS.
+"""Detector accuracy report against test fixture corpus.
 
+Usage:
     python tests/report.py
 
-Weights get tuned from this table, not from staring at individual pages.
-Run tests/fetch_fixtures.py first to populate tests/fixtures/.
+Shows precision / recall / unknown-rate per ATS.
 """
 
 from __future__ import annotations
@@ -21,6 +21,14 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def load_labels() -> list[dict]:
+    """Load test fixture labels.
+
+    Returns:
+        List of label dicts.
+
+    Raises:
+        SystemExit if labels.csv not found.
+    """
     path = FIXTURES / "labels.csv"
 
     if not path.exists():
@@ -32,14 +40,36 @@ def load_labels() -> list[dict]:
         return list(csv.DictReader(handle))
 
 
-def run(detector: ATSDetector, row: dict) -> str | None:
-    """Detect from a saved fixture. Returns the detected ATS or None."""
+def detect(detector: ATSDetector, row: dict):
+    """Detect ATS from fixture.
+
+    Args:
+        detector: ATSDetector instance.
+        row: Fixture label row.
+
+    Returns:
+        DetectionResult.
+    """
     html = (FIXTURES / row["fixture"]).read_text(encoding="utf-8")
 
-    return detector.detect_html(html, row["url"]).detected_ats
+    return detector.detect_html(html, row["url"])
+
+
+def run(detector: ATSDetector, row: dict) -> str | None:
+    """Detect ATS name from fixture.
+
+    Args:
+        detector: ATSDetector instance.
+        row: Fixture label row.
+
+    Returns:
+        Detected ATS name or None.
+    """
+    return detect(detector, row).detected_ats
 
 
 def main() -> int:
+    """Run accuracy report."""
     labels = load_labels()
     detector = ATSDetector()
 
@@ -106,6 +136,21 @@ def main() -> int:
 
         for url, expected, got in misses:
             print(f"  {expected or 'none':14} -> {got or 'none':14} {url}")
+
+    leads: Counter[str] = Counter()
+
+    for row in labels:
+        vendor = detect(detector, row).unknown_vendor
+
+        if vendor:
+            leads[vendor] += 1
+
+    if leads:
+        print(f"\nUnrecognized vendors on {sum(leads.values())} "
+              f"undetected pages:")
+
+        for domain, count in leads.most_common(15):
+            print(f"  {count:3}  {domain}")
 
     return 0
 

@@ -1,10 +1,6 @@
-"""Detector regression tests.
+"""Detector regression and unit tests.
 
-Two halves:
-
-  * the saved corpus (run tests/fetch_fixtures.py first) -- skipped if absent;
-  * hand-written adversarial pages, which need no network and guard the
-    false-positive patterns that the pre-rewrite detector fell for.
+Uses saved corpus (if available) and adversarial test cases.
 """
 
 from __future__ import annotations
@@ -22,6 +18,7 @@ from job_scrapper.detector import (  # noqa: E402
     COMPILED,
     SOURCE_CAP,
     ATSDetector,
+    _is_infra,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -220,6 +217,140 @@ POSITIVE = [
         ),
         "workable",
     ),
+
+    # ------------------------------------------------------------------
+    # The corpus reaches 13 of 28 platforms. Everything below has no saved
+    # fixture, so without these the rules are shipped untested -- which is
+    # how qparam("jobReqId") stayed dead code through a whole rewrite.
+    # ------------------------------------------------------------------
+
+    (
+        "successfactors on an employer domain",
+        "https://careers.example.com/sf/recruiting/?jobReqId=778899",
+        page("<h1>Engineer</h1>"),
+        "successfactors",
+    ),
+    (
+        "talentsoft front office API path",
+        "https://careers.example.com/api/v1/offersummaries",
+        page("<h1>Offres</h1>"),
+        "talentsoft",
+    ),
+    (
+        "jobvite embedded on an employer domain",
+        "https://careers.example.com/careers/",
+        page(
+            "<div class='jv-careersite'></div>",
+            "<script src='https://jobs.jobvite.com/careersite/public/"
+            "iframe.js'></script>",
+        ),
+        "jobvite",
+    ),
+    (
+        "digitalrecruiters on an employer domain",
+        "https://joinus.example.com/offre/1234",
+        page(
+            "<h1>Offre</h1>",
+            "<script src='https://api.digitalrecruiters.com/w.js'></script>"
+            "<link rel='canonical' "
+            "href='https://api.digitalrecruiters.com/o/1234'>",
+        ),
+        "digitalrecruiters",
+    ),
+    (
+        "personio hosted board",
+        "https://jobs.personio.de/job/1234567",
+        page("<h1>Entwickler</h1>"),
+        "personio",
+    ),
+    (
+        "pinpoint postings endpoint",
+        "https://acme.pinpointhq.com/postings.json",
+        page("<h1>Jobs</h1>"),
+        "pinpoint",
+    ),
+    (
+        "jazzhr hosted apply page",
+        "https://acme.applytojob.com/apply/abc123",
+        page("<h1>Apply</h1>"),
+        "jazzhr",
+    ),
+    (
+        "bamboohr hosted careers page",
+        "https://acme.bamboohr.com/careers/42",
+        page("<h1>Engineer</h1>"),
+        "bamboohr",
+    ),
+    (
+        "breezy hosted position",
+        "https://acme.breezy.hr/p/abc123def",
+        page("<h1>Engineer</h1>"),
+        "breezy",
+    ),
+    (
+        "comeet hosted job",
+        "https://www.comeet.co/jobs/acme/12.34/engineer/A1.B2",
+        page("<h1>Engineer</h1>"),
+        "comeet",
+    ),
+    (
+        "onlyfy hosted board",
+        "https://acme.onlyfy.jobs/job/abc123",
+        page("<h1>Entwickler</h1>"),
+        "onlyfy",
+    ),
+    (
+        "talentlyft hosted board",
+        "https://acme.talentlyft.com/jobs/engineer",
+        page("<h1>Engineer</h1>"),
+        "talentlyft",
+    ),
+    (
+        "softgarden hosted board",
+        "https://acme.career.softgarden.de/vacancies/1234",
+        page("<h1>Entwickler</h1>"),
+        "softgarden",
+    ),
+    (
+        "avature hosted board",
+        "https://acme.avature.net/careers/JobDetail/1234",
+        page("<h1>Engineer</h1>"),
+        "avature",
+    ),
+    (
+        "hibob hosted board",
+        "https://acme.careers.hibob.com/jobs/abc-123/apply",
+        page("<h1>Engineer</h1>"),
+        "hibob",
+    ),
+    (
+        "njoyn hosted board",
+        "https://acme.njoyn.com/corp/xweb/xweb.asp?clid=1&Page=joblisting",
+        page("<h1>Engineer</h1>"),
+        "njoyn",
+    ),
+    (
+        "phenom on an employer domain",
+        "https://careers.example.com/global/en/job/1234",
+        page(
+            "<h1>Engineer</h1>",
+            "<script src='https://cdn.phenompeople.com/x.js'></script>"
+            "<link rel='stylesheet' "
+            "href='https://cdn.phenompeople.com/a.css'>",
+        ),
+        "phenom",
+    ),
+    (
+        "radancy on an employer domain",
+        "https://careers.example.com/job/paris/engineer/1234/567",
+        page(
+            "<h1>Engineer</h1>",
+            "<script src='https://tbcdn.talentbrew.com/js/head.js'></script>"
+            "<link rel='stylesheet' "
+            "href='https://tbcdn.talentbrew.com/css/x.css'>",
+        ),
+        "radancy",
+    ),
 ]
 
 
@@ -246,7 +377,7 @@ def test_positive_fingerprints(detector, name, url, html, expected):
 
 
 def test_no_source_exceeds_cap(detector):
-    """One source can never contribute more than SOURCE_CAP to one ATS."""
+    """Verify SOURCE_CAP and ATS_CAP are enforced."""
     url = "https://acme.recruitee.com/o/developer"
 
     html = page(
@@ -265,7 +396,7 @@ def test_no_source_exceeds_cap(detector):
 
 
 def test_signal_ids_are_unique_per_ats():
-    """A duplicated signal_id would silently swallow a fingerprint."""
+    """Verify all signal_ids are unique."""
     for name, (_, rules) in COMPILED.items():
         ids = [item.signal_id for item in rules]
 
@@ -280,7 +411,7 @@ LEVER_EMBED = (
 
 
 def test_hostname_beats_embedded_references(detector):
-    """Where the page lives outranks whatever it embeds."""
+    """Hostname evidence outranks embedded references."""
     result = detector.detect_html(
         page(LEVER_EMBED),
         "https://boards.greenhouse.io/acme/jobs/12345",
@@ -290,7 +421,7 @@ def test_hostname_beats_embedded_references(detector):
 
 
 def test_two_qualified_vendors_are_ambiguous(detector):
-    """Never pick a winner when two platforms both have real evidence."""
+    """Ambiguous when two platforms have equal real evidence."""
     result = detector.detect_html(
         page(
             "<script src='https://jobs.lever.co/x.js'></script>"
@@ -317,7 +448,7 @@ def test_js_shell_flags_needs_rendering(detector):
 
 
 def test_terminology_alone_never_detects(detector):
-    """Every vendor name at once must still resolve to unknown."""
+    """Vendor terminology alone does not trigger detection."""
     names = " ".join(
         term
         for ats, _ in COMPILED.values()
@@ -330,3 +461,133 @@ def test_terminology_alone_never_detects(detector):
     )
 
     assert result.detected_ats is None
+
+
+# ======================================================================
+# Regressions
+# ======================================================================
+
+
+def test_query_parameter_name_is_case_insensitive(detector):
+    """Query parameter matching is case-insensitive."""
+    result = detector.detect_html(
+        page("<h1>Engineer</h1>"),
+        "https://careers.example.com/careers?jobReqId=12345",
+    )
+
+    assert result.scores["successfactors"] > 0
+
+
+def test_no_evidence_reports_zero_confidence(detector):
+    """No evidence results in zero confidence."""
+    result = detector.detect_html(
+        page("<p>Hello.</p>"),
+        "https://example.com/",
+    )
+
+    assert result.status == "unknown"
+    assert result.confidence == 0.0
+
+
+def test_render_fallback_runs_only_for_js_shells():
+    """Renderer is invoked only for JS-shell pages."""
+    calls = []
+
+    def fake_render(url: str) -> str:
+        calls.append(url)
+        return page(
+            "<div data-automation-id='jobPostingHeader'>CTO</div>",
+            "<script src='https://acme.wd3.myworkdayjobs.com/app.js'></script>",
+        )
+    url = "https://careers.example.com/jobs"
+    shell = ATSDetector(render=fake_render)
+
+    empty = shell.detect_html(
+        page("<div id='root'></div>", "<script src='/app.js'></script>"),
+        url,
+    )
+    assert empty.needs_rendering is True
+    assert empty.detected_ats is None
+
+    rendered = shell._maybe_render(empty, url, url)
+
+    assert calls == [url]
+    assert rendered.detected_ats == "workday"
+
+
+def test_render_fallback_keeps_first_pass_when_renderer_adds_nothing():
+    """Renderer output doesn't erase first pass evidence."""
+    detector = ATSDetector(render=lambda url: "<html><body></body></html>")
+
+    first = detector.detect_html(
+        page("<div id='root'></div>", "<script src='/app.js'></script>"),
+        "https://careers.example.com/jobs",
+    )
+
+    assert detector._maybe_render(first, first.final_url, first.input_url) is first
+
+
+def test_unknown_vendor_names_the_platform_we_cannot_identify(detector):
+    """Unknown vendor is reported as a registry discovery lead."""
+    result = detector.detect_html(
+        page(
+            "<h1>Engineer</h1>",
+            "<script src='https://cdn.notanats.example/app.js'></script>"
+            "<link rel='stylesheet' href='https://cdn.notanats.example/x.css'>"
+        ),
+        "https://careers.example.com/jobs/1",
+    )
+
+    assert result.status == "unknown"
+    assert result.unknown_vendor == "notanats.example"
+
+
+def test_unknown_vendor_ignores_infrastructure_and_single_hits(detector):
+    """Infrastructure and single-hit domains are ignored."""
+    result = detector.detect_html(
+        page(
+            "<h1>Engineer</h1>",
+            "<script src='https://www.googletagmanager.com/gtm.js'></script>"
+            "<script src='https://cdn.jsdelivr.net/x.js'></script>"
+            "<script src='https://consent.cookiebot.com/uc.js'></script>"
+            "<link rel='stylesheet' href='https://seen.once.example/a.css'>"
+        ),
+        "https://careers.example.com/jobs/1",
+    )
+
+    assert result.unknown_vendor is None
+
+
+def test_infra_denylist_respects_domain_boundaries():
+    """Infrastructure denylist respects domain label boundaries."""
+    assert _is_infra("x.com")
+    assert _is_infra("www.x.com")
+    assert _is_infra("www.googletagmanager.com")
+
+    assert not _is_infra("phoenix.com")
+    assert not _is_infra("careers.phoenix.com")
+    assert not _is_infra("acme.avature.net")
+
+
+def test_unknown_vendor_is_absent_when_detected(detector):
+    """Unknown vendor is empty when ATS is detected."""
+    result = detector.detect_html(
+        page("<h1>CTO</h1>"),
+        "https://jobs.lever.co/acme/8e3bd2ee-2fd7-4ac5-9662-04498ec711ec",
+    )
+
+    assert result.detected_ats == "lever"
+    assert result.unknown_vendor is None
+
+
+def test_partial_evidence_outranks_no_evidence(detector):
+    """Partial evidence has higher confidence than no evidence."""
+    nothing = detector.detect_html(page("<p>Hello.</p>"), "https://example.com/")
+
+    something = detector.detect_html(
+        page("", "<script src='https://boards.greenhouse.io/a.js'></script>"),
+        "https://careers.example.com/x",
+    )
+
+    assert something.status == nothing.status == "unknown"
+    assert something.confidence > nothing.confidence

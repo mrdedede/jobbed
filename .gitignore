@@ -1,8 +1,10 @@
+.vscode
+.claude
+.pytest_cache
 *__pycache__*
 job_boards.csv
 keywords.txt
 blacklist.txt
-.vscode
-.claude
 jobs.csv
 tests/fixtures
+my_cv.md

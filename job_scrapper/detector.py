@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum, auto
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qs, urljoin, urlparse
 
@@ -122,7 +123,7 @@ URL_SOURCES: Dict[str, Tuple[str, int, int, int]] = {
 
 @dataclass
 class Evidence:
-    ats: str
+    ats: ATSName
     points: int
     tier: int
     source: str
@@ -135,16 +136,16 @@ class Evidence:
 class DetectionResult:
     input_url: str
     final_url: str
-    detected_ats: Optional[str]
+    detected_ats: Optional[ATSName]
     #: Ranking score in [0, 1]. NOT a calibrated probability -- it orders
     #: results by evidence quality, nothing more.
     confidence: float
-    scores: Dict[str, int]
+    scores: Dict[ATSName, int]
     status: str = "unknown"          # detected | ambiguous | unknown
     evidence: List[Evidence] = field(default_factory=list)
-    conflicts: List[str] = field(default_factory=list)
+    conflicts: List[ATSName] = field(default_factory=list)
     redirect_chain: List[str] = field(default_factory=list)
-    source_scores: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    source_scores: Dict[ATSName, Dict[str, int]] = field(default_factory=dict)
     needs_rendering: bool = False
     status_code: Optional[int] = None
     error: Optional[str] = None
@@ -420,9 +421,39 @@ class Rule:
     test: Matcher
 
 
+class ATSName(StrEnum):
+    """The platforms this detector knows about.
+
+    StrEnum, so members compare and serialize as their lowercase name and
+    every existing string consumer keeps working unchanged.
+    """
+
+    WORKDAY = auto()
+    SMARTRECRUITERS = auto()
+    GREENHOUSE = auto()
+    ICIMS = auto()
+    SUCCESSFACTORS = auto()
+    TALEO = auto()
+    LEVER = auto()
+    TEAMTAILOR = auto()
+    RECRUITEE = auto()
+    ASHBY = auto()
+    WORKABLE = auto()
+    BAMBOOHR = auto()
+    TALENTSOFT = auto()
+    COMEET = auto()
+    ONLYFY = auto()
+    BREEZY = auto()
+    TALENTLYFT = auto()
+    PERSONIO = auto()
+    PINPOINT = auto()
+    JOBVITE = auto()
+    JAZZHR = auto()
+
+
 @dataclass(frozen=True)
 class ATS:
-    name: str
+    name: ATSName
     #: Hostnames the vendor itself serves. A page on one of these is that ATS.
     hosts: Tuple[str, ...] = ()
     #: Vendor infrastructure (CDNs, APIs, apply domains) that custom career
@@ -506,7 +537,7 @@ def _expand(ats: ATS) -> List[Rule]:
 
 ATS_REGISTRY: Tuple[ATS, ...] = (
     ATS(
-        name="workday",
+        name=ATSName.WORKDAY,
         hosts=("myworkdayjobs.com",),
         assets=("myworkdayjobs.com", "workday.com"),
         terms=("workday",),
@@ -527,7 +558,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="smartrecruiters",
+        name=ATSName.SMARTRECRUITERS,
         hosts=("smartrecruiters.com",),
         assets=("smartrecruiters.com",),
         terms=("smartrecruiters",),
@@ -540,7 +571,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="greenhouse",
+        name=ATSName.GREENHOUSE,
         hosts=("greenhouse.io",),
         assets=("greenhouse.io",),
         terms=("greenhouse",),
@@ -563,7 +594,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="icims",
+        name=ATSName.ICIMS,
         hosts=("icims.com",),
         assets=("icims.com",),
         terms=("icims",),
@@ -581,7 +612,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="successfactors",
+        name=ATSName.SUCCESSFACTORS,
         hosts=("jobs.hr.cloud.sap", "jobs.hr.sapcloud.cn"),
         assets=("jobs.hr.cloud.sap", "jobs.hr.sapcloud.cn",
                 "successfactors.com", "successfactors.eu"),
@@ -608,7 +639,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="taleo",
+        name=ATSName.TALEO,
         hosts=("taleo.net",),
         assets=("taleo.net",),
         terms=("taleo",),
@@ -639,7 +670,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="lever",
+        name=ATSName.LEVER,
         hosts=("jobs.lever.co",),
         assets=("lever.co",),
         terms=("lever",),
@@ -655,7 +686,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="teamtailor",
+        name=ATSName.TEAMTAILOR,
         hosts=("teamtailor.com",),
         assets=("teamtailor-cdn.com", "teamtailor.com"),
         terms=("teamtailor",),
@@ -680,7 +711,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="recruitee",
+        name=ATSName.RECRUITEE,
         hosts=("recruitee.com",),
         assets=("recruitee.com",),
         terms=("recruitee",),
@@ -698,7 +729,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="ashby",
+        name=ATSName.ASHBY,
         hosts=("jobs.ashbyhq.com", "ashbyhq.com"),
         assets=("ashbyhq.com",),
         terms=("ashbyhq",),
@@ -721,7 +752,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="workable",
+        name=ATSName.WORKABLE,
         hosts=("apply.workable.com", "workable.com"),
         assets=("workable.com",),
         terms=("workable",),
@@ -734,7 +765,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="bamboohr",
+        name=ATSName.BAMBOOHR,
         hosts=("bamboohr.com",),
         assets=("bamboohr.com", "bamboohr.co.uk"),
         terms=("bamboohr",),
@@ -747,7 +778,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="talentsoft",
+        name=ATSName.TALENTSOFT,
         hosts=("talentsoft.com", "cegid-hr.com"),
         assets=("talentsoft.com", "cegid.com", "cegid-hr.com"),
         terms=("talentsoft", "cegid talent"),
@@ -765,7 +796,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="comeet",
+        name=ATSName.COMEET,
         hosts=("comeet.co",),
         assets=("comeet.co",),
         terms=("comeet",),
@@ -788,14 +819,14 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="onlyfy",
+        name=ATSName.ONLYFY,
         hosts=("onlyfy.jobs",),
         assets=("onlyfy.jobs", "jobbase.io"),
         terms=("onlyfy", "prescreen"),
         rules=(),
     ),
     ATS(
-        name="breezy",
+        name=ATSName.BREEZY,
         hosts=("breezy.hr",),
         assets=("breezy.hr",),
         terms=("breezy hr",),
@@ -808,7 +839,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="talentlyft",
+        name=ATSName.TALENTLYFT,
         hosts=("talentlyft.com",),
         assets=("talentlyft.com",),
         terms=("talentlyft",),
@@ -821,7 +852,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="personio",
+        name=ATSName.PERSONIO,
         hosts=("jobs.personio.de", "jobs.personio.com"),
         assets=("personio.de", "personio.com"),
         terms=("personio",),
@@ -844,7 +875,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="pinpoint",
+        name=ATSName.PINPOINT,
         hosts=("pinpointhq.com",),
         assets=("pinpointhq.com",),
         terms=("pinpointhq",),
@@ -872,7 +903,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="jobvite",
+        name=ATSName.JOBVITE,
         hosts=("jobs.jobvite.com", "jobvite.com"),
         assets=("jobvite.com",),
         terms=("jobvite",),
@@ -900,7 +931,7 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         ),
     ),
     ATS(
-        name="jazzhr",
+        name=ATSName.JAZZHR,
         hosts=("applytojob.com", "app.jazz.co"),
         assets=("applytojob.com", "jazz.co"),
         terms=("jazzhr",),
@@ -924,10 +955,10 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
     ),
 )
 
-ATS_NAMES: Tuple[str, ...] = tuple(ats.name for ats in ATS_REGISTRY)
+ATS_NAMES: Tuple[ATSName, ...] = tuple(ats.name for ats in ATS_REGISTRY)
 
 #: ATS name -> (definition, expanded rules). Built once at import.
-COMPILED: Dict[str, Tuple[ATS, List[Rule]]] = {
+COMPILED: Dict[ATSName, Tuple[ATS, List[Rule]]] = {
     ats.name: (ats, _expand(ats))
     for ats in ATS_REGISTRY
 }
@@ -1223,11 +1254,11 @@ def extract(html: str, url: str,
 
 
 def score(page: Page) -> Tuple[
-    Dict[str, int], List[Evidence], Dict[str, Dict[str, int]]
+    Dict[ATSName, int], List[Evidence], Dict[ATSName, Dict[str, int]]
 ]:
     """Run every rule, deduplicating signals and capping each source."""
     scores = {name: 0 for name in ATS_NAMES}
-    source_scores: Dict[str, Dict[str, int]] = {
+    source_scores: Dict[ATSName, Dict[str, int]] = {
         name: {} for name in ATS_NAMES
     }
     evidence: List[Evidence] = []
@@ -1290,9 +1321,9 @@ def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
         ranked.sort(key=lambda item: (item[0] != host_owner, -item[1]))
 
     winner, winner_score = ranked[0]
-    runner_up, second_score = ranked[1] if len(ranked) > 1 else ("", 0)
+    runner_up, second_score = ranked[1] if len(ranked) > 1 else (None, 0)
 
-    def strong_sources(name: str, max_tier: int) -> Set[str]:
+    def strong_sources(name: Optional[ATSName], max_tier: int) -> Set[str]:
         return {
             item.source
             for item in evidence
@@ -1314,7 +1345,7 @@ def decide(page: Page, status_code: Optional[int] = None) -> DetectionResult:
         and second_score >= 0.6 * winner_score
     )
 
-    conflicts: List[str] = []
+    conflicts: List[ATSName] = []
 
     if winner_score <= 0 or not qualified:
         status = "unknown"

@@ -1,5 +1,8 @@
-job_pages.csv
+*__pycache__*
+job_boards.csv
 keywords.txt
 blacklist.txt
 .vscode
+.claude
 jobs.csv
+tests/fixtures

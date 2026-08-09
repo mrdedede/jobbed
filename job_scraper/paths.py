@@ -32,6 +32,12 @@ FIRST_FILTERED_CSV = TEMP / "first_filtered_file.csv"
 DETAILED_CSV = TEMP / "detailed_jobs.csv"
 FILTERED_DETAILED_CSV = TEMP / "filtered_detailed_jobs.csv"
 
-DB_PATH = ROOT / "db" / "joblister.db"
+# Databases
+DB = ROOT / "db"
+DB_PATH = DB / "joblister.db"
+
+# AI ANALYSIS
+AI_ANALYSIS = ROOT / "ai_analysis"
+GRADE_JOB_MD = AI_ANALYSIS / "grade-job.md"
 
 TEMP.mkdir(exist_ok=True)

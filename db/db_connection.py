@@ -84,6 +84,15 @@ SELECT_JOBS_TO_ANALYSE = """SELECT id, company, title, description
     ORDER BY id;
 """
 
+# Both questions the store command asks, in one round trip: sqlite enforces
+# neither on its own. Foreign keys are off unless PRAGMA says otherwise, so an
+# unknown job_id inserts an orphan, and nothing stops a second analysis for a
+# posting already graded.
+SELECT_JOB_STATE = """SELECT
+    EXISTS(SELECT 1 FROM job_data WHERE id = ?),
+    EXISTS(SELECT 1 FROM ai_analysis WHERE job_id = ?);
+"""
+
 SELECT_AI_DEPTH_ANALYSIS = """SELECT depth_analysis FROM ai_analysis
     WHERE job_id = ?;
 """
@@ -194,6 +203,22 @@ def select_jobs_to_analyse(
         jobs = con.execute(SELECT_JOBS_TO_ANALYSE, (window,)).fetchall()
 
     return jobs[:limit] if limit else jobs
+
+
+def select_job_state(job_id: int) -> Tuple[bool, bool]:
+    """Report whether a posting exists and whether it is already analysed.
+
+    Args:
+        job_id: The posting to look up.
+
+    Returns:
+        Tuple of (exists in job_data, has a row in ai_analysis).
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        exists, analysed = con.execute(
+            SELECT_JOB_STATE, (job_id, job_id)).fetchone()
+
+    return bool(exists), bool(analysed)
 
 
 # UTILS

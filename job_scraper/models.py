@@ -43,3 +43,10 @@ class Job:
     place: Optional[str] = None
     via: str = ""
     description: str = ""
+
+@dataclass
+class AI_Analysis:
+    adequation_grade: int
+    depth_analysis: str
+    ai_model: str
+    job_id: int

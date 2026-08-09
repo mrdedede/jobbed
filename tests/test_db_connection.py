@@ -20,6 +20,7 @@ STATEMENTS = [
      ("intro", "profile", "skills", "xp", "school", "fr", 1, 1)),
     ("SELECT_JOB_BY_URL", ("http://x/1",)),
     ("SELECT_JOBS_TO_ANALYSE", ("-24 hours",)),
+    ("SELECT_JOB_STATE", (1, 1)),
     ("SELECT_AI_DEPTH_ANALYSIS", (1,)),
     ("SELECT_AI_GRADE", (1,)),
     ("SELECT_GENERATED_CV", (1,)),

@@ -17,7 +17,7 @@ CREATE_JOB_DATA_TABLE = """CREATE TABLE IF NOT EXISTS job_data(
     company TEXT,
     title TEXT,
     description TEXT,
-    url TEXT,
+    url TEXT UNIQUE,
     place TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
 """
@@ -97,36 +97,46 @@ def create_tables():
     cur.execute(CREATE_GENERATED_CV_TABLE)
     cur.close()    
 
-def insert_jobs() -> int:
-    """Batch insert filtered jobs from CSV into database.
+def insert_jobs() -> tuple[int, int]:
+    """Batch insert filtered jobs from CSV into database, skipping duplicates by URL.
 
-    Reads filtered_detailed_jobs.csv and inserts all rows with proper parameter
-    binding and transaction batching. Returns the number of jobs inserted.
+    Reads filtered_detailed_jobs.csv and inserts only new jobs (checking URL uniqueness).
+    Returns tuple of (inserted_count, skipped_count).
 
     Returns:
-        Number of rows inserted.
+        Tuple of (number of new jobs inserted, number of duplicates skipped).
     """
     jobs_df = pd.read_csv(FILTERED_DETAILED_JOBS)
 
     if jobs_df.empty:
-        return 0
+        return 0, 0
 
-    # Convert dataframe rows to tuples: (company, title, description, url, place)
-    rows = [
-        (row["company"], row["title"], row["description"], row["url"], row["place"])
-        for _, row in jobs_df.iterrows()
-    ]
-
-    # Batch insert with single transaction and connection
     con = sqlite3.connect(DB_ADDRESS)
     try:
-        con.executemany(INSERT_NEW_JOB_DATA, rows)
+        # Fetch existing URLs from database
+        existing_urls = set(
+            url[0] for url in con.execute("SELECT url FROM job_data").fetchall()
+        )
+
+        # Filter to only new jobs (URL not already in database)
+        new_rows = [
+            (row["company"], row["title"], row["description"], row["url"], row["place"])
+            for _, row in jobs_df.iterrows()
+            if row["url"] not in existing_urls
+        ]
+
+        skipped_count = len(jobs_df) - len(new_rows)
+        inserted_count = 0
+
+        if new_rows:
+            con.executemany(INSERT_NEW_JOB_DATA, new_rows)
+            inserted_count = len(new_rows)
+
         con.commit()
-        inserted_count = len(rows)
     except sqlite3.Error as e:
         con.rollback()
         raise RuntimeError(f"Database insert failed: {e}") from e
     finally:
         con.close()
 
-    return inserted_count
+    return inserted_count, skipped_count

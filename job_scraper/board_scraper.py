@@ -7,12 +7,12 @@ field, which ensures a misdetected ATS doesn't silently get scraped by the
 wrong strategy.
 
 Usage:
-    python -m job_scraper.board_scraper <url> [--company NAME] [--show N]
-                                                [--render]
+    python job_scraper/board_scraper.py <url> [--company NAME] [--show N]
+                                              [--render]
 
-Run it as a module, not by path: the imports below are absolute, so
-`python job_scraper/board_scraper.py` puts this directory on sys.path
-instead of the repo root and fails before __main__ is reached.
+The imports below are absolute, so by-path running needs the project
+installed: `pip install -e .`. Otherwise run it as `python -m
+job_scraper.board_scraper`.
 """
 
 from __future__ import annotations

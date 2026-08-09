@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from job_scraper import job_scraper
-from job_scraper.job_scraper import (
+from job_scraper import post_scraper
+from job_scraper.post_scraper import (
     MAX_DESCRIPTION,
     _clean,
     _workday_api,
@@ -27,7 +27,7 @@ def fake(monkeypatch):
     """Route every session() call to one FakeSession the test can inspect."""
     made = FakeSession({})
 
-    monkeypatch.setattr(job_scraper, "session", lambda: made)
+    monkeypatch.setattr(post_scraper, "session", lambda: made)
 
     return made
 
@@ -269,7 +269,7 @@ def test_already_done_reads_written_urls(tmp_path):
     assert already_done(target) == set()
 
     with target.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=job_scraper.FIELDNAMES)
+        writer = csv.DictWriter(handle, fieldnames=post_scraper.FIELDNAMES)
         writer.writeheader()
         writer.writerow({"url": "https://acme.fr/jobs/1", "title": "Dev"})
 

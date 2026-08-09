@@ -90,3 +90,4 @@ def get_connection(db_path: str = "joblister.db") -> sqlite3.Connection:
         An open sqlite3.Connection object.
     """
     return sqlite3.connect(db_path)
+

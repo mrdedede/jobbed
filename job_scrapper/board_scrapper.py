@@ -1,11 +1,14 @@
 """Scrape job postings from a board using ATS-specific logic.
 
-Scraping tries three strategies in order: feed (JSON), sitemap (JSON-LD), and
-links (heuristic). Each Job records its source in the `via` field, which
-ensures a misdetected ATS doesn't silently get scraped by the wrong strategy.
+Scraping tries strategies cheapest-first: feed (JSON), WordPress REST, sitemap
+(JSON-LD), links (heuristic), and -- only with --render -- a browser pass for
+boards that build their listing in JS. Each Job records its source in the `via`
+field, which ensures a misdetected ATS doesn't silently get scraped by the
+wrong strategy.
 
 Usage:
     python -m job_scrapper.board_scrapper <url> [--company NAME] [--show N]
+                                                [--render]
 
 Run it as a module, not by path: the imports below are absolute, so
 `python job_scrapper/board_scrapper.py` puts this directory on sys.path
@@ -17,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import unescape
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -29,6 +32,7 @@ from job_scrapper.detector import (
     ATS_REGISTRY,
     ATSDetector,
     ATSName,
+    Renderer,
     _host_hit,
     _walk_strings,
     extract,
@@ -72,7 +76,8 @@ class Job:
         place: Location (may be None).
         via: Source strategy. "feed" for a FEEDS row, the vendor's own name
             for a scraper that needed its own logic (workday, comeet), or
-            sitemap/links for the generic fallbacks.
+            wordpress/sitemap/links for the generic fallbacks. "rendered"
+            means it took a browser -- the board is unscrapable without one.
     """
 
     company: str
@@ -494,7 +499,7 @@ def scrap_workday(board: "Board") -> List[Job]:
     Returns:
         List of jobs from board.
     """
-    parsed = urlparse(board.final_url or board.board_url)
+    parsed = urlparse(board.url)
     tenant = parsed.hostname.split(".")[0] if parsed.hostname else ""
     segments = [part for part in parsed.path.split("/") if part]
 
@@ -507,7 +512,7 @@ def scrap_workday(board: "Board") -> List[Job]:
     site = segments[0]
     root = f"{parsed.scheme}://{parsed.hostname}"
     endpoint = f"{root}/wday/cxs/{tenant}/{site}/jobs"
-    base = urljoin(board.final_url or board.board_url, parsed.path.rstrip("/"))
+    base = urljoin(board.url, parsed.path.rstrip("/"))
 
     jobs: List[Job] = []
 
@@ -577,7 +582,7 @@ def scrap_comeet(board: "Board") -> List[Job]:
     Returns:
         List of jobs, or empty list if discovery or the API fails.
     """
-    html = _fetch(board.session, board.final_url or board.board_url)
+    html = board.html
 
     if not html:
         return []
@@ -643,12 +648,12 @@ def scrap_njoyn(board: "Board") -> List[Job]:
     Returns:
         List of jobs, or empty list if no listing table is present.
     """
-    html = _fetch(board.session, board.final_url or board.board_url)
+    html = board.html
 
     if not html:
         return []
 
-    base = board.final_url or board.board_url
+    base = board.url
     jobs = []
 
     for table in BeautifulSoup(html, "html.parser").find_all("table"):
@@ -1018,7 +1023,7 @@ def _walk_jobpostings(node: object, depth: int = 0):
 
 def scrap_sitemap(board: "Board") -> List[Job]:
     """Enumerate postings from a sitemap, then read each one's JSON-LD."""
-    found = _find_sitemap_jobs(board.session, board.final_url or board.board_url)
+    found = _find_sitemap_jobs(board.session, board.url)
 
     if found is None:
         return []
@@ -1110,6 +1115,10 @@ SKIP_TITLES = frozenset({
 #: site owner's choice -- "job" on one board here, "offres" on another. The
 #: type list is public, so the name is discovered rather than guessed.
 _WP_TYPES = "/wp-json/wp/v2/types"
+
+#: Every WordPress theme ships assets from wp-content, and most expose the REST
+#: root as a wp-json link tag. Either is enough to justify the probe below.
+_WP_MARKER = re.compile(r"wp-content|wp-json", re.I)
 _WP_JOB_TYPE = re.compile(
     r"job|offre|emploi|career|carriere|poste|recrut|vacan", re.I
 )
@@ -1135,7 +1144,14 @@ def scrap_wordpress(board: "Board") -> List[Job]:
         List of jobs, or empty list if this is not WordPress or has no
         job-shaped post type.
     """
-    base = board.final_url or board.board_url
+    # Costs nothing to check and saves a request on every board that is not
+    # WordPress -- 25 of the 35 in the corpus. Nor can it hide a board: the
+    # endpoint below is built from the board's own host, so a site whose REST
+    # API lives elsewhere was already out of reach for this strategy.
+    if not board.html or not _WP_MARKER.search(board.html):
+        return []
+
+    base = board.url
     parsed = urlparse(base)
     root = f"{parsed.scheme}://{parsed.netloc}"
 
@@ -1239,9 +1255,16 @@ def _same_page(url: str, base: str) -> bool:
             == urldefrag(base).url.rstrip("/"))
 
 
-def scrap_links(board: "Board") -> List[Job]:
-    """Job-shaped anchors on the board page. URL and title only."""
-    html = _fetch(board.session, board.final_url or board.board_url)
+def scrap_links(board: "Board", html: Optional[str] = None) -> List[Job]:
+    """Job-shaped anchors on the board page. URL and title only.
+
+    Args:
+        board: Board to scrape.
+        html: Board page to read instead of the fetched one. This is how the
+            rendered strategy reuses the whole anchor pipeline -- same
+            JOB_PATH shapes, same title fallbacks -- on browser output.
+    """
+    html = html or board.html
 
     if not html:
         return []
@@ -1253,7 +1276,7 @@ def scrap_links(board: "Board") -> List[Job]:
     # A row that spells out "?" is asking for the query too -- the only way to
     # express a vendor like njoyn, whose postings all share one path.
     with_query = "?" in shape
-    base = board.final_url or board.board_url
+    base = board.url
     jobs = []
 
     # Not Page.anchor_urls: extract() collects hrefs but discards anchor text,
@@ -1350,23 +1373,57 @@ def _ats_from_host(url: str) -> Optional[ATSName]:
     return None
 
 
+#: Distinguishes "board page not fetched yet" from "fetched and it failed".
+#: A plain None-check cannot: None is the legitimate cached value for a dead
+#: board, and would send every strategy after the first back out to re-fetch.
+_UNFETCHED = object()
+
+
 class Board:
-    def __init__(self, cn: str, bu: str, session=None):
+    def __init__(self, cn: str, bu: str, session=None,
+                 render: Optional[Renderer] = None):
         self.company_name = cn
         self.board_url = bu
+        #: Optional browser renderer. None keeps every path byte-identical, so
+        #: a machine with no browser is unaffected.
+        self.render = render
         #: Where the detector's fetch actually landed. Redirects are common on
         #: career sites, and the token regexes need the resolved URL.
         self.final_url = bu
         self.ats: Optional[ATSName] = None
         self.board_jobs: List[Job] = []
+        self._html: object = _UNFETCHED
 
         self.session = session or requests.Session()
 
         if session is None:
             self.session.headers.update(HEADERS)
 
+    @property
+    def url(self) -> str:
+        """The URL to scrape: wherever the detector landed, else the input."""
+        return self.final_url or self.board_url
+
+    @property
+    def html(self) -> Optional[str]:
+        """The board page, fetched at most once per Board.
+
+        Four strategies want this same document -- comeet and njoyn read their
+        bootstrap out of it, links parses its anchors, and wordpress only needs
+        to know whether it is WordPress at all. Fetching per strategy meant
+        asking the board for the same page up to four times.
+        """
+        if self._html is _UNFETCHED:
+            self._html = _fetch(self.session, self.url)
+
+        return self._html  # type: ignore[return-value]
+
     def detect_ats(self) -> Optional[ATSName]:
-        detected = ATSDetector().detect(self.board_url)
+        # The detector already knows how to retry a JS shell through a
+        # renderer, and its own heuristic decides when that is worth doing --
+        # so handing it the same renderer costs nothing on server-rendered
+        # boards and may name an ATS (and so unlock a feed) on the SPA ones.
+        detected = ATSDetector(render=self.render).detect(self.board_url)
 
         self.final_url = detected.final_url or self.board_url
         self.ats = detected.detected_ats or _ats_from_host(self.board_url)
@@ -1374,15 +1431,19 @@ class Board:
         return self.ats
 
     def scrap_board(self) -> List[Job]:
-        """Vendor feed, then WordPress REST, then sitemap, then anchors.
+        """Feed, then WordPress REST, then sitemap, then anchors, then browser.
 
         A feed knows field semantics the other two have to infer, so it always
         wins -- but only if there is one for this ATS and its token is in the
         URL. Each strategy returns [] rather than raising, so a board never
         dies on its best path.
+
+        The browser runs last and only when one was supplied: it is the most
+        expensive strategy by orders of magnitude, and the ~15 boards a cheap
+        strategy already serves must never pay for it.
         """
         for strategy in (self._feed, self._wordpress,
-                         self._sitemap, self._links):
+                         self._sitemap, self._links, self._rendered):
             jobs = strategy()
 
             if jobs:
@@ -1421,6 +1482,32 @@ class Board:
     def _links(self) -> List[Job]:
         return scrap_links(self)
 
+    def _rendered(self) -> List[Job]:
+        """Anchors again, but on HTML a browser finished drawing.
+
+        The ~13 boards left uncovered all fail for one reason: the listing is
+        built client-side, so the fetched HTML holds either no anchors at all
+        (kicklox, coexya, sully-group) or only marketing ones (datadoghq,
+        equans, amazon.jobs). Rendering is the single lever that reaches them,
+        and once rendered they are ordinary anchor pages -- hence scrap_links
+        rather than a parser of its own.
+        """
+        if self.render is None:
+            return []
+
+        html = self.render(self.url)
+
+        if not html:
+            return []
+
+        # `links` would claim these were scraped off the served page, which is
+        # the one thing `via` exists to prevent -- a board that only works
+        # under a browser has to stay visibly distinct from one that does not.
+        return [
+            replace(job, via="rendered")
+            for job in scrap_links(self, html=html)
+        ]
+
 
 # ======================================================================
 # CLI
@@ -1436,10 +1523,22 @@ if __name__ == "__main__":
     parser.add_argument("url")
     parser.add_argument("--company", default="?")
     parser.add_argument("--show", type=int, default=10)
+    parser.add_argument(
+        "--render", action="store_true",
+        help="last-resort browser pass for boards that build their listing "
+             "in JS. Needs: pip install playwright && playwright install "
+             "chromium",
+    )
 
     args = parser.parse_args()
 
-    board = Board(args.company, args.url)
+    renderer = None
+
+    if args.render:
+        # Imported here, not at module scope: Playwright is an opt-in extra.
+        from job_scrapper.render import render as renderer
+
+    board = Board(args.company, args.url, render=renderer)
 
     print(f"Board:    {args.url}")
     print(f"ATS:      {board.detect_ats() or 'unknown'}")

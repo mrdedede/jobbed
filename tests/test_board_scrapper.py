@@ -38,7 +38,11 @@ from job_scrapper.board_scrapper import (  # noqa: E402
     scrap_wordpress,
     scrap_workday,
 )
-from job_scrapper.detector import ATS_NAMES, ATSName  # noqa: E402
+from job_scrapper.detector import (  # noqa: E402
+    ATS_NAMES,
+    ATSName,
+    DetectionResult,
+)
 
 
 def page(body: str, head: str = "") -> str:
@@ -93,8 +97,9 @@ class FakeSession:
         return FakeResponse(body(json) if callable(body) else body)
 
 
-def board(pages: dict, ats=None, url="https://acme.fr/jobs") -> Board:
-    made = Board("acme", url, session=FakeSession(pages))
+def board(pages: dict, ats=None, url="https://acme.fr/jobs",
+          render=None) -> Board:
+    made = Board("acme", url, session=FakeSession(pages), render=render)
     made.ats = ats
 
     return made
@@ -804,6 +809,14 @@ def test_njoyn_job_path_still_covers_the_board_if_the_scraper_finds_nothing():
 WP_ROOT = "https://carrieres.acme.com"
 WP_TYPES = f"{WP_ROOT}/wp-json/wp/v2/types"
 
+#: Any real WordPress page ships its theme assets out of wp-content. That
+#: marker is what opts a board into the REST probe, so the double has to carry
+#: it -- without a board page at all there is nothing to recognise.
+WP_BOARD_PAGE = page(
+    '<a href="/nos-offres/">Nos offres</a>',
+    '<link rel="stylesheet" href="/wp-content/themes/acme/style.css">',
+)
+
 
 def wordpress_board(type_name="job", count=2, **extra):
     posts = [
@@ -812,6 +825,7 @@ def wordpress_board(type_name="job", count=2, **extra):
         for n in range(count)
     ]
     pages = {
+        f"{WP_ROOT}/": WP_BOARD_PAGE,
         WP_TYPES: json.dumps({"post": {}, "page": {}, type_name: {}}),
         f"{WP_ROOT}/wp-json/wp/v2/{type_name}?per_page=100&page=1":
             json.dumps(posts),
@@ -842,7 +856,8 @@ def test_wordpress_unescapes_the_rendered_title():
 
 def test_wordpress_ignores_a_site_with_no_job_shaped_post_type():
     made = board(
-        {WP_TYPES: json.dumps({"post": {}, "page": {}, "attachment": {}})},
+        {f"{WP_ROOT}/": WP_BOARD_PAGE,
+         WP_TYPES: json.dumps({"post": {}, "page": {}, "attachment": {}})},
         url=f"{WP_ROOT}/",
     )
 
@@ -851,6 +866,19 @@ def test_wordpress_ignores_a_site_with_no_job_shaped_post_type():
 
 def test_wordpress_is_skipped_when_the_site_is_not_wordpress():
     assert scrap_wordpress(board({}, url=f"{WP_ROOT}/")) == []
+
+
+def test_wordpress_probe_is_skipped_when_the_page_has_no_wp_marker():
+    """The probe is a request spent on every board, and 25 of the 35 in the
+    corpus are not WordPress. A page with no wp- marker never gets one."""
+    made = board(
+        {f"{WP_ROOT}/": page("<a href='/jobs/dev-senior'>Dev</a>"),
+         WP_TYPES: json.dumps({"post": {}, "job": {}})},
+        url=f"{WP_ROOT}/",
+    )
+
+    assert scrap_wordpress(made) == []
+    assert WP_TYPES not in made.session.requested
 
 
 def test_wordpress_runs_before_the_sitemap_so_postings_cost_one_request():
@@ -1065,6 +1093,108 @@ def test_links_prefers_a_real_label_over_the_slug():
 
 
 # ======================================================================
+# Strategy 4: browser render -- opt-in, last resort
+# ======================================================================
+
+
+class FakeRenderer:
+    """A Renderer that counts its calls. No browser is ever launched here.
+
+    Same signature as job_scrapper.render.render and detector.Renderer, so the
+    suite exercises the wiring without Playwright installed.
+    """
+
+    def __init__(self, html=None):
+        self.html = html
+        self.calls = []
+
+    def __call__(self, url: str):
+        self.calls.append(url)
+
+        return self.html
+
+
+#: A JS shell: the anchors the board really has arrive only after rendering.
+SHELL_PAGE = page("<div id='root'></div>")
+
+
+def test_rendering_is_off_unless_a_renderer_is_supplied():
+    """The default Board stays byte-identical on a browser-less machine."""
+    made = board({"https://acme.fr/jobs": SHELL_PAGE})
+
+    assert made.render is None
+    assert made.scrap_board() == []
+
+
+def test_the_browser_runs_only_after_every_cheaper_strategy_is_empty():
+    """It is the most expensive strategy by orders of magnitude. A board the
+    anchors already cover must never pay for it."""
+    renderer = FakeRenderer(BOARD_PAGE)
+    made = board({"https://acme.fr/jobs": BOARD_PAGE}, render=renderer)
+
+    jobs = made.scrap_board()
+
+    assert [job.via for job in jobs] == ["links", "links"]
+    assert renderer.calls == []
+
+
+def test_the_browser_recovers_a_board_whose_listing_is_drawn_in_js():
+    """The ~13 uncovered boards in the corpus all fail this way: the served
+    HTML is a shell, and the postings exist only after the JS runs."""
+    renderer = FakeRenderer(BOARD_PAGE)
+    made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=renderer)
+
+    jobs = made.scrap_board()
+
+    assert renderer.calls == ["https://acme.fr/jobs"]
+    assert [job.title for job in jobs] == ["Chef de projet", "Dev senior"]
+
+
+def test_rendered_via_is_not_links_so_a_browser_only_board_stays_visible():
+    """Same reason `via` distinguishes feed from sitemap: a board that cannot
+    be scraped without a browser must not read like an ordinary anchor page."""
+    made = board(
+        {"https://acme.fr/jobs": SHELL_PAGE},
+        render=FakeRenderer(BOARD_PAGE),
+    )
+
+    assert all(job.via == "rendered" for job in made.scrap_board())
+
+
+def test_a_failed_render_yields_nothing_rather_than_raising():
+    """render() returns None for a timeout, a crashed page, or no browser at
+    all -- none of which may kill a hundred-board run."""
+    made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=FakeRenderer())
+
+    assert made.scrap_board() == []
+
+
+def test_the_renderer_reaches_the_detector_too(monkeypatch):
+    """ATSDetector has its own rendered-retry path; handing it the same
+    renderer can name an ATS on a shell page and so unlock a feed."""
+    seen = {}
+
+    class SpyDetector:
+        def __init__(self, render=None):
+            seen["render"] = render
+
+        def detect(self, url):
+            return DetectionResult(
+                input_url=url, final_url=url,
+                detected_ats=None, confidence=0.0, scores={},
+            )
+
+    monkeypatch.setattr(
+        "job_scrapper.board_scrapper.ATSDetector", SpyDetector
+    )
+
+    renderer = FakeRenderer()
+    board({}, render=renderer).detect_ats()
+
+    assert seen["render"] is renderer
+
+
+# ======================================================================
 # Dispatch -- the guard this design rests on
 # ======================================================================
 
@@ -1104,6 +1234,28 @@ def test_via_records_a_fallback_so_a_broken_feed_is_visible():
     jobs = made.scrap_board()
 
     assert jobs and all(job.via == "links" for job in jobs)
+
+
+def test_the_board_page_is_fetched_once_for_all_strategies():
+    """wordpress, sitemap and links all want the same document. Before the
+    Board cached it they each fetched their own copy."""
+    url = "https://acme.fr/jobs"
+    made = board({url: BOARD_PAGE}, url=url)
+
+    made.scrap_board()
+
+    assert made.session.requested.count(url) == 1
+
+
+def test_a_dead_board_page_is_not_re_fetched_by_every_strategy():
+    """None is a real cached value here, so a plain None-check would send each
+    strategy in turn back out to the same broken board."""
+    url = "https://acme.fr/jobs"
+    made = board({}, url=url)
+
+    assert made.scrap_board() == []
+    assert made.html is None
+    assert made.session.requested.count(url) == 1
 
 
 def test_every_detectable_ats_has_a_slot():

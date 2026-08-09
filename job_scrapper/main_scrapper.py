@@ -1,7 +1,7 @@
 """Scrape all boards from job_boards.csv into jobs.csv.
 
 Usage:
-    python job_scrapper/main_scrapper.py [--limit N]
+    python job_scrapper/main_scrapper.py [--limit N] [--render]
 
 Outputs jobs.csv with detected ATS and scraping strategy (via) for each row.
 """
@@ -36,7 +36,20 @@ def main() -> int:
                         help="only scrape the first N boards")
     parser.add_argument("--input", type=Path, default=INPUT_FILE)
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument(
+        "--render", action="store_true",
+        help="last-resort browser pass for boards that build their listing "
+             "in JS. Costs seconds per board. Needs: pip install playwright "
+             "&& playwright install chromium",
+    )
     args = parser.parse_args()
+
+    renderer = None
+
+    if args.render:
+        # Imported here, not at module scope: Playwright is an opt-in extra
+        # and this script has to keep running on a machine with no browser.
+        from job_scrapper.render import render as renderer
 
     with args.input.open(newline="", encoding="utf-8") as handle:
         boards = list(csv.DictReader(handle))
@@ -48,7 +61,7 @@ def main() -> int:
 
     for index, entry in enumerate(boards, start=1):
         company, url = entry["company"], entry["url"]
-        board = Board(company, url)
+        board = Board(company, url, render=renderer)
 
         try:
             ats = board.detect_ats()

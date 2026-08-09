@@ -5,8 +5,14 @@ and provides a connection factory for database operations.
 """
 
 import sqlite3
+import pandas as pd
+from pathlib import Path
 
-JOB_DATA_TABLE = """CREATE TABLE job_data(
+ROOT = Path(__file__).resolve().parent.parent
+DB_ADDRESS = ROOT / "db" /"joblister.db"
+FILTERED_DETAILED_JOBS = ROOT / "temp" / "filtered_detailed_jobs.csv"
+
+CREATE_JOB_DATA_TABLE = """CREATE TABLE IF NOT EXISTS job_data(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company TEXT,
     title TEXT,
@@ -16,7 +22,7 @@ JOB_DATA_TABLE = """CREATE TABLE job_data(
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
 """
 
-AI_ANALYSIS_TABLE = """CREATE TABLE ai_analysis(
+CREATE_AI_ANALYSIS_TABLE = """CREATE TABLE IF NOT EXISTS ai_analysis(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     adequation_grade INT,
     depth_analysis TEXT,
@@ -25,7 +31,7 @@ AI_ANALYSIS_TABLE = """CREATE TABLE ai_analysis(
     FOREIGN KEY (job_id) REFERENCES job_data(id));
 """
 
-GENERATED_CV_TABLE = """CREATE TABLE generated_cv(
+CREATE_GENERATED_CV_TABLE = """CREATE TABLE IF NOT EXISTS generated_cv(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     intro_line TEXT,
     profile TEXT,
@@ -40,10 +46,8 @@ GENERATED_CV_TABLE = """CREATE TABLE generated_cv(
 """
 
 # INSERTS
-INSERT_NEW_JOB_DATA = """INSERT INTO job_data VALUES(
-    $1, $2, $3, $4, $5
-);
-"""
+INSERT_NEW_JOB_DATA = """INSERT INTO job_data(company, title, description, url, place)
+    VALUES(?, ?, ?, ?, ?)"""
 
 INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis VALUES(
     $1, $2, $3, $4
@@ -80,14 +84,49 @@ SELECT_GENERATED_CV = """SELECT * FROM generated_cv
     WHERE job_id = $1;
 """
 
-def get_connection(db_path: str = "joblister.db") -> sqlite3.Connection:
-    """Get a SQLite database connection.
+def create_tables():
+    """Creates the tables at the SQLite database.
+    """
+    con = sqlite3.connect(DB_ADDRESS)
+    cur = con.cursor()
+    # Job data
+    cur.execute(CREATE_JOB_DATA_TABLE)
+    # AI Analysis
+    cur.execute(CREATE_AI_ANALYSIS_TABLE)
+    # Generated CV
+    cur.execute(CREATE_GENERATED_CV_TABLE)
+    cur.close()    
 
-    Args:
-        db_path: Path to the SQLite database file.
+def insert_jobs() -> int:
+    """Batch insert filtered jobs from CSV into database.
+
+    Reads filtered_detailed_jobs.csv and inserts all rows with proper parameter
+    binding and transaction batching. Returns the number of jobs inserted.
 
     Returns:
-        An open sqlite3.Connection object.
+        Number of rows inserted.
     """
-    return sqlite3.connect(db_path)
+    jobs_df = pd.read_csv(FILTERED_DETAILED_JOBS)
 
+    if jobs_df.empty:
+        return 0
+
+    # Convert dataframe rows to tuples: (company, title, description, url, place)
+    rows = [
+        (row["company"], row["title"], row["description"], row["url"], row["place"])
+        for _, row in jobs_df.iterrows()
+    ]
+
+    # Batch insert with single transaction and connection
+    con = sqlite3.connect(DB_ADDRESS)
+    try:
+        con.executemany(INSERT_NEW_JOB_DATA, rows)
+        con.commit()
+        inserted_count = len(rows)
+    except sqlite3.Error as e:
+        con.rollback()
+        raise RuntimeError(f"Database insert failed: {e}") from e
+    finally:
+        con.close()
+
+    return inserted_count

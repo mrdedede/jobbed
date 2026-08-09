@@ -2,3 +2,9 @@ company,url
 google,https://www.google.com/about/careers/applications/jobs/results
 amazon,https://amazon.jobs/content/en/
 company name,https://company.name/jobs/list/en
+# One row per board, not per company. A company with several boards gets
+# several rows -- that is expected and supported. `url` is the key: it is
+# unique per row and it is what per-board reporting counts on, because
+# `company` is not (the live file has statera four times and uti group three,
+# all at different URLs). Repeat the company name freely; just never expect
+# grouping by it to give you one row per board.

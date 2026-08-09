@@ -6,29 +6,23 @@ Tests verify wiring, payload mapping, dispatch order, and via bookkeeping.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-from job_scraper.board_scraper import (
-    COMEET_API,
-    FEEDS,
+from job_scraper.board import Board, dedupe as _dedupe
+from job_scraper.fetching import (
     MAX_FETCH_BYTES,
+    dig as _dig,
+    fetch as _fetch,
+    first_string as _first_string,
+)
+from job_scraper.models import Job
+from job_scraper.strategies import (
+    FEEDS,
+    VENDOR_NOTES,
     VENDOR_SCRAPERS,
-    _JOB_URL_RE,
-    Board,
     Feed,
-    Job,
-    _ats_from_host,
-    _dedupe,
-    _dig,
-    _fetch,
-    _first_string,
-    _nested_sitemaps,
-    _title_from_url,
-    _token,
-    job_urls_from_sitemap,
     scrape_comeet,
     scrape_feed,
     scrape_links,
@@ -37,7 +31,17 @@ from job_scraper.board_scraper import (
     scrape_wordpress,
     scrape_workday,
 )
-from job_scraper.detector import (  # noqa: E402
+from job_scraper.strategies.comeet import COMEET_API
+from job_scraper.strategies.feed import _token
+from job_scraper.strategies.sitemap import (
+    _nested_sitemaps,
+    job_urls_from_sitemap,
+)
+from job_scraper.urls import (
+    JOB_URL_RE as _JOB_URL_RE,
+    ats_from_host as _ats_from_host,
+)
+from job_scraper.detector import (
     ATS_NAMES,
     ATSName,
     DetectionResult,
@@ -253,15 +257,6 @@ def test_sitemap_falls_back_to_robots_txt():
 ])
 def test_generic_job_url_shape(path, is_posting):
     assert bool(_JOB_URL_RE.search(path)) is is_posting
-
-
-@pytest.mark.parametrize("url,expected", [
-    ("https://acme.fr/jobs/842306-chef-de-projet", "Chef De Projet"),
-    ("https://acme.fr/offres/dev-senior", "Dev Senior"),
-    ("https://acme.fr/jobs/lead_data_engineer/", "Lead Data Engineer"),
-])
-def test_title_from_url_deslugifies(url, expected):
-    assert _title_from_url(url) == expected
 
 
 # ======================================================================
@@ -735,7 +730,7 @@ NJOYN_BOARD = page("""
 
 def test_njoyn_reads_the_title_from_the_row_not_the_link_text():
     jobs = scrape_njoyn(board({NJOYN_URL: NJOYN_BOARD}, ats=ATSName.NJOYN,
-                             url=NJOYN_URL))
+                              url=NJOYN_URL))
 
     assert jobs == [
         Job(
@@ -771,7 +766,7 @@ def test_njoyn_locates_columns_by_header_not_position():
     """)
 
     jobs = scrape_njoyn(board({NJOYN_URL: swapped}, ats=ATSName.NJOYN,
-                             url=NJOYN_URL))
+                              url=NJOYN_URL))
 
     assert [(job.title, job.place) for job in jobs] == [
         ("Data Engineer", "Lyon")
@@ -951,13 +946,13 @@ def test_avature_postings_are_missed_entirely_without_its_job_path():
     an id).
     """
     generic = scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
-                                url="https://jobs.siemens.com/x"))
+                                 url="https://jobs.siemens.com/x"))
 
     assert generic == []
 
     tuned = scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
-                              ats=ATSName.AVATURE,
-                              url="https://jobs.siemens.com/x"))
+                               ats=ATSName.AVATURE,
+                               url="https://jobs.siemens.com/x"))
 
     assert [job.url for job in tuned] == [
         "https://jobs.siemens.com/en_US/externaljobs/JobDetail/498916",
@@ -969,8 +964,8 @@ def test_radancy_job_path_keeps_listing_pages_out():
     """/search-jobs and /software-engineering-jobs are collections, not
     postings, and the generic shape lets the last one through."""
     jobs = scrape_links(board({"https://careers.synopsys.com/x": RADANCY_PAGE},
-                             ats=ATSName.RADANCY,
-                             url="https://careers.synopsys.com/x"))
+                              ats=ATSName.RADANCY,
+                              url="https://careers.synopsys.com/x"))
 
     assert [job.url for job in jobs] == [
         "https://careers.synopsys.com/job/villeurbanne/"
@@ -1047,7 +1042,7 @@ def test_links_takes_the_card_heading_when_the_label_is_boilerplate():
     """The slug is a UUID here, so without the heading these 1442 Inetum
     rows read "C7d3cf7c 3fa8 43bf B34b 91ff69500ce6"."""
     jobs = scrape_links(board({"https://www.inetum.com/x": CARD_BOARD},
-                             url="https://www.inetum.com/x"))
+                              url="https://www.inetum.com/x"))
 
     assert [job.title for job in jobs] == ["Senior Data Engineer"]
 
@@ -1060,19 +1055,9 @@ def test_links_still_prefers_the_anchor_label_over_the_card_heading():
     )
 
     jobs = scrape_links(board({"https://acme.fr/x": marked},
-                             url="https://acme.fr/x"))
+                              url="https://acme.fr/x"))
 
     assert [job.title for job in jobs] == ["Data Engineer H/F"]
-
-
-@pytest.mark.parametrize("url,expected", [
-    ("https://acme.fr/carrieres/dev-senior.html", "Dev Senior"),
-    ("https://acme.fr/jobs/chef-de-projet.aspx", "Chef De Projet"),
-    ("https://acme.fr/offres/data-engineer", "Data Engineer"),
-])
-def test_title_from_url_drops_the_page_extension(url, expected):
-    """Otherwise every title on such a board ends in "Html"."""
-    assert _title_from_url(url) == expected
 
 
 def test_links_prefers_a_real_label_over_the_slug():
@@ -1175,8 +1160,9 @@ def test_the_renderer_reaches_the_detector_too(monkeypatch):
     seen = {}
 
     class SpyDetector:
-        def __init__(self, render=None):
+        def __init__(self, render=None, session=None):
             seen["render"] = render
+            seen["session"] = session
 
         def detect(self, url):
             return DetectionResult(
@@ -1184,9 +1170,7 @@ def test_the_renderer_reaches_the_detector_too(monkeypatch):
                 detected_ats=None, confidence=0.0, scores={},
             )
 
-    monkeypatch.setattr(
-        "job_scraper.board_scraper.ATSDetector", SpyDetector
-    )
+    monkeypatch.setattr("job_scraper.board.ATSDetector", SpyDetector)
 
     renderer = FakeRenderer()
     board({}, render=renderer).detect_ats()
@@ -1302,13 +1286,16 @@ def test_a_declared_charset_is_still_honoured():
 def test_every_detectable_ats_has_a_slot():
     """A new registry entry must not silently arrive with no scraping plan.
 
-    Every ATS the detector can name is either a FEEDS row or a VENDOR_SCRAPERS
-    function -- including the ones that only raise NotImplementedError, which
-    is how a known gap stays a recorded decision instead of an oversight.
+    Every ATS the detector can name is a FEEDS row, a VENDOR_SCRAPERS
+    function, or a VENDOR_NOTES entry saying what was probed and why there is
+    no scraper yet. The third is how a known gap stays a recorded decision
+    instead of an oversight.
     """
     missing = [
         name for name in ATS_NAMES
-        if name not in FEEDS and name not in VENDOR_SCRAPERS
+        if name not in FEEDS
+        and name not in VENDOR_SCRAPERS
+        and name not in VENDOR_NOTES
     ]
 
     assert not missing, f"no scraping plan for: {missing}"
@@ -1340,10 +1327,22 @@ def test_an_unwritten_vendor_scraper_falls_through_instead_of_crashing():
     assert jobs and all(job.via == "sitemap" for job in jobs)
 
 
-def test_stub_scrapers_carry_their_lead_in_the_message():
-    """The note is the point of the stub -- an empty `pass` teaches nothing."""
-    with pytest.raises(NotImplementedError, match="API key"):
-        VENDOR_SCRAPERS[ATSName.TEAMTAILOR](board({}))
+def test_vendor_notes_carry_their_lead():
+    """The note is the point -- an empty entry teaches nothing.
+
+    These used to be functions that raised NotImplementedError so the caller
+    could catch it. The research survived the rewrite; the control flow did
+    not need to.
+    """
+    assert "API key" in VENDOR_NOTES[ATSName.TEAMTAILOR]
+    assert all(note.strip() for note in VENDOR_NOTES.values())
+
+
+def test_notes_never_shadow_a_real_scraper():
+    """A note is documentation. The moment one names an ATS that also has a
+    scraper, the reader cannot tell which is live."""
+    assert not set(VENDOR_NOTES) & set(VENDOR_SCRAPERS)
+    assert not set(VENDOR_NOTES) & set(FEEDS)
 
 
 def test_a_board_with_nothing_returns_no_jobs_rather_than_raising():

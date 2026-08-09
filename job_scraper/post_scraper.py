@@ -30,33 +30,34 @@ sys.path either way.
 from __future__ import annotations
 
 import csv
-import json
 import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from html import unescape
 from pathlib import Path
-from typing import Dict, Optional
-from urllib.parse import urlparse
+from typing import Callable, Dict, Optional
 
 import requests
 from bs4 import BeautifulSoup
 
-from job_scraper.board_scraper import (
-    HEADERS,
-    _LOCALE_RE,
-    _dig,
-    _fetch,
-    _fetch_json,
-    _first_string,
-    _walk_jobpostings,
+from job_scraper import paths
+from job_scraper.fetching import (
+    dig,
+    fetch,
+    fetch_json,
+    first_string,
+    jobposting_place,
+    jsonld_nodes,
+    new_session,
+    walk_jobpostings,
+    workday_endpoint,
 )
+from job_scraper.models import Job
 
-ROOT = Path(__file__).resolve().parent.parent
-FILTERED_JOBS = ROOT / "temp" / "filtered_file.csv"
-DETAILED_JOBS = ROOT / "temp" / "detailed_jobs.csv"
+FILTERED_JOBS = paths.FIRST_FILTERED_CSV
+DETAILED_JOBS = paths.DETAILED_CSV
 
 FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats"]
 
@@ -75,29 +76,6 @@ CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
 _BLANK_LINES = re.compile(r"\n{3,}")
 
 
-@dataclass(frozen=True)
-class Job:
-    """One posting as its own page describes it.
-
-    Attributes:
-        company: Hiring company.
-        title: Job title.
-        description: Plain-text posting body.
-        url: Posting URL.
-        place: Location, if the page named one.
-        via: Which extractor produced this row -- workday, jsonld, main, or
-            none. Same purpose as board_scraper.Job.via: an extractor that
-            starts returning nav furniture has to stay visible in the output.
-    """
-
-    company: str
-    title: str
-    description: str
-    url: str
-    place: Optional[str] = None
-    via: str = ""
-
-
 _local = threading.local()
 
 
@@ -111,8 +89,7 @@ def session() -> requests.Session:
     found = getattr(_local, "session", None)
 
     if found is None:
-        found = requests.Session()
-        found.headers.update(HEADERS)
+        found = new_session()
         _local.session = found
 
     return found
@@ -149,18 +126,16 @@ def _workday_api(url: str) -> Optional[str]:
     Returns:
         API URL, or None if the path carries no site segment.
     """
-    parsed = urlparse(url)
-    tenant = parsed.hostname.split(".")[0] if parsed.hostname else ""
-    segments = [part for part in parsed.path.split("/") if part]
+    located = workday_endpoint(url)
 
-    if segments and _LOCALE_RE.match(segments[0]):
-        segments = segments[1:]
-
-    if not tenant or not segments:
+    if located is None:
         return None
 
-    return (f"{parsed.scheme}://{parsed.hostname}/wday/cxs/{tenant}/"
-            + "/".join(segments))
+    root, tenant, segments = located
+
+    # The whole path, not just the site: everything after it identifies the
+    # individual posting.
+    return f"{root}/wday/cxs/{tenant}/" + "/".join(segments)
 
 
 def _from_workday(url: str) -> Optional[dict]:
@@ -180,7 +155,7 @@ def _from_workday(url: str) -> Optional[dict]:
     if not endpoint:
         return None
 
-    info = _dig(_fetch_json(session(), endpoint), "jobPostingInfo")
+    info = dig(fetch_json(session(), endpoint), "jobPostingInfo")
 
     if not isinstance(info, dict):
         return None
@@ -191,9 +166,9 @@ def _from_workday(url: str) -> Optional[dict]:
         return None
 
     return {
-        "title": _first_string(info.get("title")),
+        "title": first_string(info.get("title")),
         "description": description,
-        "place": _first_string(info.get("location")),
+        "place": first_string(info.get("location")),
         "via": "workday",
     }
 
@@ -207,34 +182,17 @@ def _from_jsonld(soup: BeautifulSoup) -> Optional[dict]:
     Returns:
         Field dict, or None if the page has no JobPosting with a description.
     """
-    nodes = []
-
-    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        try:
-            nodes.append(json.loads(tag.get_text(strip=True)))
-        except (ValueError, TypeError):
-            continue
-
-    for node in _walk_jobpostings(nodes):
+    for node in walk_jobpostings(jsonld_nodes(soup)):
         description = _clean(node.get("description"))
 
         if not description:
             continue
 
         return {
-            "title": _first_string(node.get("title")),
+            "title": first_string(node.get("title")),
             "description": description,
-            "company": _first_string(_dig(node, "hiringOrganization.name")),
-            # Same pair board_scraper._posting_fields reads: locality is what
-            # the feeds report, region is what is left when a board omits it.
-            "place": (
-                _first_string(
-                    _dig(node, "jobLocation.address.addressLocality")
-                )
-                or _first_string(
-                    _dig(node, "jobLocation.address.addressRegion")
-                )
-            ),
+            "company": first_string(dig(node, "hiringOrganization.name")),
+            "place": jobposting_place(node),
             "via": "jsonld",
         }
 
@@ -309,7 +267,7 @@ def fetch_job(row: Dict[str, str]) -> Job:
     """Read one posting's page, falling back to the row when a field is absent.
 
     Args:
-        row: A filtered_file.csv row -- company, title, url, place, ats.
+        row: A first_filtered_file.csv row -- company, title, url, place, ats.
 
     Returns:
         A Job. Never raises: a dead page yields via="none" with an empty
@@ -321,7 +279,7 @@ def fetch_job(row: Dict[str, str]) -> Job:
     if (row.get("ats") or "") == "workday":
         found = _from_workday(url)
     else:
-        html = _fetch(session(), url)
+        html = fetch(session(), url)
 
         if html:
             soup = BeautifulSoup(html, "html.parser")
@@ -375,8 +333,92 @@ def already_done(path: Path) -> set:
         return {row["url"] for row in csv.DictReader(handle) if row.get("url")}
 
 
+def scrape_details(input_file: Optional[Path] = None,
+                   output_file: Optional[Path] = None,
+                   limit: int = 0,
+                   workers: int = DEFAULT_WORKERS,
+                   resume: bool = True,
+                   on_progress: Optional[Callable[[str], None]] = None
+                   ) -> dict:
+    """Fetch each filtered posting's own page and write the detail CSV.
+
+    Args:
+        input_file: The first filter's output. Defaults to
+            paths.FIRST_FILTERED_CSV, resolved at call time so a caller that
+            repoints `paths` is actually followed.
+        output_file: Where to write postings with descriptions.
+        limit: Only fetch the first N postings; 0 means all of them.
+        workers: Thread pool size. See fetching.REQUEST_DELAY for what this
+            implies about request rate.
+        resume: Skip URLs the output already holds and append to it. False
+            rewrites the file from scratch.
+        on_progress: Optional callback given progress lines.
+
+    Returns:
+        Dict with `pending`, `skipped` and per-extractor `counts`, plus the
+        `output` path.
+    """
+    input_file = input_file or paths.FIRST_FILTERED_CSV
+    output_file = output_file or paths.DETAILED_CSV
+
+    with input_file.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    if limit:
+        rows = rows[:limit]
+
+    done = already_done(output_file) if resume else set()
+    pending = [row for row in rows if row["url"] not in done]
+
+    if on_progress:
+        on_progress(f"{len(pending)} postings to fetch "
+                    f"({len(rows) - len(pending)} already done)")
+
+    counts: Dict[str, int] = {}
+    fresh = not resume or not output_file.exists()
+
+    with output_file.open(
+        "w" if fresh else "a", newline="", encoding="utf-8"
+    ) as output:
+        writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
+                                extrasaction="ignore")
+
+        if fresh:
+            writer.writeheader()
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for index, (row, job) in enumerate(
+                zip(pending, pool.map(fetch_job, pending)), start=1
+            ):
+                # pool.map yields in this thread, in order, so no lock is
+                # needed. Flushed per row: a crash at 8000 keeps the first
+                # 7999, and the next run resumes from exactly there.
+                writer.writerow({**asdict(job), "ats": row.get("ats", "")})
+                output.flush()
+
+                counts[job.via] = counts.get(job.via, 0) + 1
+
+                if on_progress and (index % 50 == 0 or index == len(pending)):
+                    on_progress(
+                        f"  {index}/{len(pending)}  "
+                        + "  ".join(f"{via}={n}"
+                                    for via, n in sorted(counts.items()))
+                    )
+
+    return {
+        "pending": len(pending),
+        "skipped": len(rows) - len(pending),
+        "counts": counts,
+        "output": output_file,
+    }
+
+
 def main() -> int:
-    """Scrape every filtered posting's page into the detail CSV."""
+    """Scrape every filtered posting's page into the detail CSV.
+
+    Returns:
+        0 on success.
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -390,47 +432,16 @@ def main() -> int:
                              "already holds")
     args = parser.parse_args()
 
-    with args.input.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
+    stats = scrape_details(
+        input_file=args.input,
+        output_file=args.output,
+        limit=args.limit,
+        workers=args.workers,
+        resume=not args.no_resume,
+        on_progress=print,
+    )
 
-    if args.limit:
-        rows = rows[:args.limit]
-
-    done = set() if args.no_resume else already_done(args.output)
-    pending = [row for row in rows if row["url"] not in done]
-
-    print(f"{len(pending)} postings to fetch "
-          f"({len(rows) - len(pending)} already done)")
-
-    counts: Dict[str, int] = {}
-    fresh = args.no_resume or not args.output.exists()
-
-    with args.output.open(
-        "w" if fresh else "a", newline="", encoding="utf-8"
-    ) as output:
-        writer = csv.DictWriter(output, fieldnames=FIELDNAMES)
-
-        if fresh:
-            writer.writeheader()
-
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            for index, (row, job) in enumerate(
-                zip(pending, pool.map(fetch_job, pending)), start=1
-            ):
-                # pool.map yields in this thread, in order, so no lock is
-                # needed. Flushed per row: a crash at 8000 keeps the first
-                # 7999, and the next run resumes from exactly there.
-                writer.writerow({**asdict(job), "ats": row.get("ats", "")})
-                output.flush()
-
-                counts[job.via] = counts.get(job.via, 0) + 1
-
-                if index % 50 == 0 or index == len(pending):
-                    print(f"  {index}/{len(pending)}  "
-                          + "  ".join(f"{via}={n}"
-                                      for via, n in sorted(counts.items())))
-
-    print(f"\n-> {args.output}")
+    print(f"\n-> {stats['output']}")
 
     return 0
 

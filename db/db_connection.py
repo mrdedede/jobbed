@@ -1,16 +1,22 @@
 """SQLite schema and connection management for job scraping results.
 
-This module defines DDL for persisting scraped jobs, analyses, and generated CVs,
-and provides a connection factory for database operations.
+This module defines DDL for persisting scraped jobs, analyses, and generated
+CVs, and provides the insert path the pipeline's last stage calls.
+
+Every statement binds with `?`. sqlite3 does not understand PostgreSQL's `$1`
+placeholders -- it treats them as numbered parameters with an entirely
+different meaning -- and several statements here carried them, which is why
+they had never successfully run.
 """
 
+import csv
 import sqlite3
-import pandas as pd
-from pathlib import Path
+from typing import Tuple
 
-ROOT = Path(__file__).resolve().parent.parent
-DB_ADDRESS = ROOT / "db" /"joblister.db"
-FILTERED_DETAILED_JOBS = ROOT / "temp" / "filtered_detailed_jobs.csv"
+from job_scraper import paths
+
+DB_ADDRESS = paths.DB_PATH
+FILTERED_DETAILED_JOBS = paths.FILTERED_DETAILED_CSV
 
 CREATE_JOB_DATA_TABLE = """CREATE TABLE IF NOT EXISTS job_data(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,97 +52,104 @@ CREATE_GENERATED_CV_TABLE = """CREATE TABLE IF NOT EXISTS generated_cv(
 """
 
 # INSERTS
-INSERT_NEW_JOB_DATA = """INSERT INTO job_data(company, title, description, url, place)
+#
+# Columns are named on every one of these. Without a column list SQLite
+# expects a value for every column including the autoincrement id, which is
+# what made the two below fail with "table ai_analysis has 5 columns but 4
+# values were supplied".
+
+# OR IGNORE leans on `url TEXT UNIQUE` instead of reimplementing it: the
+# previous version read every existing URL into a Python set and filtered the
+# CSV against it row by row, which is the same constraint written twice, the
+# second time more slowly.
+INSERT_NEW_JOB_DATA = """INSERT OR IGNORE INTO job_data(
+    company, title, description, url, place)
     VALUES(?, ?, ?, ?, ?)"""
 
-INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis VALUES(
-    $1, $2, $3, $4
-);
-"""
+INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis(
+    adequation_grade, depth_analysis, ai_model, job_id)
+    VALUES(?, ?, ?, ?)"""
 
-INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv VALUES(
-    $1, $2, $3, $4, $5, $6, $7, $8
-);
-"""
+INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv(
+    intro_line, profile, skills, experiences, education, languages,
+    job_id, ai_analysis_id)
+    VALUES(?, ?, ?, ?, ?, ?, ?, ?)"""
 
 # SELECTS
 SELECT_JOBS_FOUND_TODAY = """SELECT * FROM job_data
-    WHERE timestamp >= datetime('now', '-24 hours'); 
+    WHERE timestamp >= datetime('now', '-24 hours');
 """
 
 SELECT_JOB_BY_URL = """SELECT * FROM job_data
-    WHERE url = $1;
+    WHERE url = ?;
 """
 
-SELECT_JOB_DESCRIPTION = """SELECT description FROM job_detail
-    WHERE job_id = ?;
+# Reads job_data. There is no `job_detail` table and there never was, so this
+# raised "no such table" for any caller that tried it.
+SELECT_JOB_DESCRIPTION = """SELECT description FROM job_data
+    WHERE id = ?;
 """
 
 SELECT_AI_DEPTH_ANALYSIS = """SELECT depth_analysis FROM ai_analysis
-    WHERE job_id = $1;
+    WHERE job_id = ?;
 """
 
 SELECT_AI_GRADE = """SELECT adequation_grade FROM ai_analysis
-    WHERE job_id = $1;
+    WHERE job_id = ?;
 """
 
 SELECT_GENERATED_CV = """SELECT * FROM generated_cv
-    WHERE job_id = $1;
+    WHERE job_id = ?;
 """
 
-def create_tables():
-    """Creates the tables at the SQLite database.
+
+def create_tables() -> None:
+    """Create the tables at the SQLite database if they do not exist.
+
+    The connection is opened as a context manager so the transaction commits
+    and the handle closes. Previously only the cursor was closed, leaving the
+    connection open and the DDL committed only by sqlite3's own autocommit.
     """
-    con = sqlite3.connect(DB_ADDRESS)
-    cur = con.cursor()
-    # Job data
-    cur.execute(CREATE_JOB_DATA_TABLE)
-    # AI Analysis
-    cur.execute(CREATE_AI_ANALYSIS_TABLE)
-    # Generated CV
-    cur.execute(CREATE_GENERATED_CV_TABLE)
-    cur.close()    
+    with sqlite3.connect(DB_ADDRESS) as con:
+        con.execute(CREATE_JOB_DATA_TABLE)
+        con.execute(CREATE_AI_ANALYSIS_TABLE)
+        con.execute(CREATE_GENERATED_CV_TABLE)
 
-def insert_jobs() -> tuple[int, int]:
-    """Batch insert filtered jobs from CSV into database, skipping duplicates by URL.
 
-    Reads filtered_detailed_jobs.csv and inserts only new jobs (checking URL uniqueness).
-    Returns tuple of (inserted_count, skipped_count).
+def insert_jobs() -> Tuple[int, int]:
+    """Insert the filtered postings into job_data, skipping known URLs.
+
+    Duplicates are dropped by the `url TEXT UNIQUE` constraint via
+    INSERT OR IGNORE, so how many were new falls out of `total_changes`
+    without reading anything back first.
 
     Returns:
         Tuple of (number of new jobs inserted, number of duplicates skipped).
-    """
-    jobs_df = pd.read_csv(FILTERED_DETAILED_JOBS)
 
-    if jobs_df.empty:
+    Raises:
+        RuntimeError: If the database rejects the batch.
+    """
+    with FILTERED_DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
+        rows = [
+            (row.get("company"), row.get("title"), row.get("description"),
+             row.get("url"), row.get("place"))
+            for row in csv.DictReader(handle)
+        ]
+
+    if not rows:
         return 0, 0
 
     con = sqlite3.connect(DB_ADDRESS)
+
     try:
-        # Fetch existing URLs from database
-        existing_urls = set(
-            url[0] for url in con.execute("SELECT url FROM job_data").fetchall()
-        )
-
-        # Filter to only new jobs (URL not already in database)
-        new_rows = [
-            (row["company"], row["title"], row["description"], row["url"], row["place"])
-            for _, row in jobs_df.iterrows()
-            if row["url"] not in existing_urls
-        ]
-
-        skipped_count = len(jobs_df) - len(new_rows)
-        inserted_count = 0
-
-        if new_rows:
-            con.executemany(INSERT_NEW_JOB_DATA, new_rows)
-            inserted_count = len(new_rows)
-
+        before = con.total_changes
+        con.executemany(INSERT_NEW_JOB_DATA, rows)
+        inserted = con.total_changes - before
         con.commit()
-    except sqlite3.Error as e:
+    except sqlite3.Error as exc:
         con.rollback()
-        raise RuntimeError(f"Database insert failed: {e}") from e
+        raise RuntimeError(f"Database insert failed: {exc}") from exc
     finally:
         con.close()
 
-    return inserted_count, skipped_count
+    return inserted, len(rows) - inserted

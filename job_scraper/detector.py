@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from job_scraper.fetching import decode_response, new_session, walk_strings
+
 RULESET_VERSION = "2026.08.1"
 
 # Maximum points one source may contribute to one ATS. Stops a single fact
@@ -149,6 +151,10 @@ class DetectionResult:
     status_code: Optional[int] = None
     error: Optional[str] = None
     ruleset_version: str = RULESET_VERSION
+    #: The page detection actually read. Handed back so a caller that needs
+    #: the same document -- Board does, for four of its strategies -- can use
+    #: this one instead of fetching it a second time.
+    html: Optional[str] = None
 
 
 # Matcher: (Page, ATS) -> Optional[str]. Returns matched value or None.
@@ -440,7 +446,7 @@ def jsonld_url_host() -> Matcher:
     def test(page: Page, ats: "ATS") -> Optional[str]:
         domains = ats.hosts + ats.assets
 
-        for value in _walk_strings(page.jsonld):
+        for value in walk_strings(page.jsonld):
             if "//" not in value:
                 continue
 
@@ -450,29 +456,6 @@ def jsonld_url_host() -> Matcher:
         return None
 
     return test
-
-
-def _walk_strings(node: object, depth: int = 0):
-    """Recursively yield strings from nested JSON structure.
-
-    Args:
-        node: JSON-like object (dict, list, or string).
-        depth: Current recursion depth.
-
-    Yields:
-        String values found in the structure.
-    """
-    if depth > 12:
-        return
-
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for value in node.values():
-            yield from _walk_strings(value, depth + 1)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _walk_strings(value, depth + 1)
 
 
 @dataclass(frozen=True)
@@ -597,6 +580,7 @@ def _expand(ats: ATS) -> List[Rule]:
         ))
 
     return rules
+
 
 ATS_REGISTRY: Tuple[ATS, ...] = (
     ATS(
@@ -1074,10 +1058,11 @@ KNOWN_DOMAINS: frozenset = frozenset(
     for domain in ats.hosts + ats.assets
 )
 
-assert len({
-    item.signal_id for _, rules in COMPILED.values() for item in rules
-}) == sum(len(rules) for _, rules in COMPILED.values()), \
-    "duplicate signal_id in ATS_REGISTRY"
+# The registry's signal_ids must stay unique -- see
+# tests/test_detector.py::test_no_duplicate_signal_ids. That check used to be
+# a module-level `assert` here, which python -O deletes and which, on the one
+# occasion it would matter, kills import with a bare AssertionError instead of
+# failing a test run.
 
 
 Renderer = Callable[[str], Optional[str]]
@@ -1091,18 +1076,21 @@ class ATSDetector:
         max_bytes: Maximum response body size.
         max_redirects: Maximum redirect chain length.
         render: Optional browser renderer for JS-rendered pages.
+        session: Optional requests.Session to fetch through. Pass one when the
+            caller will also want the page -- otherwise the same URL is
+            fetched twice and a connection pool is built and discarded per
+            call. Defaults to a private retrying session.
     """
 
     def __init__(self, timeout: int = 15, max_bytes: int = 5_000_000,
                  max_redirects: int = 5,
-                 render: Optional[Renderer] = None):
+                 render: Optional[Renderer] = None,
+                 session=None):
         self.timeout = timeout
         self.max_bytes = max_bytes
         self.render = render
 
-        self.session = requests.Session()
-        self.session.max_redirects = max_redirects
-        self.session.headers.update({
+        self.session = session or new_session({
             "User-Agent": (
                 "Mozilla/5.0 (compatible; ATSDetector/2.0; "
                 "+https://example.com/ats-detector)"
@@ -1112,6 +1100,7 @@ class ATSDetector:
                 "application/xml;q=0.9,*/*;q=0.8"
             ),
         })
+        self.session.max_redirects = max_redirects
 
     def detect(self, url: str) -> DetectionResult:
         """Fetch a URL and detect its ATS.
@@ -1167,10 +1156,11 @@ class ATSDetector:
                         response.status_code,
                     )
 
-                html = raw.decode(
-                    response.encoding or "utf-8",
-                    errors="replace",
-                )
+                # Same decode the scrapers use, and it has to stay the same:
+                # Board reuses this exact string as its board page, and
+                # trusting response.encoding turned Scalian's and Sopra
+                # Steria's accented titles into "DÃ©veloppeur".
+                html = decode_response(response, raw)
 
                 redirects = [item.url for item in response.history]
 
@@ -1182,6 +1172,8 @@ class ATSDetector:
                     redirect_chain=redirects + [response.url],
                     status_code=response.status_code,
                 )
+
+                result.html = html
 
                 return self._maybe_render(result, response.url, url)
 
@@ -1215,6 +1207,9 @@ class ATSDetector:
             redirect_chain=result.redirect_chain,
             status_code=result.status_code,
         )
+        # The rendered DOM, not the served shell -- if this result is the one
+        # returned, it is also the page a caller should reuse.
+        second.html = rendered
 
         return second if second.status != "unknown" else result
 
@@ -1405,7 +1400,7 @@ def extract(html: str, url: str,
 
     page.is_job_page = any(
         "jobposting" in value.lower()
-        for value in _walk_strings(page.jsonld)
+        for value in walk_strings(page.jsonld)
     ) or bool(
         soup.find(attrs={"itemtype": re.compile("JobPosting", re.I)})
     )

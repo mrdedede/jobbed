@@ -6,7 +6,6 @@ Uses saved corpus (if available) and adversarial test cases.
 from __future__ import annotations
 
 import csv
-import sys
 from pathlib import Path
 
 import pytest
@@ -589,3 +588,27 @@ def test_partial_evidence_outranks_no_evidence(detector):
 
     assert something.status == nothing.status == "unknown"
     assert something.confidence > nothing.confidence
+
+
+def test_no_duplicate_signal_ids():
+    """Every rule in ATS_REGISTRY must carry a unique signal_id.
+
+    Evidence is keyed by signal_id and sources are capped per ATS, so two
+    rules sharing an id silently merge: one stops being able to fire, and the
+    cap it should have contributed to is computed from the wrong count.
+
+    This was a module-level `assert` in detector.py. It belongs here -- under
+    python -O that statement is removed outright, so the invariant it guarded
+    was unchecked in exactly the configuration meant for production.
+    """
+    rules = [item for _, compiled in COMPILED.values() for item in compiled]
+    seen = {}
+    duplicated = []
+
+    for rule in rules:
+        if rule.signal_id in seen:
+            duplicated.append(rule.signal_id)
+
+        seen[rule.signal_id] = rule
+
+    assert not duplicated, f"duplicate signal_id in ATS_REGISTRY: {duplicated}"

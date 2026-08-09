@@ -2,8 +2,14 @@
 requests==2.32.3
 beautifulsoup4==4.12.3
 
-# main_scraper.py only, and only to write one CSV that csv.DictWriter would
-# also write. Dropping it would remove the heaviest dependency here.
+# job_scraper/filters.py only, and there it earns its place: both filters are
+# vectorised str.count/str.contains over the whole frame plus a seeded
+# groupby().sample() for the per-company exemption cap, which is a real loop
+# and a real reservoir sample in plain Python. (The claim this comment used to
+# make -- "main_scraper.py only, to write one CSV that csv.DictWriter would
+# also write" -- was already false: main_scraper does not import pandas.
+# db/db_connection.py did, to reimplement a UNIQUE constraint with iterrows();
+# that is now INSERT OR IGNORE over csv.DictReader.)
 pandas==2.2.3
 
 # Development.

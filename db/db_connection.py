@@ -11,12 +11,14 @@ they had never successfully run.
 
 import csv
 import sqlite3
-from typing import Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from job_scraper import paths
 
 DB_ADDRESS = paths.DB_PATH
 FILTERED_DETAILED_JOBS = paths.FILTERED_DETAILED_CSV
+
+# MIGRATIONS
 
 CREATE_JOB_DATA_TABLE = """CREATE TABLE IF NOT EXISTS job_data(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,17 +53,8 @@ CREATE_GENERATED_CV_TABLE = """CREATE TABLE IF NOT EXISTS generated_cv(
     FOREIGN KEY (ai_analysis_id) REFERENCES ai_analysis(id));
 """
 
-# INSERTS
-#
-# Columns are named on every one of these. Without a column list SQLite
-# expects a value for every column including the autoincrement id, which is
-# what made the two below fail with "table ai_analysis has 5 columns but 4
-# values were supplied".
+# INSERTIONS
 
-# OR IGNORE leans on `url TEXT UNIQUE` instead of reimplementing it: the
-# previous version read every existing URL into a Python set and filtered the
-# CSV against it row by row, which is the same constraint written twice, the
-# second time more slowly.
 INSERT_NEW_JOB_DATA = """INSERT OR IGNORE INTO job_data(
     company, title, description, url, place)
     VALUES(?, ?, ?, ?, ?)"""
@@ -75,19 +68,20 @@ INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv(
     job_id, ai_analysis_id)
     VALUES(?, ?, ?, ?, ?, ?, ?, ?)"""
 
-# SELECTS
-SELECT_JOBS_FOUND_TODAY = """SELECT * FROM job_data
-    WHERE timestamp >= datetime('now', '-24 hours');
-"""
+# SELECTIONS
 
 SELECT_JOB_BY_URL = """SELECT * FROM job_data
     WHERE url = ?;
 """
 
-# Reads job_data. There is no `job_detail` table and there never was, so this
-# raised "no such table" for any caller that tried it.
-SELECT_JOB_DESCRIPTION = """SELECT description FROM job_data
-    WHERE id = ?;
+# The window is bound, not baked in: a posting whose analysis failed on the
+# API side is unreachable once it ages out of the default 24 hours, and the
+# NOT IN already makes a rerun idempotent. Pass a wider one to catch up.
+SELECT_JOBS_TO_ANALYSE = """SELECT id, company, title, description
+    FROM job_data
+    WHERE id NOT IN (SELECT job_id FROM ai_analysis)
+    AND timestamp >= datetime('now', ?)
+    ORDER BY id;
 """
 
 SELECT_AI_DEPTH_ANALYSIS = """SELECT depth_analysis FROM ai_analysis
@@ -103,6 +97,8 @@ SELECT_GENERATED_CV = """SELECT * FROM generated_cv
 """
 
 
+# MIGRATIONS
+
 def create_tables() -> None:
     """Create the tables at the SQLite database if they do not exist.
 
@@ -116,12 +112,18 @@ def create_tables() -> None:
         con.execute(CREATE_GENERATED_CV_TABLE)
 
 
-def insert_jobs() -> Tuple[int, int]:
-    """Insert the filtered postings into job_data, skipping known URLs.
+# INSERTIONS
+
+def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
+    """Insert the postings into job_data, skipping known URLs.
 
     Duplicates are dropped by the `url TEXT UNIQUE` constraint via
     INSERT OR IGNORE, so how many were new falls out of `total_changes`
     without reading anything back first.
+
+    Args:
+        rows: Rows to insert. Defaults to whatever the refilter stage left in
+            the filtered detailed CSV, which is what the pipeline wants.
 
     Returns:
         Tuple of (number of new jobs inserted, number of duplicates skipped).
@@ -129,15 +131,8 @@ def insert_jobs() -> Tuple[int, int]:
     Raises:
         RuntimeError: If the database rejects the batch.
     """
-    with FILTERED_DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
-        rows = [
-            (row.get("company"), row.get("title"), row.get("description"),
-             row.get("url"), row.get("place"))
-            for row in csv.DictReader(handle)
-        ]
-
     if not rows:
-        return 0, 0
+        rows = _read_jobs_csv()
 
     con = sqlite3.connect(DB_ADDRESS)
 
@@ -153,3 +148,65 @@ def insert_jobs() -> Tuple[int, int]:
         con.close()
 
     return inserted, len(rows) - inserted
+
+
+def insert_analysis(analysis: Sequence) -> None:
+    """Insert one analysis into the ai_analysis table.
+
+    Args:
+        analysis: The row (adequation_grade, depth_analysis, ai_model,
+            job_id) -- what `Analysis.transform()` returns. A plain sequence
+            rather than the dataclass itself, so storage keeps depending on
+            nothing. Which postings are worth analysing is decided by
+            `select_jobs_to_analyse`, not here.
+
+    Raise:
+        RuntimeError: If the database rejects the insertion
+    """
+    con = sqlite3.connect(DB_ADDRESS)
+    try:
+        con.execute(INSERT_NEW_AI_ANALYSIS, analysis)
+        con.commit()
+    except sqlite3.Error as exc:
+        con.rollback()
+        raise RuntimeError(f"Database insert failed: {exc}") from exc
+    finally:
+        con.close()
+
+
+# SELECTIONS
+
+def select_jobs_to_analyse(
+        limit: int = 0,
+        window: str = "-24 hours") -> List[Tuple[int, str, str, str]]:
+    """Select the recent postings the AI model has not graded yet.
+
+    Args:
+        limit: Cap on postings returned; 0 means no cap.
+        window: SQLite modifier applied to `datetime('now', ?)`. Widen it
+            ("-7 days") to pick up postings whose analysis failed earlier.
+
+    Returns:
+        List of (id, company, title, description). The company and title go
+        into the prompt header, so grading is not done on a bare description.
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        jobs = con.execute(SELECT_JOBS_TO_ANALYSE, (window,)).fetchall()
+
+    return jobs[:limit] if limit else jobs
+
+
+# UTILS
+
+def _read_jobs_csv() -> List[Tuple[str, str, str, str, str]]:
+    """Returns the rows available at the filtered detailed job csv
+
+    Returns:
+        List of tuples referring to the job's information
+    """
+    with FILTERED_DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
+        return [
+            (row.get("company"), row.get("title"), row.get("description"),
+             row.get("url"), row.get("place"))
+            for row in csv.DictReader(handle)
+        ]

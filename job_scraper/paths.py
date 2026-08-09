@@ -24,6 +24,7 @@ USER_INFO = ROOT / "user_info"
 BOARDS_CSV = USER_INFO / "job_boards.csv"
 KEYWORDS_TXT = USER_INFO / "keywords.txt"
 BLACKLIST_TXT = USER_INFO / "blacklist.txt"
+CV_MD = USER_INFO / "my_cv.md"
 
 # Stage outputs, in pipeline order.
 JOBS_CSV = TEMP / "jobs.csv"

@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from job_scrapper.detector import ATSDetector
+from job_scraper.detector import ATSDetector
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

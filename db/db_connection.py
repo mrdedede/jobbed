@@ -6,21 +6,14 @@ and provides a connection factory for database operations.
 
 import sqlite3
 
-JOB_URL_TABLE = """CREATE TABLE job_url(
+JOB_DATA_TABLE = """CREATE TABLE job_data(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     company TEXT,
     title TEXT,
+    description TEXT,
     url TEXT,
-    via TEXT,
     place TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
-"""
-
-JOB_DETAIL_TABLE = """CREATE TABLE job_detail(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    description TEXT,
-    job_id BIGINT,
-    FOREIGN KEY (job_id) REFERENCES job_url(id));
 """
 
 AI_ANALYSIS_TABLE = """CREATE TABLE ai_analysis(
@@ -29,7 +22,7 @@ AI_ANALYSIS_TABLE = """CREATE TABLE ai_analysis(
     depth_analysis TEXT,
     ai_model TEXT,
     job_id BIGINT,
-    FOREIGN KEY (job_id) REFERENCES job_url(id));
+    FOREIGN KEY (job_id) REFERENCES job_data(id));
 """
 
 GENERATED_CV_TABLE = """CREATE TABLE generated_cv(
@@ -42,18 +35,13 @@ GENERATED_CV_TABLE = """CREATE TABLE generated_cv(
     languages TEXT,
     job_id BIGINT,
     ai_analysis_id BIGINT,
-    FOREIGN KEY (job_id) REFERENCES job_url(id),
+    FOREIGN KEY (job_id) REFERENCES job_data(id),
     FOREIGN KEY (ai_analysis_id) REFERENCES ai_analysis(id));
 """
 
 # INSERTS
-INSERT_NEW_JOB_URL = """INSERT INTO job_url VALUES(
+INSERT_NEW_JOB_DATA = """INSERT INTO job_data VALUES(
     $1, $2, $3, $4, $5
-);
-"""
-
-INSERT_NEW_JOB_DETAIL = """INSERT INTO job_detail VALUES(
-    $1, $2
 );
 """
 
@@ -68,11 +56,11 @@ INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv VALUES(
 """
 
 # SELECTS
-SELECT_JOBS_FOUND_TODAY = """SELECT * FROM job_url
+SELECT_JOBS_FOUND_TODAY = """SELECT * FROM job_data
     WHERE timestamp >= datetime('now', '-24 hours'); 
 """
 
-SELECT_JOB_BY_URL = """SELECT * FROM job_url
+SELECT_JOB_BY_URL = """SELECT * FROM job_data
     WHERE url = $1;
 """
 

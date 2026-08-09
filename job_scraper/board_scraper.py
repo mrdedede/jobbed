@@ -7,11 +7,11 @@ field, which ensures a misdetected ATS doesn't silently get scraped by the
 wrong strategy.
 
 Usage:
-    python -m job_scrapper.board_scraper <url> [--company NAME] [--show N]
+    python -m job_scraper.board_scraper <url> [--company NAME] [--show N]
                                                 [--render]
 
 Run it as a module, not by path: the imports below are absolute, so
-`python job_scrapper/board_scraper.py` puts this directory on sys.path
+`python job_scraper/board_scraper.py` puts this directory on sys.path
 instead of the repo root and fails before __main__ is reached.
 """
 
@@ -28,7 +28,7 @@ from urllib.parse import urldefrag, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from job_scrapper.detector import (
+from job_scraper.detector import (
     ATS_REGISTRY,
     ATSDetector,
     ATSName,
@@ -112,7 +112,17 @@ def _fetch(session, url: str, timeout: int = 20,
 
             raw = response.raw.read(max_bytes, decode_content=True)
 
-            return raw.decode(response.encoding or "utf-8", errors="replace")
+            # response.encoding is ISO-8859-1 for any text/* that declares no
+            # charset -- RFC 2616's default, which requests still honours and
+            # HTML5 does not. Trusting it turned Scalian's and Sopra Steria's
+            # accented titles into "DÃ©veloppeur"; both declare utf-8 in a
+            # <meta> tag the header never mentions.
+            declared = "charset=" in response.headers.get(
+                "Content-Type", ""
+            ).lower()
+            encoding = response.encoding if declared else "utf-8"
+
+            return raw.decode(encoding or "utf-8", errors="replace")
     except requests.RequestException:
         return None
 
@@ -1593,7 +1603,7 @@ if __name__ == "__main__":
 
     if args.render:
         # Imported here, not at module scope: Playwright is an opt-in extra.
-        from job_scrapper.render import render as renderer
+        from job_scraper.render import render as renderer
 
     board = Board(args.company, args.url, render=renderer)
 

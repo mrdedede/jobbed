@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from job_scrapper.detector import (
+from job_scraper.detector import (
     ATS_CAP,
     COMPILED,
     SOURCE_CAP,

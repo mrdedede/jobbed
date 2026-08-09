@@ -1,7 +1,7 @@
 """Scrape all boards from job_boards.csv into jobs.csv.
 
 Usage:
-    python job_scrapper/main_scrapper.py [--limit N] [--render]
+    python job_scraper/main_scraper.py [--limit N] [--render]
 
 Outputs jobs.csv with detected ATS and scraping strategy (via) for each row.
 """
@@ -14,7 +14,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from job_scrapper.board_scraper import Board
+from job_scraper.board_scraper import Board
 
 ROOT = Path(__file__).resolve().parent.parent
 INPUT_FILE = ROOT / "user_info" / "job_boards.csv"
@@ -45,7 +45,7 @@ def main() -> int:
     if args.render:
         # Imported here, not at module scope: Playwright is an opt-in extra
         # and this script has to keep running on a machine with no browser.
-        from job_scrapper.render import render as renderer
+        from job_scraper.render import render as renderer
 
     with args.input.open(newline="", encoding="utf-8") as handle:
         boards = list(csv.DictReader(handle))

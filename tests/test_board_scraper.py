@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from job_scrapper.board_scraper import (
+from job_scraper.board_scraper import (
     COMEET_API,
     FEEDS,
     MAX_FETCH_BYTES,
@@ -23,6 +23,7 @@ from job_scrapper.board_scraper import (
     _ats_from_host,
     _dedupe,
     _dig,
+    _fetch,
     _first_string,
     _nested_sitemaps,
     _title_from_url,
@@ -36,7 +37,7 @@ from job_scrapper.board_scraper import (
     scrape_wordpress,
     scrape_workday,
 )
-from job_scrapper.detector import (  # noqa: E402
+from job_scraper.detector import (  # noqa: E402
     ATS_NAMES,
     ATSName,
     DetectionResult,
@@ -53,10 +54,11 @@ def page(body: str, head: str = "") -> str:
 
 
 class FakeResponse:
-    def __init__(self, body):
+    def __init__(self, body, content_type="text/html; charset=utf-8"):
         self.status_code = 200 if body is not None else 404
         self._body = (body or "").encode()
         self.encoding = "utf-8"
+        self.headers = {"Content-Type": content_type}
         self.raw = self
 
     def read(self, amount, decode_content=True):
@@ -1098,7 +1100,7 @@ def test_links_prefers_a_real_label_over_the_slug():
 class FakeRenderer:
     """A Renderer that counts its calls. No browser is ever launched here.
 
-    Same signature as job_scrapper.render.render and detector.Renderer, so the
+    Same signature as job_scraper.render.render and detector.Renderer, so the
     suite exercises the wiring without Playwright installed.
     """
 
@@ -1183,7 +1185,7 @@ def test_the_renderer_reaches_the_detector_too(monkeypatch):
             )
 
     monkeypatch.setattr(
-        "job_scrapper.board_scraper.ATSDetector", SpyDetector
+        "job_scraper.board_scraper.ATSDetector", SpyDetector
     )
 
     renderer = FakeRenderer()
@@ -1254,6 +1256,47 @@ def test_a_dead_board_page_is_not_re_fetched_by_every_strategy():
     assert made.scrape_board() == []
     assert made.html is None
     assert made.session.requested.count(url) == 1
+
+
+def test_an_undeclared_charset_is_read_as_utf8_not_latin1():
+    """requests defaults text/* with no charset to ISO-8859-1 (RFC 2616), which
+    HTML5 does not. Trusting it turned "Développeur" into "DÃ©veloppeur" on
+    Scalian and Sopra Steria, both of which declare utf-8 in a <meta> only."""
+    class LatinGuess(FakeResponse):
+        def __init__(self, body):
+            super().__init__(body, content_type="text/html")
+            # What requests actually reports for a charset-less text/html.
+            self.encoding = "ISO-8859-1"
+
+    class Undeclared(FakeSession):
+        def get(self, url, **kwargs):
+            self.requested.append(url)
+
+            return LatinGuess(self.pages.get(url))
+
+    url = "https://acme.fr/jobs"
+    session = Undeclared({url: "<h1>Développeur</h1>"})
+
+    assert "Développeur" in _fetch(session, url)
+
+
+def test_a_declared_charset_is_still_honoured():
+    """The fix must not override a board that says what it means."""
+    class Latin(FakeResponse):
+        def __init__(self, body):
+            super().__init__(body, content_type="text/html; charset=latin-1")
+            self._body = "Développeur".encode("latin-1")
+            self.encoding = "latin-1"
+
+    class Declared(FakeSession):
+        def get(self, url, **kwargs):
+            self.requested.append(url)
+
+            return Latin(self.pages.get(url))
+
+    url = "https://acme.fr/jobs"
+
+    assert _fetch(Declared({url: "x"}), url) == "Développeur"
 
 
 def test_every_detectable_ats_has_a_slot():

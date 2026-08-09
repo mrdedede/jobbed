@@ -2,9 +2,9 @@
 
 import pandas as pd
 import pytest
-import user_info.processing as processing
+import user_info.pre_processing as pre_processing
 
-from user_info.processing import (
+from user_info.pre_processing import (
     _is_id_like,
     _url_is_id_like,
     _build_word_pattern,
@@ -122,7 +122,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         assert len(result) == 1
         assert result.iloc[0]["title"] == "Python Java Developer"
 
@@ -153,7 +153,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         assert len(result) == 0
 
     def test_keep_id_only_title_exempt_from_keyword_check(
@@ -185,7 +185,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         # Even though title doesn't match keywords, it's exempted as ID-like.
         assert len(result) == 1
         assert str(result.iloc[0]["title"]) == "842306"
@@ -217,7 +217,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         # Case-insensitive: 'python' matches 'PYTHON' and 'java' matches 'java'.
         assert len(result) == 1
 
@@ -248,7 +248,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         # 1 keyword hit in URL + 0 in title = 1 total, which is < 2, so dropped.
         assert len(result) == 0
 
@@ -279,7 +279,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         # 2 keyword hits in title (python + java), so should be kept.
         assert len(result) == 1
 
@@ -310,7 +310,7 @@ class TestFirstFilter:
             blacklist_file,
         )
 
-        result = processing.first_filter()
+        result = pre_processing.first_filter()
         # URL is ID-only, so job is kept even though title has 0 keyword matches.
         assert len(result) == 1
         assert "Junior Developer" in result.iloc[0]["title"]

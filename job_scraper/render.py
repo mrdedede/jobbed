@@ -9,7 +9,7 @@ Install (not in requirements.txt):
     pip install playwright && playwright install chromium
 
 Usage:
-    from job_scrapper.render import render
+    from job_scraper.render import render
     Board(company, url, render=render)
 
 `render` satisfies detector.Renderer -- Callable[[str], Optional[str]] -- so it

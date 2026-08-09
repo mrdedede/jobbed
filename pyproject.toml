@@ -19,4 +19,4 @@ render = ["playwright>=1.40.0"]
 dev = ["pytest>=8.3.0", "flake8>=7.1.0"]
 
 [tool.setuptools]
-packages = ["job_scrapper"]
+packages = ["job_scraper"]

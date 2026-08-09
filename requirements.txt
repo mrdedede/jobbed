@@ -1,0 +1,23 @@
+# Runtime dependencies. Pinned to the versions this was developed against.
+requests==2.32.3
+beautifulsoup4==4.12.3
+
+# main_scrapper.py only, and only to write one CSV that csv.DictWriter would
+# also write. Dropping it would remove the heaviest dependency here.
+pandas==2.2.3
+
+# Development.
+pytest==8.3.4
+flake8==7.1.1
+
+# A JS renderer stays deliberately unpinned and uninstalled, and
+# main_scrapper.py must keep running on a machine with no browser. The seam is
+# now wired -- job_scrapper/render.py, reached only via --render, which imports
+# playwright inside the flag branch -- but it stays an opt-in extra, never a
+# hard requirement. The generic and API-discovery strategies were measured
+# against the fixture corpus first: listing-page JSON-LD (0 of 34 boards),
+# JOB_PATH tuning (the misses have no anchors to match), link pagination (1 of
+# 5 multi-page boards), and Algolia key lifting (1 board, no key) were each
+# rejected on the numbers. Rendering is what is left.
+#
+# playwright        # opt-in: --render only. Then: playwright install chromium

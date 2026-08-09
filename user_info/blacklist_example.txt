@@ -1,0 +1,2 @@
+blacklist term 1
+blacklist term 2

@@ -6,11 +6,15 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 JOBS_FILE = ROOT / "temp" / "jobs.csv"
-FILTERED_FILE = ROOT / "temp" / "filtered_file.csv"
+FILTERED_FILE = ROOT / "temp" / "first_filtered_file.csv"
+DETAILED_JOBS_FILE = ROOT / "temp" / "detailed_jobs.csv"
+FILTERED_DETAILED_FILE = ROOT / "temp" / "filtered_detailed_jobs.csv"
 KEYWORD_FILE = ROOT / "user_info" / "keywords.txt"
 BLACKLIST_FILE = ROOT / "user_info" / "blacklist.txt"
 
 MIN_KEYWORD_MATCHES = 2
+MIN_KEYWORD_MATCHES_DETAILED = 5
+MIN_KEYWORD_MATCHES_INCOMPLETE = 3
 
 
 def get_keywords() -> List[str]:
@@ -153,12 +157,13 @@ def first_filter() -> pd.DataFrame:
     return jobs_filtered[keep].reset_index(drop=True)
 
 
-def _row_matches_any(jobs: pd.DataFrame, words: List[str]) -> pd.Series:
-    """Check if each row's title or url contains any of the given words.
+def _row_matches_any(jobs: pd.DataFrame, words: List[str], columns: tuple = ("title", "url")) -> pd.Series:
+    """Check if each row's specified columns contain any of the given words.
 
     Args:
-        jobs: DataFrame with 'title' and 'url' columns.
+        jobs: DataFrame with specified columns.
         words: List of words to match.
+        columns: Tuple of column names to check (default: title, url).
 
     Returns:
         Boolean Series indicating rows with at least one match.
@@ -167,14 +172,83 @@ def _row_matches_any(jobs: pd.DataFrame, words: List[str]) -> pd.Series:
         return pd.Series(False, index=jobs.index)
 
     pattern = _build_word_pattern(words)
-    title_match = jobs["title"].astype(str).str.contains(
-        pattern, case=False, regex=True, na=False
+    matches = pd.Series(False, index=jobs.index)
+    for col in columns:
+        col_match = jobs[col].astype(str).str.contains(
+            pattern, case=False, regex=True, na=False
+        )
+        matches = matches | col_match
+    return matches
+
+def second_filter() -> pd.DataFrame:
+    """Filter jobs by keywords in title, url, and description with annotation.
+
+    Keeps a job if:
+    - NOT blacklisted in any field (title, url, description), AND
+    - Keyword hits >= threshold (5 if title/url complete, 3 if either is missing)
+
+    Blacklist and keyword matching span title + url + description. Unlike first_filter,
+    there is no ID-only exemption since descriptions provide real matching material.
+
+    Jobs with missing or blank descriptions are dropped entirely.
+
+    Returns:
+        Filtered DataFrame with jobs meeting criteria, plus a `keyword_hits` column
+        showing the total keyword match count (for inspection/tuning).
+    """
+    keywords = get_keywords()
+    blacklist = get_blacklist()
+    jobs = pd.read_csv(DETAILED_JOBS_FILE)
+
+    if jobs.empty:
+        return jobs
+
+    # Drop rows with no description (convert to str first to handle NaN/empty safely).
+    desc_str = jobs["description"].astype(str)
+    has_description = ~desc_str.str.strip().eq("")
+    jobs_with_desc = jobs[has_description].copy()
+
+    if jobs_with_desc.empty or not keywords:
+        return jobs_with_desc.reset_index(drop=True)
+
+    # Vectorized blacklist check across all three fields.
+    is_blacklisted = _row_matches_any(
+        jobs_with_desc, blacklist, columns=("title", "url", "description")
+    ) if blacklist else pd.Series(False, index=jobs_with_desc.index)
+    jobs_filtered = jobs_with_desc[~is_blacklisted].copy()
+
+    if jobs_filtered.empty:
+        return jobs_filtered.reset_index(drop=True)
+
+    # Vectorized keyword counting across all three fields.
+    keyword_pattern = _build_word_pattern(keywords)
+    title_matches = jobs_filtered["title"].astype(str).str.count(
+        keyword_pattern, flags=re.IGNORECASE
     )
-    url_match = jobs["url"].astype(str).str.contains(
-        pattern, case=False, regex=True, na=False
+    url_matches = jobs_filtered["url"].astype(str).str.count(
+        keyword_pattern, flags=re.IGNORECASE
     )
-    return title_match | url_match
+    desc_matches = jobs_filtered["description"].astype(str).str.count(
+        keyword_pattern, flags=re.IGNORECASE
+    )
+    kw_count = title_matches + url_matches + desc_matches
+
+    # Per-row threshold: 3 if title or url is missing/empty, else 5.
+    title_missing = jobs_filtered["title"].isna() | jobs_filtered["title"].astype(str).str.strip().eq("")
+    url_missing = jobs_filtered["url"].isna() | jobs_filtered["url"].astype(str).str.strip().eq("")
+    incomplete_info = title_missing | url_missing
+    threshold = incomplete_info.apply(lambda x: MIN_KEYWORD_MATCHES_INCOMPLETE if x else MIN_KEYWORD_MATCHES_DETAILED)
+
+    keep = kw_count >= threshold
+    result = jobs_filtered[keep].copy()
+    result["keyword_hits"] = kw_count[keep]
+
+    return result.reset_index(drop=True)
+
 
 if __name__ == '__main__':
-    dataframe = first_filter()
-    dataframe.to_csv(FILTERED_FILE)
+    # dataframe = first_filter()
+    # dataframe.to_csv(FILTERED_FILE)
+
+    detailed_dataframe = second_filter()
+    detailed_dataframe.to_csv(FILTERED_DETAILED_FILE, index=False)

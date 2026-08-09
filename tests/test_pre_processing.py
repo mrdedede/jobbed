@@ -110,15 +110,15 @@ class TestFirstFilter:
 
         # Monkeypatch file paths.
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -141,15 +141,15 @@ class TestFirstFilter:
         blacklist_file.write_text("senior\n")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -173,15 +173,15 @@ class TestFirstFilter:
         blacklist_file.write_text("")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -205,15 +205,15 @@ class TestFirstFilter:
         blacklist_file.write_text("")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -236,15 +236,15 @@ class TestFirstFilter:
         blacklist_file.write_text("")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -267,15 +267,15 @@ class TestFirstFilter:
         blacklist_file.write_text("")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -298,15 +298,15 @@ class TestFirstFilter:
         blacklist_file.write_text("")
 
         monkeypatch.setattr(
-            "user_info.processing.JOBS_FILE",
+            "user_info.pre_processing.JOBS_FILE",
             csv_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.KEYWORD_FILE",
+            "user_info.pre_processing.KEYWORD_FILE",
             keywords_file,
         )
         monkeypatch.setattr(
-            "user_info.processing.BLACKLIST_FILE",
+            "user_info.pre_processing.BLACKLIST_FILE",
             blacklist_file,
         )
 
@@ -314,3 +314,229 @@ class TestFirstFilter:
         # URL is ID-only, so job is kept even though title has 0 keyword matches.
         assert len(result) == 1
         assert "Junior Developer" in result.iloc[0]["title"]
+
+
+class TestSecondFilter:
+    """Tests for the second (description-based) filtering function."""
+
+    def test_keep_job_with_5_hits_complete_info(self, monkeypatch, tmp_path):
+        """Job with 5+ keyword hits and complete title/url is kept."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Python Developer","Looking for a Python and Java expert. Docker and Kubernetes experience required.","http://acme.com/py-job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\ndocker\nkubernetes\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # Python (title) + Python (desc) + Java (desc) + Docker (desc) + Kubernetes (desc) = 5 hits total
+        assert len(result) == 1
+        assert result.iloc[0]["keyword_hits"] == 5
+
+    def test_keep_job_with_exact_5_hits(self, monkeypatch, tmp_path):
+        """Job with exactly 5 keyword hits and complete info is kept."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Python Developer","We need Java and Docker and Kubernetes and React expertise.","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\ndocker\nkubernetes\nreact\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # Python (title) + Java/Docker/Kubernetes/React (desc) = 5 hits total
+        assert len(result) == 1
+        assert result.iloc[0]["keyword_hits"] == 5
+
+    def test_drop_job_below_5_hits_complete_info(self, monkeypatch, tmp_path):
+        """Job with < 5 hits and complete title/url is dropped."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Developer","Looking for Java expertise.","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # Only Java (desc) = 1 hit, need 5
+        assert len(result) == 0
+
+    def test_lower_threshold_for_missing_title(self, monkeypatch, tmp_path):
+        """Job with 3 hits but missing title (incomplete info) is kept."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","","Python Java and Docker required.","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\ndocker\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # 3 hits (Python + Java + Docker), threshold is 3 for incomplete info
+        assert len(result) == 1
+        assert result.iloc[0]["keyword_hits"] == 3
+
+    def test_drop_job_without_description(self, monkeypatch, tmp_path):
+        """Job with no description is dropped entirely."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Python Java Developer","","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # No description, so dropped regardless of title hits
+        assert len(result) == 0
+
+    def test_drop_job_with_blacklist_in_description(self, monkeypatch, tmp_path):
+        """Job with blacklisted word in description is dropped."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Python Java Developer","This is a senior position with internship opportunities.","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("senior\ninternship\n")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # Even though it has 2 keyword hits in title, blacklist match in description drops it
+        assert len(result) == 0
+
+    def test_keyword_hits_column_annotation(self, monkeypatch, tmp_path):
+        """Kept jobs have correct keyword_hits annotation."""
+        csv_file = tmp_path / "detailed_jobs.csv"
+        csv_file.write_text(
+            'company,title,description,url,place,via,ats\n'
+            '"Acme","Python","Description with Java Docker Kubernetes React and MongoDB.","http://acme.com/job","NYC","feed",""\n'
+        )
+
+        keywords_file = tmp_path / "keywords.txt"
+        keywords_file.write_text("python\njava\ndocker\nkubernetes\nreact\nmongodb\n")
+
+        blacklist_file = tmp_path / "blacklist.txt"
+        blacklist_file.write_text("")
+
+        monkeypatch.setattr(
+            "user_info.pre_processing.DETAILED_JOBS_FILE",
+            csv_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.KEYWORD_FILE",
+            keywords_file,
+        )
+        monkeypatch.setattr(
+            "user_info.pre_processing.BLACKLIST_FILE",
+            blacklist_file,
+        )
+
+        result = pre_processing.second_filter()
+        # Python (title) + Java/Docker/Kubernetes/React/MongoDB (desc) = 6 hits
+        assert len(result) == 1
+        assert result.iloc[0]["keyword_hits"] == 6
+        assert "keyword_hits" in result.columns

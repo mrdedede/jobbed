@@ -13,3 +13,6 @@ job_boards.csv
 keywords.txt
 blacklist.txt
 joblister.db
+
+# Temporary for Workflows
+temp/

@@ -14,15 +14,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import pandas as pd
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from job_scrapper.board_scrapper import Board  # noqa: E402
+from job_scrapper.board_scraper import Board
 
 ROOT = Path(__file__).resolve().parent.parent
-INPUT_FILE = ROOT / "job_boards.csv"
-OUTPUT_FILE = ROOT / "jobs.csv"
+INPUT_FILE = ROOT / "user_info" / "job_boards.csv"
+OUTPUT_FILE = ROOT / "temp" / "jobs.csv"
 
 
 def main() -> int:
@@ -57,29 +53,33 @@ def main() -> int:
     if args.limit:
         boards = boards[:args.limit]
 
-    rows = []
+    total_jobs = 0
+    fieldnames = ["company", "title", "url", "place", "via", "ats"]
 
-    for index, entry in enumerate(boards, start=1):
-        company, url = entry["company"], entry["url"]
-        board = Board(company, url, render=renderer)
+    with args.output.open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
 
-        try:
-            ats = board.detect_ats()
-            jobs = board.scrap_board()
-        except Exception as exc:
-            print(f"[{index}/{len(boards)}] FAIL   {company}: {exc}")
-            continue
+        for index, entry in enumerate(boards, start=1):
+            company, url = entry["company"], entry["url"]
+            board = Board(company, url, render=renderer)
 
-        via = jobs[0].via if jobs else "none"
-        print(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
-              f"{company:24} {ats or 'unknown':16} via {via}")
+            try:
+                ats = board.detect_ats()
+                jobs = board.scrape_board()
+            except Exception as exc:
+                print(f"[{index}/{len(boards)}] FAIL   {company}: {exc}")
+                continue
 
-        rows.extend({**asdict(job), "ats": ats or ""} for job in jobs)
+            via = jobs[0].via if jobs else "none"
+            print(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
+                  f"{company:24} {ats or 'unknown':16} via {via}")
 
-    frame = pd.DataFrame(rows)
-    frame.to_csv(args.output, index=False, encoding="utf-8")
+            for job in jobs:
+                writer.writerow({**asdict(job), "ats": ats or ""})
+                total_jobs += 1
 
-    print(f"\n{len(frame)} postings from {len(boards)} boards "
+    print(f"\n{total_jobs} postings from {len(boards)} boards "
           f"-> {args.output}")
 
     return 0

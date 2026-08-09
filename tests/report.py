@@ -13,9 +13,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from job_scrapper.detector import ATSDetector  # noqa: E402
+from job_scrapper.detector import ATSDetector
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

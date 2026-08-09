@@ -58,6 +58,12 @@ TIER_DEFINITIVE = 1
 TIER_STRONG = 2
 TIER_SUPPORTING = 3
 
+# Preview/truncation lengths for evidence display
+EVIDENCE_PREVIEW_LEN = 200
+QUERY_PARAM_PREVIEW_LEN = 120
+URL_PREVIEW_LEN = 160
+MATCH_DISPLAY_LEN = 100
+
 
 @dataclass
 class Page:
@@ -395,7 +401,7 @@ def in_meta(needle: str) -> Matcher:
     def test(page: Page, ats: "ATS") -> Optional[str]:
         for key, value in page.meta.items():
             if lowered in f"{key} {value}".lower():
-                return f"{key}={value}"[:120]
+                return f"{key}={value}"[:QUERY_PARAM_PREVIEW_LEN]
 
         return None
 
@@ -439,7 +445,7 @@ def jsonld_url_host() -> Matcher:
                 continue
 
             if _host_hit(urlparse(value).hostname or "", domains):
-                return value[:160]
+                return value[:URL_PREVIEW_LEN]
 
         return None
 
@@ -1455,7 +1461,7 @@ def score(page: Page) -> Tuple[
                 source=item.source,
                 signal_id=item.signal_id,
                 reason=item.reason,
-                matched=str(matched)[:200],
+                matched=str(matched)[:EVIDENCE_PREVIEW_LEN],
             ))
 
         scores[name] = min(scores[name], ATS_CAP)
@@ -1710,7 +1716,7 @@ def print_result(result: DetectionResult) -> None:
         )
 
         if item.matched:
-            print(f"{'':24}matched: {item.matched[:100]}")
+            print(f"{'':24}matched: {item.matched[:MATCH_DISPLAY_LEN]}")
 
 
 if __name__ == "__main__":

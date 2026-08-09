@@ -11,9 +11,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from job_scrapper.detector import (  # noqa: E402
+from job_scrapper.detector import (
     ATS_CAP,
     COMPILED,
     SOURCE_CAP,

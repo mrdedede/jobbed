@@ -7,11 +7,11 @@ field, which ensures a misdetected ATS doesn't silently get scraped by the
 wrong strategy.
 
 Usage:
-    python -m job_scrapper.board_scrapper <url> [--company NAME] [--show N]
+    python -m job_scrapper.board_scraper <url> [--company NAME] [--show N]
                                                 [--render]
 
 Run it as a module, not by path: the imports below are absolute, so
-`python job_scrapper/board_scrapper.py` puts this directory on sys.path
+`python job_scrapper/board_scraper.py` puts this directory on sys.path
 instead of the repo root and fails before __main__ is reached.
 """
 
@@ -430,7 +430,7 @@ def _feed_jobs(board: "Board", feed: Feed, token: str,
     return jobs
 
 
-def scrap_feed(board: "Board", feed: Feed) -> List[Job]:
+def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
     """Scrape board from ATS vendor API endpoint.
 
     Args:
@@ -490,7 +490,7 @@ WORKDAY_PAGE = 20
 WORKDAY_MAX_PAGES = 50
 
 
-def scrap_workday(board: "Board") -> List[Job]:
+def scrape_workday(board: "Board") -> List[Job]:
     """Scrape Workday board via /wday/cxs/ JSON endpoint.
 
     Args:
@@ -568,7 +568,7 @@ COMEET_API = (
 )
 
 
-def scrap_comeet(board: "Board") -> List[Job]:
+def scrape_comeet(board: "Board") -> List[Job]:
     """Scrape Comeet through its careers API.
 
     The API is keyed by a company UID that never appears in the board URL, and
@@ -630,7 +630,7 @@ def scrap_comeet(board: "Board") -> List[Job]:
 _NJOYN_JOB = re.compile(r"Page=JobDetails", re.I)
 
 
-def scrap_njoyn(board: "Board") -> List[Job]:
+def scrape_njoyn(board: "Board") -> List[Job]:
     """Scrape an njoyn board out of its listing table.
 
     njoyn publishes no feed, but the board page already carries every posting
@@ -720,19 +720,19 @@ def _todo(note: str):
     return scrape
 
 
-scrap_teamtailor = _todo(
+scrape_teamtailor = _todo(
     "Public API needs an API key. The hosted board is server-rendered, so "
     "sitemap/links already do well here -- low priority."
 )
-scrap_jobvite = _todo(
+scrape_jobvite = _todo(
     "Board HTML at /{token}/search; no public JSON feed. Probed 2026-08-09: "
     "jobs.jobvite.com serves the same 'Job Seeker FAQs' page for any unknown "
     "tenant, so a wrong slug looks like a 200 rather than a 404 -- do not "
     "trust a non-empty response as proof the tenant exists. Blocked on "
     "capturing a real tenant board first."
 )
-scrap_talentlyft = _todo("Board JSON is behind the widget; shape unconfirmed.")
-scrap_digitalrecruiters = _todo(
+scrape_talentlyft = _todo("Board JSON is behind the widget; shape unconfirmed.")
+scrape_digitalrecruiters = _todo(
     "Probed 2026-08-09. The board metadata endpoint is public -- "
     "api.digitalrecruiters.com/careers/v1/careers-sites/{board_host} returns "
     "200 with the site config, keyed by the careers hostname rather than by "
@@ -743,32 +743,32 @@ scrap_digitalrecruiters = _todo(
     "so the credential is not published on the board page. Blocked until a "
     "browser session is captured; the generic path handles it meanwhile."
 )
-scrap_onlyfy = _todo("No public feed found; hosted board is server-rendered.")
-scrap_softgarden = _todo("No public feed found.")
-scrap_hibob = _todo(
+scrape_onlyfy = _todo("No public feed found; hosted board is server-rendered.")
+scrape_softgarden = _todo("No public feed found.")
+scrape_hibob = _todo(
     "No public feed found, and no JOB_PATH row either: the corpus fixtures "
     "carry zero same-host job anchors, so the listing is rendered client-side "
-    "and there is nothing for scrap_links to filter. Postings themselves are "
+    "and there is nothing for scrape_links to filter. Postings themselves are "
     "/jobs/{uuid}. Needs a renderer before either strategy can see them."
 )
 
 # Enterprise platforms. These run on the employer's own domain with no tenant
 # token in the URL, so each needs its own discovery step before any feed can
 # be addressed. Expect real work, not a FEEDS row.
-scrap_icims = _todo("Paged HTML board; iCIMS exposes no public JSON feed.")
-scrap_successfactors = _todo(
+scrape_icims = _todo("Paged HTML board; iCIMS exposes no public JSON feed.")
+scrape_successfactors = _todo(
     "OData API needs credentials; the public path is the career-site HTML. "
     "Probed 2026-08-09: jobs.hr.cloud.sap does not resolve on its own -- the "
     "registry hosts are suffixes for per-customer subdomains, not reachable "
     "boards, so this needs a real customer career site captured first."
 )
-scrap_taleo = _todo(
+scrape_taleo = _todo(
     "careersection HTML with POST-driven paging. Probed 2026-08-09: taleo "
     "tenants live on per-customer hosts ({tenant}.taleo.net) and none could "
     "be reached without one from a real board, so the paging contract is "
     "still unverified. JOB_PATH[TALEO] covers jobdetail.ftl links meanwhile."
 )
-scrap_talentsoft = _todo(
+scrape_talentsoft = _todo(
     "Probed 2026-08-09. /api/v1/offersummaries is NOT callable on the "
     "employer's domain -- Feu Vert (confirmed Talentsoft via its inline "
     "TALENTSOFT-FRONT-OFFICE config) serves its SPA shell for that path and "
@@ -778,17 +778,17 @@ scrap_talentsoft = _todo(
     "real Talentsoft-hosted board captured first; the "
     "*-careers.talentsoft.com pattern does not resolve."
 )
-scrap_avature = _todo(
+scrape_avature = _todo(
     "Employer-hosted templates; no uniform feed. JOB_PATH[AVATURE] covers the "
     "board instead, and matters more than most: without it the generic shape "
     "matches no Avature posting at all and returns marketing pages instead."
 )
-scrap_phenom = _todo(
+scrape_phenom = _todo(
     "Employer-hosted; ph-widget JSON varies per deployment. Like hibob, the "
     "corpus fixture has no same-host job anchors -- the results list is drawn "
     "client-side, so there is no JOB_PATH row worth adding."
 )
-scrap_radancy = _todo(
+scrape_radancy = _todo(
     "TalentBrew employer-hosted; no uniform feed. Unlike the others here the "
     "board is server-rendered, so JOB_PATH[RADANCY] handles it: verified "
     "against the synopsys fixtures, which drop the /search-jobs style "
@@ -800,23 +800,23 @@ scrap_radancy = _todo(
 #: table rows: either they need logic a Feed cannot express (Workday), or they
 #: are not written yet.
 VENDOR_SCRAPERS = {
-    ATSName.WORKDAY: scrap_workday,
-    ATSName.COMEET: scrap_comeet,
-    ATSName.TEAMTAILOR: scrap_teamtailor,
-    ATSName.JOBVITE: scrap_jobvite,
-    ATSName.TALENTLYFT: scrap_talentlyft,
-    ATSName.ONLYFY: scrap_onlyfy,
-    ATSName.SOFTGARDEN: scrap_softgarden,
-    ATSName.HIBOB: scrap_hibob,
-    ATSName.NJOYN: scrap_njoyn,
-    ATSName.DIGITALRECRUITERS: scrap_digitalrecruiters,
-    ATSName.ICIMS: scrap_icims,
-    ATSName.SUCCESSFACTORS: scrap_successfactors,
-    ATSName.TALEO: scrap_taleo,
-    ATSName.TALENTSOFT: scrap_talentsoft,
-    ATSName.AVATURE: scrap_avature,
-    ATSName.PHENOM: scrap_phenom,
-    ATSName.RADANCY: scrap_radancy,
+    ATSName.WORKDAY: scrape_workday,
+    ATSName.COMEET: scrape_comeet,
+    ATSName.TEAMTAILOR: scrape_teamtailor,
+    ATSName.JOBVITE: scrape_jobvite,
+    ATSName.TALENTLYFT: scrape_talentlyft,
+    ATSName.ONLYFY: scrape_onlyfy,
+    ATSName.SOFTGARDEN: scrape_softgarden,
+    ATSName.HIBOB: scrape_hibob,
+    ATSName.NJOYN: scrape_njoyn,
+    ATSName.DIGITALRECRUITERS: scrape_digitalrecruiters,
+    ATSName.ICIMS: scrape_icims,
+    ATSName.SUCCESSFACTORS: scrape_successfactors,
+    ATSName.TALEO: scrape_taleo,
+    ATSName.TALENTSOFT: scrape_talentsoft,
+    ATSName.AVATURE: scrape_avature,
+    ATSName.PHENOM: scrape_phenom,
+    ATSName.RADANCY: scrape_radancy,
 }
 
 
@@ -1000,10 +1000,14 @@ def _posting_fields(html: str, url: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 def _walk_jobpostings(node: object, depth: int = 0):
-    """Yield every dict in a JSON tree whose @type is JobPosting.
+    """Yield every dict in a JSON tree with @type matching JobPosting.
 
-    Boards nest the posting inside @graph, an array, or a bare object with
-    equal enthusiasm.
+    Args:
+        node: JSON object to traverse (dict, list, or scalar).
+        depth: Current recursion depth; stops at 12 to avoid infinite loops.
+
+    Yields:
+        Dicts with @type containing "jobposting" (case-insensitive).
     """
     if depth > 12:
         return
@@ -1021,8 +1025,15 @@ def _walk_jobpostings(node: object, depth: int = 0):
             yield from _walk_jobpostings(value, depth + 1)
 
 
-def scrap_sitemap(board: "Board") -> List[Job]:
-    """Enumerate postings from a sitemap, then read each one's JSON-LD."""
+def scrape_sitemap(board: "Board") -> List[Job]:
+    """Enumerate postings from a sitemap, then read each one's JSON-LD.
+
+    Args:
+        board: Board instance with session and URL.
+
+    Returns:
+        List of Job results, or empty list if no sitemap found.
+    """
     found = _find_sitemap_jobs(board.session, board.url)
 
     if found is None:
@@ -1128,7 +1139,7 @@ WP_PAGE = 100
 WP_MAX_PAGES = 20
 
 
-def scrap_wordpress(board: "Board") -> List[Job]:
+def scrape_wordpress(board: "Board") -> List[Job]:
     """Scrape a WordPress careers site through its REST API.
 
     Plenty of employer career sites are just WordPress, which publishes every
@@ -1246,23 +1257,29 @@ def _card_title(tag) -> str:
 
 
 def _same_page(url: str, base: str) -> bool:
-    """True if url points at base, ignoring fragment and trailing slash.
+    """Check if two URLs point to the same page, ignoring fragment and trailing slash.
 
-    Uses the same normalisation as `_dedupe`, so anything this drops is
-    exactly what would otherwise have collapsed onto the current page.
+    Args:
+        url: URL to test.
+        base: Base URL to compare against.
+
+    Returns:
+        True if url and base normalize to the same page URL.
     """
     return (urldefrag(url).url.rstrip("/")
             == urldefrag(base).url.rstrip("/"))
 
 
-def scrap_links(board: "Board", html: Optional[str] = None) -> List[Job]:
-    """Job-shaped anchors on the board page. URL and title only.
+def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
+    """Extract jobs from anchor tags using heuristic URL/title patterns.
 
     Args:
         board: Board to scrape.
-        html: Board page to read instead of the fetched one. This is how the
-            rendered strategy reuses the whole anchor pipeline -- same
-            JOB_PATH shapes, same title fallbacks -- on browser output.
+        html: Optional board page HTML to parse. If None, fetches from board.html.
+            Allows the rendered strategy to reuse this pipeline on browser output.
+
+    Returns:
+        List of Job results with URL and title, or empty list if no anchors match.
     """
     html = html or board.html
 
@@ -1290,7 +1307,7 @@ def scrap_links(board: "Board", html: Optional[str] = None) -> List[Job]:
         # A boilerplate label is a reason to distrust the *title*, not to drop
         # the posting: Inetum labels all 1620 of its jobs "Lire la suite", so
         # skipping the anchor would lose the whole board. Fall back to the
-        # slug, the same trade scrap_sitemap already makes.
+        # slug, the same trade scrape_sitemap already makes.
         if title.casefold().rstrip(" .>→") in SKIP_TITLES:
             title = ""
 
@@ -1332,11 +1349,14 @@ def scrap_links(board: "Board", html: Optional[str] = None) -> List[Job]:
 
 
 def _dedupe(jobs: List[Job]) -> List[Job]:
-    """One row per posting URL, order preserved.
+    """Deduplicate jobs by URL, preserving order and first title.
 
-    ponytail: first title wins. Boards that link a posting twice (card plus
-    heading) sometimes put the better label second -- switch to longest-wins
-    if the output shows it.
+    Args:
+        jobs: List of Job results, possibly with duplicate URLs.
+
+    Returns:
+        List with one row per unique posting URL. If a URL appears multiple times,
+        the first Job result is kept; subsequent duplicates are discarded.
     """
     seen: Dict[str, Job] = {}
 
@@ -1380,16 +1400,34 @@ _UNFETCHED = object()
 
 
 class Board:
-    def __init__(self, cn: str, bu: str, session=None,
+    """Orchestrates scraping of a single job board with ATS detection.
+
+    Attributes:
+        company_name: Hiring company name.
+        board_url: Career board base URL.
+        render: Optional Playwright browser renderer for JS-rendered boards.
+        final_url: Resolved URL after HTTP redirects (set by detect_ats).
+        ats: Detected ATS name, if any.
+        board_jobs: List of scraped Job results.
+    """
+
+    def __init__(self, company_name: str, board_url: str, session=None,
                  render: Optional[Renderer] = None):
-        self.company_name = cn
-        self.board_url = bu
-        #: Optional browser renderer. None keeps every path byte-identical, so
-        #: a machine with no browser is unaffected.
+        """Initialize a Board scraper.
+
+        Args:
+            company_name: Hiring company name.
+            board_url: Career board base URL.
+            session: Optional requests.Session for HTTP requests. If None,
+                a new session is created with default headers.
+            render: Optional Playwright browser renderer for JS-rendered boards.
+                None disables browser rendering; keep this way if your machine
+                has no browser.
+        """
+        self.company_name = company_name
+        self.board_url = board_url
         self.render = render
-        #: Where the detector's fetch actually landed. Redirects are common on
-        #: career sites, and the token regexes need the resolved URL.
-        self.final_url = bu
+        self.final_url = board_url
         self.ats: Optional[ATSName] = None
         self.board_jobs: List[Job] = []
         self._html: object = _UNFETCHED
@@ -1419,10 +1457,14 @@ class Board:
         return self._html  # type: ignore[return-value]
 
     def detect_ats(self) -> Optional[ATSName]:
-        # The detector already knows how to retry a JS shell through a
-        # renderer, and its own heuristic decides when that is worth doing --
-        # so handing it the same renderer costs nothing on server-rendered
-        # boards and may name an ATS (and so unlock a feed) on the SPA ones.
+        """Detect the ATS powering this board.
+
+        Runs HTTP analysis, with optional browser pass if a renderer is available.
+        Updates self.final_url and self.ats in place.
+
+        Returns:
+            Detected ATS name (ATSName enum), or None if unknown.
+        """
         detected = ATSDetector(render=self.render).detect(self.board_url)
 
         self.final_url = detected.final_url or self.board_url
@@ -1430,7 +1472,7 @@ class Board:
 
         return self.ats
 
-    def scrap_board(self) -> List[Job]:
+    def scrape_board(self) -> List[Job]:
         """Feed, then WordPress REST, then sitemap, then anchors, then browser.
 
         A feed knows field semantics the other two have to infer, so it always
@@ -1456,31 +1498,46 @@ class Board:
         return self.board_jobs
 
     def _feed(self) -> List[Job]:
+        """Try vendor-specific feed scraper, then generic ATS feed.
+
+        Returns:
+            List of Job results, or empty list if no feed.
+        """
         scraper = VENDOR_SCRAPERS.get(self.ats)
 
         if scraper is not None:
             try:
                 return scraper(self)
             except NotImplementedError:
-                # Not a failure: no vendor scraper is written for this ATS
-                # yet, so the generic strategies take it. `via` records which
-                # one, so the gap stays visible in the output.
                 return []
 
         feed = FEEDS.get(self.ats)
 
-        return scrap_feed(self, feed) if feed else []
+        return scrape_feed(self, feed) if feed else []
 
     def _wordpress(self) -> List[Job]:
-        # Costs one 404 on every non-WordPress board, and saves one request
-        # *per posting* on the WordPress ones by beating _sitemap to them.
-        return scrap_wordpress(self)
+        """Try WordPress REST API scraper.
+
+        Returns:
+            List of Job results, or empty list if not WordPress or API fails.
+        """
+        return scrape_wordpress(self)
 
     def _sitemap(self) -> List[Job]:
-        return scrap_sitemap(self)
+        """Try XML sitemap scraper.
+
+        Returns:
+            List of Job results, or empty list if no sitemap found.
+        """
+        return scrape_sitemap(self)
 
     def _links(self) -> List[Job]:
-        return scrap_links(self)
+        """Try generic anchor-heuristic scraper.
+
+        Returns:
+            List of Job results, or empty list if no job-like anchors found.
+        """
+        return scrape_links(self)
 
     def _rendered(self) -> List[Job]:
         """Anchors again, but on HTML a browser finished drawing.
@@ -1489,7 +1546,7 @@ class Board:
         built client-side, so the fetched HTML holds either no anchors at all
         (kicklox, coexya, sully-group) or only marketing ones (datadoghq,
         equans, amazon.jobs). Rendering is the single lever that reaches them,
-        and once rendered they are ordinary anchor pages -- hence scrap_links
+        and once rendered they are ordinary anchor pages -- hence scrape_links
         rather than a parser of its own.
         """
         if self.render is None:
@@ -1505,7 +1562,7 @@ class Board:
         # under a browser has to stay visibly distinct from one that does not.
         return [
             replace(job, via="rendered")
-            for job in scrap_links(self, html=html)
+            for job in scrape_links(self, html=html)
         ]
 
 
@@ -1544,7 +1601,7 @@ if __name__ == "__main__":
     print(f"ATS:      {board.detect_ats() or 'unknown'}")
     print(f"Resolved: {board.final_url}")
 
-    found = board.scrap_board()
+    found = board.scrape_board()
 
     print(f"Strategy: {found[0].via if found else 'none'}")
     print(f"Jobs:     {len(found)}\n")

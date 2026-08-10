@@ -23,10 +23,7 @@ The shape is enforced by a JSON schema on the call; you only need to fill it:
 
 ## When you cannot grade
 
-If the CV is missing or empty, or the prompt carries no posting text, return
-`adequation_grade: 0` and say so in `depth_analysis`. Do not invent a CV, and do
-not grade against the example template — a number with nothing behind it is
-worse than an error.
+If the CV is missing or empty, or the prompt carries no posting text, return `adequation_grade: 0` and say so in `depth_analysis`. Do not invent a CV, and do not grade against the example template — a number with nothing behind it is worse than an error.
 
 --------
 # Grading rubric
@@ -39,12 +36,13 @@ Hard requirements first — the things a recruiter filters on before reading
 anything else:
 
 - Years of experience in the named role.
-- The core stack and tooling, not the adjacent ones.
+- The core stack and tooling, not the adjacent ones, but also try to leverage the possibility of skill transfers from previous experiences to the one being presented
 - Domain or industry, where the posting treats it as non-negotiable.
 - Language, at the level the posting asks for.
-- Location, on-site expectations, and work authorisation.
 
-Nice-to-haves come second: peripheral libraries, "bonus if you know", culture lines, and anything phrased as a preference rather than a requirement.
+In a second priority, try to consider location, on-site expectations, and work authorisation. Do not put much attention on the city or region, but rather on the country.
+
+Nice-to-haves come third: peripheral libraries, "bonus if you know", culture lines, and anything phrased as a preference rather than a requirement.
 
 Judge the description, never the title. Titles are marketing; the requirements are in the body.
 

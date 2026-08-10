@@ -40,8 +40,8 @@ NO_JOBS_CSV = TEMP / "no_jobs.csv"
 DB = ROOT / "db"
 DB_PATH = DB / "joblister.db"
 
-# AI ANALYSIS
-AI_ANALYSIS = ROOT / "ai_analysis"
-GRADE_JOB_MD = AI_ANALYSIS / "grade-job.md"
+# AI
+AI = ROOT / "ai"
+GRADE_JOB_MD = AI / "grade-job.md"
 
 TEMP.mkdir(exist_ok=True)

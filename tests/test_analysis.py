@@ -1,4 +1,4 @@
-"""Tests for ai_analysis/analysis.py.
+"""Tests for ai/analysis.py.
 
 There is no model here to stub: the grader is a Claude Code session, and this
 module is the plumbing on either side of it. What is worth testing is that
@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from ai_analysis import analysis
+from ai import analysis
 from db import db_connection
 
 

@@ -1,6 +1,6 @@
 import sys
 from db import db_connection
-from ai_analysis import analysis
+from ai import analysis
 
 def main() -> int:
     """Scrape all boards and write results to CSV.

@@ -8,7 +8,7 @@ already excludes anything with a row in ai_analysis, so a rerun is idempotent.
 import sys
 from typing import Callable, Optional
 
-from ai import analysis, ai
+from ai import analysis, call_model
 from db import db_connection
 
 
@@ -45,7 +45,7 @@ def run_analysis(limit: int = 20, window: str = "-24 hours",
 
             db_connection.insert_analysis([
                 verdict["adequation_grade"], verdict["depth_analysis"],
-                ai.HAIKU_MODEL, job_id,
+                call_model.HAIKU_MODEL, job_id,
             ])
             analysed += 1
             note = f"{verdict['adequation_grade']:3}"

@@ -1,5 +1,5 @@
 import json
-from ai import ai
+from ai import call_model
 from job_scraper import paths
 from typing import List, Tuple
 
@@ -34,7 +34,7 @@ def _send_claude_request(job_description: str):
     
     # (model, prompt, schema) -- the schema and the prompt were swapped here,
     # so every call graded the schema text instead of the posting.
-    result = ai.call_claude(ai.HAIKU_MODEL, final_prompt, ANALYSIS_SCHEMA)
+    result = call_model.call_claude(call_model.HAIKU_MODEL, final_prompt, ANALYSIS_SCHEMA)
 
     # call_claude already reports and returns None on a non-zero exit.
     if result is None:

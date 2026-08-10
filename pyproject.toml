@@ -23,7 +23,7 @@ dev = ["pytest>=8.3.0", "flake8>=7.1.0"]
 joblister = "main:main"
 
 [tool.setuptools]
-packages = ["job_scraper", "job_scraper.strategies", "db", "ai"]
+packages = ["job_scraper", "job_scraper.strategies", "db", "ai", "cv_generator"]
 py-modules = ["main"]
 
 [tool.pytest.ini_options]

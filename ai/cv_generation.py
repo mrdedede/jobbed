@@ -7,7 +7,7 @@ rewrite does not have to rediscover it.
 
 import json
 
-from ai import ai
+from ai import call_model
 from db import db_connection
 from job_scraper import paths
 
@@ -97,7 +97,7 @@ GENERATION_PROMPT = f"""{generate_cv}
 """
 
 
-def generate(job_id: int):
+def _generate(job_id: int):
     """Rewrite the CV for one graded posting.
 
     Args:
@@ -120,7 +120,7 @@ def generate(job_id: int):
 
     # Sonnet, not the Haiku the grading runs on: this one writes prose the
     # candidate sends to a recruiter.
-    result = ai.call_claude(ai.SONNET_MODEL, final_prompt, CV_SCHEMA)
+    result = call_model.call_claude(call_model.SONNET_MODEL, final_prompt, CV_SCHEMA)
     if result is None:
         return None
 
@@ -129,3 +129,12 @@ def generate(job_id: int):
     except json.JSONDecodeError:
         print(f"Failed to parse JSON: {result.stdout}")
         return None
+
+def generate_cv(job_id):
+    analysis_id, model_answer = _generate(job_id)
+    db_connection.insert_generated_cv(
+        model_answer["locale"],
+        model_answer["cv"],
+        job_id,
+        analysis_id
+    )

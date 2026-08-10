@@ -8,7 +8,7 @@ already excludes anything with a row in ai_analysis, so a rerun is idempotent.
 import sys
 from typing import Callable, Optional
 
-from ai import analysis
+from ai import analysis, ai
 from db import db_connection
 
 
@@ -35,7 +35,7 @@ def run_analysis(limit: int = 20, window: str = "-24 hours",
         job_id, company, title, _ = job
 
         try:
-            verdict = analysis.send_claude_request(job)
+            verdict = analysis.analyze(job)
 
             # send_claude_request returns None on a non-zero exit or
             # unparseable output. Subscripting that raises TypeError, which
@@ -45,7 +45,7 @@ def run_analysis(limit: int = 20, window: str = "-24 hours",
 
             db_connection.insert_analysis([
                 verdict["adequation_grade"], verdict["depth_analysis"],
-                analysis.HAIKU_MODEL, job_id,
+                ai.HAIKU_MODEL, job_id,
             ])
             analysed += 1
             note = f"{verdict['adequation_grade']:3}"

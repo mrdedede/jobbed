@@ -16,14 +16,14 @@ from db import db_connection
 STATEMENTS = [
     ("INSERT_NEW_JOB_DATA", ("Acme", "Go Dev", "body", "http://x/1", "Paris")),
     ("INSERT_NEW_AI_ANALYSIS", (7, "analysis", "claude-opus-5", 1)),
-    ("INSERT_NEW_GENERATED_CV",
-     ("intro", "profile", "skills", "xp", "school", "fr", 1, 1)),
+    ("INSERT_NEW_GENERATED_CV", ("fr", '{"profile_text": "x"}', 1, 1)),
     ("SELECT_JOB_BY_URL", ("http://x/1",)),
     ("SELECT_JOBS_TO_ANALYSE", ("-24 hours",)),
     ("SELECT_JOB_STATE", (1, 1)),
     ("SELECT_AI_DEPTH_ANALYSIS", (1,)),
     ("SELECT_AI_GRADE", (1,)),
     ("SELECT_GENERATED_CV", (1,)),
+    ("SELECT_JOB_FOR_GENERATION", (1,)),
 ]
 
 
@@ -87,6 +87,35 @@ def test_create_tables_commits(tmp_path, monkeypatch):
     # A separate connection sees nothing that was never committed.
     with sqlite3.connect(path) as con:
         con.execute("SELECT 1 FROM job_data")
+
+
+def test_generated_cv_round_trip(database, filtered_csv):
+    """The CV goes in as a dict and comes back queryable as JSON, and the
+    generation's own select finds the posting it was stored against."""
+    filtered_csv("http://x/1")
+    db_connection.insert_jobs()
+    db_connection.insert_analysis([70, "the write-up", "haiku", 1])
+
+    db_connection.insert_generated_cv("pt", {"profile_text": "perfil"}, 1, 1)
+
+    with sqlite3.connect(database) as con:
+        assert con.execute(
+            "SELECT locale, json_extract(cv, '$.profile_text')"
+            " FROM generated_cv").fetchone() == ("pt", "perfil")
+
+    description, analysis_id, depth = \
+        db_connection.select_job_for_generation(1)
+    assert (analysis_id, depth) == (1, "the write-up")
+    assert description == "A description"
+
+
+def test_select_job_for_generation_without_analysis(database, filtered_csv):
+    """An ungraded posting has nothing to tailor against; cv_generation
+    refuses on the None rather than generating blind."""
+    filtered_csv("http://x/1")
+    db_connection.insert_jobs()
+
+    assert db_connection.select_job_for_generation(1) is None
 
 
 def test_insert_jobs_counts_new_rows(database, filtered_csv):

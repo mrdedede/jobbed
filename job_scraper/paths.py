@@ -43,5 +43,6 @@ DB_PATH = DB / "joblister.db"
 # AI
 AI = ROOT / "ai"
 GRADE_JOB_MD = AI / "grade-job.md"
+GENERATE_CV_MD = AI / "generate-cv.md"
 
 TEMP.mkdir(exist_ok=True)

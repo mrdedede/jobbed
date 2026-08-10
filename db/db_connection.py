@@ -10,6 +10,7 @@ they had never successfully run.
 """
 
 import csv
+import json
 import sqlite3
 from typing import List, Optional, Sequence, Tuple
 
@@ -41,12 +42,8 @@ CREATE_AI_ANALYSIS_TABLE = """CREATE TABLE IF NOT EXISTS ai_analysis(
 
 CREATE_GENERATED_CV_TABLE = """CREATE TABLE IF NOT EXISTS generated_cv(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    intro_line TEXT,
-    profile TEXT,
-    skills TEXT,
-    experiences TEXT,
-    education TEXT,
-    languages TEXT,
+    locale TEXT,
+    cv JSON,
     job_id BIGINT,
     ai_analysis_id BIGINT,
     FOREIGN KEY (job_id) REFERENCES job_data(id),
@@ -63,10 +60,12 @@ INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis(
     adequation_grade, depth_analysis, ai_model, job_id)
     VALUES(?, ?, ?, ?)"""
 
+# Four columns, not the eight per-section ones this used to name -- none of
+# those exist in generated_cv, so the statement had never run. The CV itself is
+# one JSON blob, which is what the table declares.
 INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv(
-    intro_line, profile, skills, experiences, education, languages,
-    job_id, ai_analysis_id)
-    VALUES(?, ?, ?, ?, ?, ?, ?, ?)"""
+    locale, cv, job_id, ai_analysis_id)
+    VALUES(?, ?, ?, ?)"""
 
 # SELECTIONS
 
@@ -127,6 +126,16 @@ SELECT_AI_GRADE = """SELECT adequation_grade FROM ai_analysis
 
 SELECT_GENERATED_CV = """SELECT * FROM generated_cv
     WHERE job_id = ?;
+"""
+
+#: Everything the CV generation puts in its prompt, in one round trip. The
+#: analysis id comes back because it is the FK generated_cv stores;
+#: SELECT_AI_DEPTH_ANALYSIS returns the write-up alone and cannot serve here.
+SELECT_JOB_FOR_GENERATION = """SELECT
+    job_data.description, ai_analysis.id, ai_analysis.depth_analysis
+    FROM ai_analysis
+    JOIN job_data ON job_data.id = ai_analysis.job_id
+    WHERE job_data.id = ?;
 """
 
 
@@ -207,7 +216,47 @@ def insert_analysis(analysis: Sequence) -> None:
         con.close()
 
 
+def insert_generated_cv(locale: str, cv: dict, job_id: int,
+                        analysis_id: int) -> None:
+    """Store one generated CV against the posting it was written for.
+
+    Args:
+        locale: Language the CV body is written in ("en", "es", "fr", "pt").
+        cv: The CV object as returned by `ai.cv_generation.generate`, stored
+            as JSON text -- the column is JSON, so json_extract() reads it.
+        job_id: The posting the CV targets.
+        analysis_id: The ai_analysis row the generation was tailored against.
+
+    Raises:
+        RuntimeError: If the database rejects the insertion.
+    """
+    con = sqlite3.connect(DB_ADDRESS)
+    try:
+        con.execute(INSERT_NEW_GENERATED_CV,
+                    (locale, json.dumps(cv), job_id, analysis_id))
+        con.commit()
+    except sqlite3.Error as exc:
+        con.rollback()
+        raise RuntimeError(f"Database insert failed: {exc}") from exc
+    finally:
+        con.close()
+
+
 # SELECTIONS
+
+def select_job_for_generation(job_id: int) -> Optional[Tuple[str, int, str]]:
+    """The posting text and its stored analysis, for the CV generation prompt.
+
+    Args:
+        job_id: The posting to generate a CV for.
+
+    Returns:
+        Tuple of (description, ai_analysis id, depth_analysis), or None when
+        the posting does not exist or has not been graded yet.
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return con.execute(SELECT_JOB_FOR_GENERATION, (job_id,)).fetchone()
+
 
 def select_jobs_to_analyse(
         limit: int = 0,

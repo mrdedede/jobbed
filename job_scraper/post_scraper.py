@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from html import unescape
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -338,14 +338,14 @@ def scrape_details(input_file: Optional[Path] = None,
                    limit: int = 0,
                    workers: int = DEFAULT_WORKERS,
                    resume: bool = True,
-                   on_progress: Optional[Callable[[str], None]] = None
-                   ) -> dict:
+                   on_progress: Optional[Callable[[str], None]] = None,
+                   rows: Optional[List[Dict[str, str]]] = None) -> dict:
     """Fetch each filtered posting's own page and write the detail CSV.
 
     Args:
         input_file: The first filter's output. Defaults to
             paths.FIRST_FILTERED_CSV, resolved at call time so a caller that
-            repoints `paths` is actually followed.
+            repoints `paths` is actually followed. Ignored when `rows` is given.
         output_file: Where to write postings with descriptions.
         limit: Only fetch the first N postings; 0 means all of them.
         workers: Thread pool size. See fetching.REQUEST_DELAY for what this
@@ -353,6 +353,9 @@ def scrape_details(input_file: Optional[Path] = None,
         resume: Skip URLs the output already holds and append to it. False
             rewrites the file from scratch.
         on_progress: Optional callback given progress lines.
+        rows: Postings to fetch, as the dicts the input CSV would have held.
+            Lets a caller that already filtered in memory -- the Streamlit
+            pages -- skip writing first_filtered_file.csv just to read it back.
 
     Returns:
         Dict with `pending`, `skipped` and per-extractor `counts`, plus the
@@ -361,8 +364,9 @@ def scrape_details(input_file: Optional[Path] = None,
     input_file = input_file or paths.FIRST_FILTERED_CSV
     output_file = output_file or paths.DETAILED_CSV
 
-    with input_file.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
+    if rows is None:
+        with input_file.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
 
     if limit:
         rows = rows[:limit]

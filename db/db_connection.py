@@ -93,6 +93,30 @@ SELECT_JOB_STATE = """SELECT
     EXISTS(SELECT 1 FROM ai_analysis WHERE job_id = ?);
 """
 
+#: Same predicate as SELECT_JOBS_TO_ANALYSE, counted rather than fetched: the
+#: pages want the size of the backlog before deciding how large a run to ask
+#: for, and pulling every description back to call len() on it is absurd.
+COUNT_JOBS_TO_ANALYSE = """SELECT COUNT(*)
+    FROM job_data
+    WHERE id NOT IN (SELECT job_id FROM ai_analysis)
+    AND timestamp >= datetime('now', ?);
+"""
+
+#: Every URL already stored, so the detail stage can skip postings the DB
+#: already holds instead of paying an HTTP request to rediscover them.
+SELECT_JOB_URLS = """SELECT url FROM job_data;"""
+
+#: The graded postings, best fit first. The join carries the posting's own
+#: fields because a grade with no title next to it says nothing.
+SELECT_ANALYSES = """SELECT
+    job_data.id, ai_analysis.adequation_grade, job_data.company,
+    job_data.title, job_data.place, job_data.url, ai_analysis.ai_model,
+    ai_analysis.depth_analysis, job_data.description, job_data.timestamp
+    FROM ai_analysis
+    JOIN job_data ON job_data.id = ai_analysis.job_id
+    ORDER BY ai_analysis.adequation_grade DESC;
+"""
+
 SELECT_AI_DEPTH_ANALYSIS = """SELECT depth_analysis FROM ai_analysis
     WHERE job_id = ?;
 """
@@ -203,6 +227,41 @@ def select_jobs_to_analyse(
         jobs = con.execute(SELECT_JOBS_TO_ANALYSE, (window,)).fetchall()
 
     return jobs[:limit] if limit else jobs
+
+
+def count_jobs_to_analyse(window: str = "-24 hours") -> int:
+    """How many recent postings the model has not graded yet.
+
+    Args:
+        window: SQLite modifier applied to `datetime('now', ?)`, as in
+            `select_jobs_to_analyse`.
+
+    Returns:
+        The number of postings a run over this window would grade.
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return con.execute(COUNT_JOBS_TO_ANALYSE, (window,)).fetchone()[0]
+
+
+def select_job_urls() -> set:
+    """Every posting URL already stored.
+
+    Returns:
+        Set of URLs, for skipping postings the database already holds.
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return {url for (url,) in con.execute(SELECT_JOB_URLS)}
+
+
+def select_analyses() -> List[Tuple]:
+    """Every graded posting joined to its own row, best fit first.
+
+    Returns:
+        List of (job_id, adequation_grade, company, title, place, url,
+        ai_model, depth_analysis, description, timestamp).
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return con.execute(SELECT_ANALYSES).fetchall()
 
 
 def select_job_state(job_id: int) -> Tuple[bool, bool]:

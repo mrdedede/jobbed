@@ -8,7 +8,7 @@ def main() -> int:
     Returns:
         0 on success.
     """
-    jobs = db_connection.select_jobs_to_analyse(10)
+    jobs = db_connection.select_jobs_to_analyse(20)
     for job in jobs:
         json = analysis.send_claude_request(job)
         try:

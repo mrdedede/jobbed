@@ -1,7 +1,6 @@
 import subprocess
 import json
 from job_scraper import paths 
-from db import db_connection
 from typing import List, Tuple
 
 with open(paths.GRADE_JOB_MD, "r") as f:

@@ -17,13 +17,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Optional
 
-from job_scraper import paths
+from job_scraper import diagnose, paths
 from job_scraper.board import Board
 
 INPUT_FILE = paths.BOARDS_CSV
 OUTPUT_FILE = paths.JOBS_CSV
 
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats"]
+MISS_FIELDNAMES = ["company", "url", "reason"]
 
 
 def scrape_boards(input_file: Optional[Path] = None,
@@ -50,8 +51,10 @@ def scrape_boards(input_file: Optional[Path] = None,
             not a terminal.
 
     Returns:
-        Dict with `boards`, `jobs` and `failed` counts, the `output` path, and
-        `per_board` mapping each board URL to how many postings it produced.
+        Dict with `boards`, `jobs` and `failed` counts, the `output` path, the
+        `no_jobs` path holding one diagnosed row per board that produced
+        nothing, and `per_board` mapping each board URL to how many postings it
+        produced.
     """
     input_file = input_file or paths.BOARDS_CSV
     output_file = output_file or paths.JOBS_CSV
@@ -70,12 +73,32 @@ def scrape_boards(input_file: Optional[Path] = None,
     # silently merges boards and reports four as one.
     per_board: dict = {}
 
-    with output_file.open("w", newline="", encoding="utf-8") as output:
+    with output_file.open("w", newline="", encoding="utf-8") as output, \
+            paths.NO_JOBS_CSV.open("w", newline="",
+                                   encoding="utf-8") as empties:
         # extrasaction: Job carries a `description` the board stage never
         # fills, and this CSV has no column for it.
         writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
                                 extrasaction="ignore")
         writer.writeheader()
+
+        misses = csv.DictWriter(empties, fieldnames=MISS_FIELDNAMES)
+        misses.writeheader()
+
+        def record_miss(board, company, url, exc=None) -> None:
+            """Write one no_jobs row, never letting diagnosis end the run.
+
+            Broad for the same reason the scrape loop below is: this is a
+            reporting aid, and it has no business costing anyone a run of a
+            hundred boards.
+            """
+            try:
+                reason = diagnose.explain(board, exc)
+            except Exception as err:
+                reason = f"diagnosis failed: {type(err).__name__}: {err}"
+
+            misses.writerow({"company": company, "url": url,
+                             "reason": reason})
 
         for index, entry in enumerate(boards, start=1):
             company, url = entry["company"], entry["url"]
@@ -87,6 +110,7 @@ def scrape_boards(input_file: Optional[Path] = None,
             except Exception as exc:
                 failed += 1
                 per_board[url] = None
+                record_miss(board, company, url, exc)
 
                 if on_board:
                     on_board(f"[{index}/{len(boards)}] FAIL   {company}: "
@@ -96,6 +120,9 @@ def scrape_boards(input_file: Optional[Path] = None,
 
             via = jobs[0].via if jobs else "none"
             per_board[url] = len(jobs)
+
+            if not jobs:
+                record_miss(board, company, url)
 
             if on_board:
                 on_board(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
@@ -110,6 +137,7 @@ def scrape_boards(input_file: Optional[Path] = None,
         "jobs": total_jobs,
         "failed": failed,
         "output": output_file,
+        "no_jobs": paths.NO_JOBS_CSV,
         "per_board": per_board,
     }
 
@@ -150,6 +178,7 @@ def main() -> int:
 
     print(f"\n{stats['jobs']} postings from {stats['boards']} boards "
           f"-> {stats['output']}")
+    print(f"boards that gave nothing -> {stats['no_jobs']}")
 
     return 0
 

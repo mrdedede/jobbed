@@ -32,6 +32,10 @@ FIRST_FILTERED_CSV = TEMP / "first_filtered_file.csv"
 DETAILED_CSV = TEMP / "detailed_jobs.csv"
 FILTERED_DETAILED_CSV = TEMP / "filtered_detailed_jobs.csv"
 
+#: Not a stage hand-off: one row per board the scrape stage got nothing from,
+#: written for a human to read.
+NO_JOBS_CSV = TEMP / "no_jobs.csv"
+
 # Databases
 DB = ROOT / "db"
 DB_PATH = DB / "joblister.db"

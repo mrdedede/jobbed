@@ -46,6 +46,7 @@ CREATE_GENERATED_CV_TABLE = """CREATE TABLE IF NOT EXISTS generated_cv(
     cv JSON,
     job_id BIGINT,
     ai_analysis_id BIGINT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES job_data(id),
     FOREIGN KEY (ai_analysis_id) REFERENCES ai_analysis(id));
 """
@@ -140,17 +141,16 @@ SELECT_JOBS_FOR_CV = """SELECT
     ORDER BY ai_analysis.adequation_grade DESC;
 """
 
-#: Every stored CV, newest first. generated_cv has no timestamp column, so the
-#: autoincrement id is the insertion order. The cv blob rides along: the detail
-#: view needs it and a per-row second query buys nothing.
+#: Every stored CV, newest first, then best fit. The cv blob rides along: the
+#: detail view needs it and a per-row second query buys nothing.
 SELECT_GENERATED_CVS = """SELECT
     generated_cv.id, job_data.title, job_data.company,
     ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-    job_data.url
+    job_data.url, generated_cv.timestamp
     FROM generated_cv
     JOIN job_data ON job_data.id = generated_cv.job_id
     JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
-    ORDER BY generated_cv.id DESC;
+    ORDER BY generated_cv.timestamp DESC, ai_analysis.adequation_grade DESC;
 """
 
 #: Everything the CV generation puts in its prompt, in one round trip. The
@@ -177,6 +177,18 @@ def create_tables() -> None:
         con.execute(CREATE_JOB_DATA_TABLE)
         con.execute(CREATE_AI_ANALYSIS_TABLE)
         con.execute(CREATE_GENERATED_CV_TABLE)
+
+        # Add timestamp column if it doesn't exist (migration for existing DBs)
+        cursor = con.cursor()
+        cursor.execute("PRAGMA table_info(generated_cv)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "timestamp" not in columns:
+            con.execute(
+                "ALTER TABLE generated_cv ADD COLUMN timestamp DATETIME"
+            )
+            con.execute(
+                "UPDATE generated_cv SET timestamp = datetime('now') WHERE timestamp IS NULL"
+            )
 
 
 # INSERTIONS

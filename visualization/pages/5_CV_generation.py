@@ -18,7 +18,7 @@ from cv_generator import docx_gen
 from db import db_connection
 
 ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
-CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv", "url"]
+CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv", "url", "timestamp"]
 
 GRADE_COLUMN = st.column_config.ProgressColumn("grade", min_value=0,
                                                max_value=100, format="%d")
@@ -88,9 +88,12 @@ if generated.empty:
 st.caption("Newest first. Select one to read it.")
 
 cv_table = st.dataframe(
-    generated[["title", "grade"]], use_container_width=True, hide_index=True,
+    generated[["title", "company", "grade", "timestamp"]], use_container_width=True, hide_index=True,
     on_select="rerun", selection_mode="single-row",
-    column_config={"grade": GRADE_COLUMN},
+    column_config={
+        "grade": GRADE_COLUMN,
+        "timestamp": st.column_config.DatetimeColumn("generated", format="DD/MM/YYYY HH:mm"),
+    },
 )
 
 chosen = cv_table.selection["rows"]

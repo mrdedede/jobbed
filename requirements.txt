@@ -12,6 +12,13 @@ beautifulsoup4==4.12.3
 # that is now INSERT OR IGNORE over csv.DictReader.)
 pandas==2.2.3
 
+# cv_generator/docx_gen.py only. The alternative was string-substituting
+# word/document.xml through zipfile, which works for the scalar placeholders --
+# each one sits alone in a single <w:t> run -- but not for the three that
+# expand into many paragraphs with bold lead-in runs. That is hand-written
+# OOXML, and hand-written OOXML is what this library exists to not be.
+python-docx==1.1.2
+
 # Development.
 pytest==8.3.4
 flake8==7.1.1

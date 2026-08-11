@@ -5,13 +5,16 @@ Haiku grading on page 4, which is why it is a per-row button here rather than a
 batch run.
 """
 
+import io
 import json
 
 import common
 import pandas as pd
 import streamlit as st
+from docx import Document
 
 from ai import cv_generation
+from cv_generator import docx_gen
 from db import db_connection
 
 ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
@@ -104,34 +107,39 @@ st.subheader(row["title"] or "(untitled)")
 st.caption(f"{row['company']} - graded {row['grade']}/100 - "
            f"written in {row['locale']}")
 
-# Every key below is guaranteed by CV_SCHEMA in ai/cv_generation.py: the CLI
-# enforces the shape, so there is nothing here to defend against.
-st.markdown("### Introduction")
-st.markdown(cv["cv_introduction"])
+photo = st.radio(
+    "Photo", ["No photo (ATS-safe)", "With photo"], horizontal=True,
+    help="Applicant tracking systems skip images, and some reject a file that "
+         "carries one. Pick the photo version only for a human-read copy.",
+) == "With photo"
 
-st.markdown("### Profile")
-st.markdown(cv["profile_text"])
+try:
+    document = docx_gen.render_docx(docx_gen.sections(cv),
+                                    docx_gen.load_l10n(row["locale"]), photo)
+except (FileNotFoundError, RuntimeError) as exc:
+    # The template is gitignored, so a fresh clone has only the _example one,
+    # and a template can also name a locale ID no values_*.json defines. Both
+    # are the user's to fix, and a page that died here would hide the message.
+    st.error(f"cannot build the .docx: {exc}")
+    st.stop()
 
-st.markdown("### Skills")
+st.download_button(
+    "Download .docx", data=document,
+    file_name=docx_gen.filename(row["company"], row["title"]),
+    mime="application/vnd.openxmlformats-officedocument."
+         "wordprocessingml.document",
+    type="primary",
+)
 
-for group in cv["skills"]:
-    st.markdown(f"**{group['competence']}**: {', '.join(group['skills'])}")
+st.divider()
 
-st.markdown("### Experience")
-
-for experience in cv["experiences"]:
-    st.markdown(f"**{experience['role']}** - {experience['company']}, "
-                f"{experience['location']} "
-                f"({experience['start_date']} - {experience['end_date']})")
-    st.markdown("\n".join(f"- {bullet}" for bullet in experience["bullets"]))
-
-st.markdown("### Education")
-
-for education in cv["education"]:
-    st.markdown(f"**{education['diploma']}** ({education['degree']}) - "
-                f"{education['institution']}, {education['location']} "
-                f"- {education['period']}")
-    st.markdown(education["details"])
+# The preview is read back out of the bytes the button hands over, so it cannot
+# disagree with the file -- and it needs to know nothing about placeholders,
+# section order or locales, all of which live in the template.
+for paragraph in Document(io.BytesIO(document)).paragraphs:
+    if paragraph.text.strip():
+        st.markdown("".join(f"**{run.text}**" if run.bold else run.text
+                            for run in paragraph.runs))
 
 with st.expander("Raw JSON"):
     st.json(cv)

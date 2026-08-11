@@ -25,6 +25,7 @@ BOARDS_CSV = USER_INFO / "job_boards.csv"
 KEYWORDS_TXT = USER_INFO / "keywords.txt"
 BLACKLIST_TXT = USER_INFO / "blacklist.txt"
 CV_MD = USER_INFO / "my_cv.md"
+CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
 
 # Stage outputs, in pipeline order.
 JOBS_CSV = TEMP / "jobs.csv"
@@ -44,5 +45,9 @@ DB_PATH = DB / "joblister.db"
 AI = ROOT / "ai"
 GRADE_JOB_MD = AI / "grade-job.md"
 GENERATE_CV_MD = AI / "generate-cv.md"
+
+#: Section titles and language names, one file per supported locale. The docx
+#: renderer reads these; nothing else does.
+L10N = ROOT / "cv_generator" / "l10n"
 
 TEMP.mkdir(exist_ok=True)

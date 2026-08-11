@@ -7,5 +7,10 @@
     "language_en": "English",
     "language_es": "Spanish",
     "language_pt": "Portuguese",
-    "language_fr": "French"
+    "language_fr": "French",
+    "language_de": "German",
+    "LEVEL_NATIVE": "Native",
+    "LEVEL_FLUENT": "Fluent",
+    "LEVEL_INTERMEDIATE": "Intermediate",
+    "LEVEL_BASIC": "Basic"
 }

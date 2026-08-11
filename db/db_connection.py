@@ -143,10 +143,14 @@ SELECT_JOBS_FOR_CV = """SELECT
 
 #: Every stored CV, newest first, then best fit. The cv blob rides along: the
 #: detail view needs it and a per-row second query buys nothing.
+#: The timestamp is stored UTC (CURRENT_TIMESTAMP always is) and converted on
+#: the way out -- the page renders it verbatim, so an unconverted value reads
+#: hours in the past. Only the display shifts; the stored column stays UTC so
+#: it keeps comparing correctly against datetime('now', ?).
 SELECT_GENERATED_CVS = """SELECT
     generated_cv.id, job_data.title, job_data.company,
     ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-    job_data.url, generated_cv.timestamp
+    job_data.url, datetime(generated_cv.timestamp, 'localtime')
     FROM generated_cv
     JOIN job_data ON job_data.id = generated_cv.job_id
     JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
@@ -178,7 +182,12 @@ def create_tables() -> None:
         con.execute(CREATE_AI_ANALYSIS_TABLE)
         con.execute(CREATE_GENERATED_CV_TABLE)
 
-        # Add timestamp column if it doesn't exist (migration for existing DBs)
+        # Add timestamp column if it doesn't exist (migration for existing DBs).
+        # ADD COLUMN cannot carry DEFAULT CURRENT_TIMESTAMP -- sqlite only
+        # accepts constant defaults there -- so the column arrives without one
+        # and INSERT_NEW_GENERATED_CV binds CURRENT_TIMESTAMP itself. The
+        # backfill runs every time, not just on the migrating run: rows written
+        # after the column existed but before the INSERT named it are NULL too.
         cursor = con.cursor()
         cursor.execute("PRAGMA table_info(generated_cv)")
         columns = {row[1] for row in cursor.fetchall()}
@@ -186,9 +195,10 @@ def create_tables() -> None:
             con.execute(
                 "ALTER TABLE generated_cv ADD COLUMN timestamp DATETIME"
             )
-            con.execute(
-                "UPDATE generated_cv SET timestamp = datetime('now') WHERE timestamp IS NULL"
-            )
+        con.execute(
+            "UPDATE generated_cv SET timestamp = CURRENT_TIMESTAMP"
+            " WHERE timestamp IS NULL"
+        )
 
 
 # INSERTIONS

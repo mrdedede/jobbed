@@ -145,7 +145,8 @@ SELECT_JOBS_FOR_CV = """SELECT
 #: view needs it and a per-row second query buys nothing.
 SELECT_GENERATED_CVS = """SELECT
     generated_cv.id, job_data.title, job_data.company,
-    ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv
+    ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
+    job_data.url
     FROM generated_cv
     JOIN job_data ON job_data.id = generated_cv.job_id
     JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id

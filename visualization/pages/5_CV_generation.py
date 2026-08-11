@@ -18,7 +18,7 @@ from cv_generator import docx_gen
 from db import db_connection
 
 ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
-CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv"]
+CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv", "url"]
 
 GRADE_COLUMN = st.column_config.ProgressColumn("grade", min_value=0,
                                                max_value=100, format="%d")
@@ -123,13 +123,15 @@ except (FileNotFoundError, RuntimeError) as exc:
     st.error(f"cannot build the .docx: {exc}")
     st.stop()
 
-st.download_button(
+cols = st.columns(2)
+cols[0].download_button(
     "Download .docx", data=document,
     file_name=docx_gen.filename(row["company"], row["title"]),
     mime="application/vnd.openxmlformats-officedocument."
          "wordprocessingml.document",
     type="primary",
 )
+cols[1].link_button("View job posting", row["url"])
 
 st.divider()
 

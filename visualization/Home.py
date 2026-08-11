@@ -14,9 +14,9 @@ import streamlit as st
 from db import db_connection
 from job_scraper import paths
 
-st.set_page_config(page_title="joblister", page_icon="::", layout="wide")
+st.set_page_config(page_title="Jobbed", page_icon="::", layout="wide")
 
-st.title("joblister")
+st.title("You've been Jobbed")
 st.caption(f"last board scrape: {common.file_stamp(paths.JOBS_CSV)}")
 
 jobs = common.load_csv(paths.JOBS_CSV,

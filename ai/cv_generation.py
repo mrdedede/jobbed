@@ -130,11 +130,31 @@ def _generate(job_id: int):
         print(f"Failed to parse JSON: {result.stdout}")
         return None
 
-def generate_cv(job_id):
-    analysis_id, model_answer = _generate(job_id)
+def generate_cv(job_id: int) -> str:
+    """Generate and store the CV for one graded posting.
+
+    Args:
+        job_id: A posting that already has a row in ai_analysis.
+
+    Returns:
+        The locale the model wrote the CV in.
+
+    Raises:
+        RuntimeError: If the posting is ungraded or the model call failed.
+            `_generate` reports both by returning None, and unpacking that
+            raised a bare TypeError that said nothing about either.
+    """
+    result = _generate(job_id)
+    if result is None:
+        raise RuntimeError(f"no CV generated for job {job_id} -- ungraded "
+                           f"posting, or the model call failed")
+
+    analysis_id, model_answer = result
     db_connection.insert_generated_cv(
         model_answer["locale"],
         model_answer["cv"],
         job_id,
         analysis_id
     )
+
+    return model_answer["locale"]

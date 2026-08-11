@@ -68,3 +68,5 @@ st.page_link("pages/3_Scrape_jobs.py", label="Scrape jobs and store",
              icon=":material/download:")
 st.page_link("pages/4_AI_analysis.py", label="AI analysis",
              icon=":material/psychology:")
+st.page_link("pages/5_CV_generation.py", label="Generate CVs",
+             icon=":material/description:")

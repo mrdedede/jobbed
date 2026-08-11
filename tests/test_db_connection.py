@@ -7,6 +7,7 @@ each fails the moment it is executed, and nothing executed them. So the test
 that matters most here is simply: run every statement once.
 """
 
+import json
 import sqlite3
 
 import pytest
@@ -24,6 +25,8 @@ STATEMENTS = [
     ("SELECT_AI_GRADE", (1,)),
     ("SELECT_GENERATED_CV", (1,)),
     ("SELECT_JOB_FOR_GENERATION", (1,)),
+    ("SELECT_JOBS_FOR_CV", (0,)),
+    ("SELECT_GENERATED_CVS", ()),
 ]
 
 
@@ -116,6 +119,30 @@ def test_select_job_for_generation_without_analysis(database, filtered_csv):
     db_connection.insert_jobs()
 
     assert db_connection.select_job_for_generation(1) is None
+
+
+def test_cv_queue_honours_the_grade_floor_and_drops_what_is_written(
+        database, filtered_csv):
+    """The CV page's two lists: what is still worth writing, and what exists.
+    A posting leaves the queue by being graded below the floor or by having a
+    CV already -- both are one predicate away from returning the same row
+    forever."""
+    filtered_csv("http://x/1")
+    db_connection.insert_jobs()
+    db_connection.insert_analysis([80, "the write-up", "haiku", 1])
+
+    assert [row[0] for row in db_connection.select_jobs_for_cv(70)] == [1]
+    assert db_connection.select_jobs_for_cv(90) == []
+
+    db_connection.insert_generated_cv("pt", {"profile_text": "perfil"}, 1, 1)
+
+    assert db_connection.select_jobs_for_cv(70) == []
+
+    (cv_id, title, company, grade, locale, cv), = \
+        db_connection.select_generated_cvs()
+    assert (title, company, grade, locale) == ("Go Developer", "Acme", 80,
+                                               "pt")
+    assert json.loads(cv) == {"profile_text": "perfil"}
 
 
 def test_insert_jobs_counts_new_rows(database, filtered_csv):

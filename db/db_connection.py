@@ -128,6 +128,30 @@ SELECT_GENERATED_CV = """SELECT * FROM generated_cv
     WHERE job_id = ?;
 """
 
+#: Graded postings that have no CV yet, best fit first. The grade floor is
+#: bound, not baked in: the page's slider decides what is worth writing for.
+SELECT_JOBS_FOR_CV = """SELECT
+    job_data.id, ai_analysis.adequation_grade, job_data.company,
+    job_data.title, job_data.place, job_data.url
+    FROM ai_analysis
+    JOIN job_data ON job_data.id = ai_analysis.job_id
+    WHERE job_data.id NOT IN (SELECT job_id FROM generated_cv)
+    AND ai_analysis.adequation_grade >= ?
+    ORDER BY ai_analysis.adequation_grade DESC;
+"""
+
+#: Every stored CV, newest first. generated_cv has no timestamp column, so the
+#: autoincrement id is the insertion order. The cv blob rides along: the detail
+#: view needs it and a per-row second query buys nothing.
+SELECT_GENERATED_CVS = """SELECT
+    generated_cv.id, job_data.title, job_data.company,
+    ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv
+    FROM generated_cv
+    JOIN job_data ON job_data.id = generated_cv.job_id
+    JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
+    ORDER BY generated_cv.id DESC;
+"""
+
 #: Everything the CV generation puts in its prompt, in one round trip. The
 #: analysis id comes back because it is the FK generated_cv stores;
 #: SELECT_AI_DEPTH_ANALYSIS returns the write-up alone and cannot serve here.
@@ -311,6 +335,30 @@ def select_analyses() -> List[Tuple]:
     """
     with sqlite3.connect(DB_ADDRESS) as con:
         return con.execute(SELECT_ANALYSES).fetchall()
+
+
+def select_jobs_for_cv(min_grade: int = 0) -> List[Tuple]:
+    """The graded postings still missing a CV, best fit first.
+
+    Args:
+        min_grade: Lowest adequation grade worth writing a CV for.
+
+    Returns:
+        List of (job_id, adequation_grade, company, title, place, url).
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return con.execute(SELECT_JOBS_FOR_CV, (min_grade,)).fetchall()
+
+
+def select_generated_cvs() -> List[Tuple]:
+    """Every stored CV with the posting it was written for, newest first.
+
+    Returns:
+        List of (cv_id, title, company, adequation_grade, locale, cv), the
+        last being the CV as JSON text.
+    """
+    with sqlite3.connect(DB_ADDRESS) as con:
+        return con.execute(SELECT_GENERATED_CVS).fetchall()
 
 
 def select_job_state(job_id: int) -> Tuple[bool, bool]:

@@ -65,8 +65,8 @@ INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis(
 # those exist in generated_cv, so the statement had never run. The CV itself is
 # one JSON blob, which is what the table declares.
 INSERT_NEW_GENERATED_CV = """INSERT INTO generated_cv(
-    locale, cv, job_id, ai_analysis_id)
-    VALUES(?, ?, ?, ?)"""
+    locale, cv, job_id, ai_analysis_id, timestamp)
+    VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)"""
 
 # SELECTIONS
 

@@ -155,8 +155,14 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
     for tag in BeautifulSoup(html, "html.parser").find_all("a", href=True):
         title = tag.get_text(" ", strip=True)
 
+        # An out-of-range length is a reason to distrust the *title*, not to
+        # drop the posting -- same trade as the boilerplate check just below.
+        # A card whose title lives in a nested element renders as "" here; a
+        # card whose anchor wraps the whole tile renders as the entire tile's
+        # text. Both still name a real job once the fallback below reads the
+        # card heading or slug instead.
         if not (MIN_TITLE <= len(title) <= MAX_TITLE):
-            continue
+            title = ""
 
         # A boilerplate label is a reason to distrust the *title*, not to drop
         # the posting: Inetum labels all 1620 of its jobs "Lire la suite", so

@@ -125,6 +125,17 @@ def test_job_shaped_links_present_but_unread():
     assert "job-shaped links present" in diagnose.explain(board)
 
 
+def test_job_shaped_link_outranks_the_spa_marker():
+    """A real match on this fetch disproves the SPA-marker's own prediction
+    that postings only arrive after render -- kering's shape: an id="__next"
+    shell that also already carries real job-shaped anchors."""
+    board = FakeBoard(html=page(
+        '<div id="__next">' + links(60, path="/jobs/senior-engineer") + "</div>"
+    ))
+
+    assert "job-shaped links present" in diagnose.explain(board)
+
+
 def test_empty_page_is_not_called_javascript():
     assert "empty body" in diagnose.explain(FakeBoard(html="   "))
 

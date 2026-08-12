@@ -112,14 +112,17 @@ def _analyse(html: str) -> str:
     if marker:
         shape += f", {marker}"
 
+    # A job-shaped link already on the page outranks the SPA-marker guess:
+    # the marker only *predicts* that postings arrive after render, and a
+    # real match on this same fetch disproves that prediction outright.
+    if anchors and any(JOB_URL_RE.search(href) for href in anchors):
+        return (f"job-shaped links present but no strategy read them ({shape})")
+
     if marker or (len(anchors) < FEW_ANCHORS and scripts >= MANY_SCRIPTS):
         return f"likely javascript-rendered ({shape})"
 
     if not anchors:
         return f"no links on the page ({shape})"
-
-    if any(JOB_URL_RE.search(href) for href in anchors):
-        return (f"job-shaped links present but no strategy read them ({shape})")
 
     return f"no job-shaped links ({shape})"
 

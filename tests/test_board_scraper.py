@@ -903,16 +903,19 @@ BOARD_PAGE = page(
 
 
 def test_links_filters_by_the_ats_job_pattern():
-    jobs = scrape_links(board(
+    # BOARD_PAGE's chevron anchor points at the same URL as the first
+    # posting; scrape_links keeps both raw rows (dedup is _dedupe's job, one
+    # layer up), so the first title wins once deduped.
+    jobs = _dedupe(scrape_links(board(
         {"https://acme.fr/jobs": BOARD_PAGE}, ats=ATSName.TEAMTAILOR
-    ))
+    )))
 
     assert [job.title for job in jobs] == ["Chef de projet", "Dev senior"]
     assert all(job.via == "links" and job.place is None for job in jobs)
 
 
 def test_links_falls_back_to_the_generic_job_shape_for_an_unknown_ats():
-    jobs = scrape_links(board({"https://acme.fr/jobs": BOARD_PAGE}))
+    jobs = _dedupe(scrape_links(board({"https://acme.fr/jobs": BOARD_PAGE})))
 
     assert len(jobs) == 2
 
@@ -980,6 +983,41 @@ def test_links_skips_anchors_whose_label_is_not_a_title():
     ))
 
     assert ">" not in [job.title for job in jobs]
+
+
+def test_links_keeps_the_posting_when_the_label_is_empty():
+    """An out-of-range label is a reason to distrust the title, not drop the
+    posting -- same trade the boilerplate branch makes.
+
+    Legrand's Oracle CX cards put the title in a nested element and leave the
+    anchor's own text empty; before this the length guard `continue`d past
+    the fallback chain below it and every one of these postings vanished.
+    """
+    jobs = scrape_links(board(
+        {"https://acme.fr/jobs": page(
+            "<div class='card'><h3>Ingenieur DevOps</h3>"
+            "<a href='/jobs/8142223-ingenieur-devops'></a></div>"
+        )},
+        ats=ATSName.TEAMTAILOR,
+    ))
+
+    assert [job.title for job in jobs] == ["Ingenieur DevOps"]
+
+
+def test_links_keeps_the_posting_when_the_label_is_the_whole_card():
+    """An anchor that wraps an entire card renders hundreds of characters of
+    text -- ferchau's shape. That must fall back to the slug, not disappear.
+    """
+    jobs = scrape_links(board(
+        {"https://acme.fr/jobs": page(
+            "<a href='/jobs/8142223-ingenieur-devops'>"
+            + "Ingenieur DevOps. " * 20 +
+            "</a>"
+        )},
+        ats=ATSName.TEAMTAILOR,
+    ))
+
+    assert [job.title for job in jobs] == ["Ingenieur Devops"]
 
 
 #: A posting page linking back to itself by fragment, as Radancy boards do.

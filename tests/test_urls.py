@@ -8,7 +8,7 @@ regex bug in here produced 7,779 titleless rows -- 39% of everything scraped.
 
 import pytest
 
-from job_scraper.urls import ats_from_host, title_from_url
+from job_scraper.urls import JOB_URL_RE, ats_from_host, title_from_url
 
 # Each case is (url, expected, why). The `why` is the point: these are the
 # real shapes that were failing, not invented ones.
@@ -107,6 +107,54 @@ def test_no_url_shape_raises():
     """Called on every sitemap row, so it has to survive junk."""
     for url in ("", "not a url", "http://", "///", "https://x.com/%%%"):
         assert isinstance(title_from_url(url), str)
+
+
+#: Each case is (path, why). All real postings measured live and missed by
+#: JOB_URL_RE before it was widened for English/intermediate-segment shapes.
+JOB_URL_HITS = [
+    ("/job-offers/gucci-client-advisor-55/", "English 'offer(s)' was missing from the vocabulary"),
+    ("/poste/developpeur-java-3/", "French 'poste' was missing from the vocabulary"),
+    ("/fr/annonce/3571653-technicienne-atelier/", "'annonce' was missing from the vocabulary"),
+    ("/opportunities/data-engineer/", "'opportunity/-ies' was missing from the vocabulary"),
+    ("/en/talent/job-offers/asia/gucci-client-advisor-55/",
+     "two segments between the job word and the slug -- kering's shape"),
+    ("/company/careers/jobs/mirakl/5678655004/",
+     "two segments between the job word and the slug -- mirakl's shape"),
+    ("/global/en/careers/offers/detail/744000142576829",
+     "two segments, bare numeric id slug -- talan's shape"),
+    ("/careers/data_engineer_h_f", "underscore-joined slug, not just hyphenated"),
+]
+
+#: Shapes that must keep missing: a category/listing page, not a posting.
+JOB_URL_MISSES = [
+    ("/jobs/", "no slug at all"),
+    ("/careers/", "no slug at all"),
+    ("/join-us/life-at-atos", "measured and rejected -- costs more false "
+     "positives (Atos, Equans) than it buys (Extia)"),
+    ("/career-advice/how-to-write-a-cv",
+     "a content section, not a posting collection"),
+    ("/jobs-blog/our-culture", "a content section, not a posting collection"),
+    ("/en_US/externaljobs/JobDetail/498916",
+     "Avature's marketing link -- 'jobs' must not match mid-word inside "
+     "'externaljobs'; the vendor-specific JOB_PATH override handles the "
+     "real posting shape instead"),
+    ("/offre-de-emploi/emploi-ajusteuse-ajusteur-f-h_22660.aspx",
+     "known gap: a compound job-word segment with trailing garbage before "
+     "the next slash (airfrance's shape) is not solved by this pass -- "
+     "solving it reopened the career-advice/jobs-blog false positives"),
+]
+
+
+@pytest.mark.parametrize("path,why", JOB_URL_HITS,
+                         ids=[c[0] for c in JOB_URL_HITS])
+def test_job_url_re_matches(path, why):
+    assert JOB_URL_RE.search(path), why
+
+
+@pytest.mark.parametrize("path,why", JOB_URL_MISSES,
+                         ids=[c[0] for c in JOB_URL_MISSES])
+def test_job_url_re_rejects(path, why):
+    assert not JOB_URL_RE.search(path), why
 
 
 class TestAtsFromHost:

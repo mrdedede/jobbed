@@ -15,19 +15,36 @@ from urllib.parse import unquote, urlparse
 from job_scraper.detector import ATS_REGISTRY, ATSName, _host_hit
 
 _JOB_WORD = (
-    r"(?:jobs?|offres?|emplois?|vacanc(?:y|ies)|positions?|openings?|"
+    r"(?:jobs?|offres?|offers?|emplois?|postes?|annonces?|"
+    r"vacanc(?:y|ies)|positions?|openings?|opportunit(?:y|ies)|"
     r"careers?|carrieres?|stellen?|recrutement)"
 )
 
-#: The posting segment. A real posting slug is either hyphenated
-#: ("data-engineer") or a bare id ("842306"); a single bare word is a category
-#: or listing page. This is what stops the `[\w]*-?` prefix below from
-#: swallowing /nos-offres/localisations along with /nos-offres/dev-senior.
-_JOB_SLUG = r"(?:[^/?#]*-[^/?#]*|\d{3,})"
+#: The posting segment. A real posting slug is either hyphenated/underscored
+#: ("data-engineer", "ajusteuse_22660") or a bare id ("842306"); a single bare
+#: word is a category or listing page. This is what stops the `[\w]*-?` prefix
+#: below from swallowing /nos-offres/localisations along with
+#: /nos-offres/dev-senior.
+_JOB_SLUG = r"(?:[^/?#]*[-_][^/?#]*|\d{3,})"
 
-#: `[\w]*-?` is the prefix French boards need: without it the job word has to
-#: sit directly after a slash, so /nos-offres/... and /offres-emploi/... match
-#: nothing and whole boards (Davidson, Crédit Agricole) come back empty.
+#: `(?:[\w]+-)?` is the prefix French boards need: without it the job word has
+#: to sit directly after a slash, so /nos-offres/... and /offres-emploi/...
+#: match nothing and whole boards (Davidson, Crédit Agricole) come back empty.
+#: The hyphen is required (not `[\w]*-?`, which let the prefix run straight
+#: into the job word with nothing between them -- "external" + "jobs" then
+#: read as one compound segment and let /externaljobs/JobDetail/498916, an
+#: Avature marketing link, complete a match through the intermediate-segment
+#: allowance below).
+#:
+#: `(?![a-zA-Z])` after the job word closes the same gap on the other side:
+#: without it "jobs" inside "externaljobs" still matches, just from a
+#: different starting position, and the marketing link comes back. It also
+#: rules out an open-ended suffix after the job word: /career-advice/... and
+#: /jobs-blog/... are content sections, not postings, and a `[\w-]*` tail
+#: greedy enough to reach airfrance's /offre-de-emploi/..._22660.aspx also
+#: swallowed "-advice" and "-blog" here. Left as a known gap rather than
+#: solved: compound segments like /offre-de-emploi/ or michelin's
+#: /job-offer-result-list/ still miss.
 #:
 #: Measured and rejected, so it is not re-tried:
 #: - "join-us"/"nous-rejoindre" as job words. Buys Extia's 20 real postings
@@ -38,8 +55,15 @@ _JOB_SLUG = r"(?:[^/?#]*-[^/?#]*|\d{3,})"
 #:   a useful threshold, and Equans' /votre-activite/ group clears it too, so
 #:   the heuristic nets one real board and one wrong one.
 #: Both boards need the API tier instead.
+#: `(?:/[^/?#]+){0,2}` lets up to two path segments sit between the job word
+#: and the slug -- kering files postings at
+#: /en/talent/job-offers/asia/<slug>, mirakl at
+#: /company/careers/jobs/mirakl/<id>. Capped at two: wider risks matching a
+#: job word that is only in the path for navigation, with the actual posting
+#: several sections away.
 JOB_URL_RE = re.compile(
-    rf"/[\w]*-?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?/{_JOB_SLUG}",
+    rf"/(?:[\w]+-)?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?(?![a-zA-Z])"
+    rf"(?:/[^/?#]+){{0,2}}/{_JOB_SLUG}",
     re.I,
 )
 

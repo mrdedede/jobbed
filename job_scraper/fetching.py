@@ -27,9 +27,16 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+#: A browser UA, not a bot string: several boards (devoteam, edf, hermes) 403
+#: or 502 a self-identifying bot and serve a plain browser fine. Accept-
+#: Language matters too -- some of these boards branch their listing by
+#: locale before a single job link is emitted.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; JobResearchBot/1.0)",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/126.0.0.0 Safari/537.36",
     "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+    "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
 MAX_FETCH_BYTES = 2_000_000

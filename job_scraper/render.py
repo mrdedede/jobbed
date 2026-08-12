@@ -20,10 +20,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-#: Wait for the network to settle rather than for DOMContentLoaded: the whole
-#: reason to spend a browser on these boards is the XHR that fills the listing,
-#: and that fires after the document is already "loaded".
-WAIT_UNTIL = "networkidle"
+#: DOMContentLoaded, not networkidle: several boards (decathlon, casino) keep
+#: at least one connection open indefinitely -- an analytics beacon, a
+#: websocket -- so networkidle never fires and render() returns None on a
+#: board whose listing finished rendering seconds earlier. The settle delay
+#: below is what actually waits for the listing's XHR.
+WAIT_UNTIL = "domcontentloaded"
+
+#: Fixed post-load settle, in milliseconds, before reading the DOM -- and
+#: again, halved, after the scroll below.
+SETTLE_MS = 3_500
 
 #: Per-page ceiling in milliseconds. Playwright's own default is 30s; a board
 #: that has not settled by then is not worth a longer wall-clock hit across a
@@ -54,6 +60,14 @@ def render(url: str, timeout: int = TIMEOUT_MS) -> Optional[str]:
             try:
                 page = browser.new_page()
                 page.goto(url, wait_until=WAIT_UNTIL, timeout=timeout)
+                page.wait_for_timeout(SETTLE_MS)
+                # ponytail: one fixed scroll + settle, not a real "wait until
+                # the listing stops growing" loop. Upgrade path:
+                # wait_for_selector on a per-ATS results container, or poll
+                # DOM anchor count until it stops changing, if boards beyond
+                # this batch still come back empty after render.
+                page.mouse.wheel(0, 4000)
+                page.wait_for_timeout(SETTLE_MS // 2)
 
                 return page.content()
             finally:

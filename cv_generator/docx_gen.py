@@ -324,6 +324,13 @@ def _clean_text(document) -> None:
         dropped = False
 
         for run in paragraph.runs:
+            # `Run.text = ...` clears every child of the run, not just its
+            # text -- fine for a run that only ever held text, but it would
+            # silently delete a run whose real content is a `w:drawing` (the
+            # photo template embeds one, wrapped in an otherwise-empty run).
+            if run._r.find(f"{{{_W}}}t") is None:
+                continue
+
             cleaned = DECORATION_RE.sub("", run.text)
             dropped = dropped or cleaned != run.text
             run.text = cleaned
@@ -333,6 +340,9 @@ def _clean_text(document) -> None:
 
         # Left-strip across runs: the first one holding real text wins.
         for run in paragraph.runs:
+            if run._r.find(f"{{{_W}}}t") is None:
+                continue
+
             run.text = run.text.lstrip()
 
             if run.text:

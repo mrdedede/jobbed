@@ -19,6 +19,12 @@ pandas==2.2.3
 # OOXML, and hand-written OOXML is what this library exists to not be.
 python-docx==1.1.2
 
+# cv_generator/pdf_gen.py only, for the human-read (with-photo) CV download.
+# No system PDF converter (soffice/LibreOffice) or MS Word automation is
+# available in this environment, so this renders the PDF directly rather
+# than converting the already-built .docx.
+reportlab==5.0.0
+
 # Development.
 pytest==8.3.4
 flake8==7.1.1

@@ -14,7 +14,7 @@ import streamlit as st
 from docx import Document
 
 from ai import cv_generation
-from cv_generator import docx_gen
+from cv_generator import docx_gen, pdf_gen
 from db import db_connection
 
 ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
@@ -117,35 +117,54 @@ photo = st.radio(
          "an automated system.",
 ) == "With photo"
 
+blocks = docx_gen.sections(cv)
+l10n = docx_gen.load_l10n(row["locale"])
+
 try:
-    document = docx_gen.render_docx(docx_gen.sections(cv),
-                                    docx_gen.load_l10n(row["locale"]), photo)
+    if photo:
+        document = pdf_gen.render_pdf(blocks, l10n)
+    else:
+        document = docx_gen.render_docx(blocks, l10n, photo=False)
 except (FileNotFoundError, RuntimeError) as exc:
     # The template is gitignored, so a fresh clone has only the _example one,
     # and a template can also name a locale ID no values_*.json defines. Both
     # are the user's to fix, and a page that died here would hide the message.
-    st.error(f"cannot build the .docx: {exc}")
+    st.error(f"cannot build the CV: {exc}")
     st.stop()
 
 cols = st.columns(2)
-cols[0].download_button(
-    "Download .docx", data=document,
-    file_name=docx_gen.filename(row["company"], row["title"]),
-    mime="application/vnd.openxmlformats-officedocument."
-         "wordprocessingml.document",
-    type="primary",
-)
+
+if photo:
+    pdf_name = docx_gen.filename(row["company"], row["title"]).replace(
+        ".docx", ".pdf")
+    cols[0].download_button(
+        "Download .pdf", data=document, file_name=pdf_name,
+        mime="application/pdf", type="primary",
+    )
+else:
+    cols[0].download_button(
+        "Download .docx", data=document,
+        file_name=docx_gen.filename(row["company"], row["title"]),
+        mime="application/vnd.openxmlformats-officedocument."
+             "wordprocessingml.document",
+        type="primary",
+    )
+
 cols[1].link_button("View job posting", row["url"])
 
 st.divider()
 
 # The preview is read back out of the bytes the button hands over, so it cannot
 # disagree with the file -- and it needs to know nothing about placeholders,
-# section order or locales, all of which live in the template.
-for paragraph in Document(io.BytesIO(document)).paragraphs:
-    if paragraph.text.strip():
-        st.markdown("".join(f"**{run.text}**" if run.bold else run.text
-                            for run in paragraph.runs))
+# section order or locales, all of which live in the template. Only the docx
+# path can be read back this way; the PDF has no preview here.
+if photo:
+    st.caption("Preview is available for the .docx (ATS-safe) version only.")
+else:
+    for paragraph in Document(io.BytesIO(document)).paragraphs:
+        if paragraph.text.strip():
+            st.markdown("".join(f"**{run.text}**" if run.bold else run.text
+                                for run in paragraph.runs))
 
 with st.expander("Raw JSON"):
     st.json(cv)

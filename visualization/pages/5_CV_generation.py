@@ -111,9 +111,10 @@ st.caption(f"{row['company']} - graded {row['grade']}/100 - "
            f"written in {row['locale']}")
 
 photo = st.radio(
-    "Photo", ["No photo (ATS-safe)", "With photo"], horizontal=True,
+    "Photo", ["With photo", "No photo (ATS-safe)"], horizontal=True,
     help="Applicant tracking systems skip images, and some reject a file that "
-         "carries one. Pick the photo version only for a human-read copy.",
+         "carries one. Pick the ATS-safe version only when submitting through "
+         "an automated system.",
 ) == "With photo"
 
 try:

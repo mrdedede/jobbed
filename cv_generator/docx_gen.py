@@ -228,10 +228,14 @@ def _expand(placeholder, lines: List[Line]) -> None:
         _fill(paragraph, bold, rest)
 
         # Templates leave space after every body paragraph, which between
-        # consecutive bullets turns a two-page CV into five. Only the last
-        # line of the block keeps it, to separate the sections.
-        if index < len(lines) - 1:
-            paragraph.paragraph_format.space_after = Pt(0)
+        # consecutive bullets turns a two-page CV into five. Bullets within
+        # the same entry get none; the last line of an entry (next line
+        # starts a new bold header, or this is the block's last line) keeps
+        # a gap, so entries and sections stay visually separated.
+        is_last = index == len(lines) - 1
+        ends_entry = is_last or bool(lines[index + 1][0])
+        paragraph.paragraph_format.space_after = (
+            paragraph.paragraph_format.space_after if ends_entry else Pt(0))
 
         # An experience header alone at the foot of a page reads as a mistake.
         paragraph.paragraph_format.keep_with_next = bool(bold)

@@ -228,10 +228,14 @@ def _expand(placeholder, lines: List[Line]) -> None:
         _fill(paragraph, bold, rest)
 
         # Templates leave space after every body paragraph, which between
-        # consecutive bullets turns a two-page CV into five. Only the last
-        # line of the block keeps it, to separate the sections.
-        if index < len(lines) - 1:
-            paragraph.paragraph_format.space_after = Pt(0)
+        # consecutive bullets turns a two-page CV into five. Bullets within
+        # the same entry get none; the last line of an entry (next line
+        # starts a new bold header, or this is the block's last line) keeps
+        # a gap, so entries and sections stay visually separated.
+        is_last = index == len(lines) - 1
+        ends_entry = is_last or bool(lines[index + 1][0])
+        paragraph.paragraph_format.space_after = (
+            paragraph.paragraph_format.space_after if ends_entry else Pt(0))
 
         # An experience header alone at the foot of a page reads as a mistake.
         paragraph.paragraph_format.keep_with_next = bool(bold)
@@ -320,6 +324,13 @@ def _clean_text(document) -> None:
         dropped = False
 
         for run in paragraph.runs:
+            # `Run.text = ...` clears every child of the run, not just its
+            # text -- fine for a run that only ever held text, but it would
+            # silently delete a run whose real content is a `w:drawing` (the
+            # photo template embeds one, wrapped in an otherwise-empty run).
+            if run._r.find(f"{{{_W}}}t") is None:
+                continue
+
             cleaned = DECORATION_RE.sub("", run.text)
             dropped = dropped or cleaned != run.text
             run.text = cleaned
@@ -329,6 +340,9 @@ def _clean_text(document) -> None:
 
         # Left-strip across runs: the first one holding real text wins.
         for run in paragraph.runs:
+            if run._r.find(f"{{{_W}}}t") is None:
+                continue
+
             run.text = run.text.lstrip()
 
             if run.text:

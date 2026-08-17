@@ -35,6 +35,12 @@ CV = {
             "end_date": "Present",
             "bullets": ["Cut p99 latency by 40%.", "Owned the release train."],
         },
+        {
+            "role": "Junior Engineer", "company": "Beta",
+            "location": "Paris, France", "start_date": "January, 2020",
+            "end_date": "December, 2021",
+            "bullets": ["Built the onboarding flow."],
+        },
     ],
     "education": [
         {
@@ -67,8 +73,10 @@ def test_an_experience_is_a_header_then_one_line_per_bullet():
 
     assert lines[0] == ("Backend Engineer - Acme",
                         ", Lille, France (January, 2022 - Present)")
-    assert lines[1:] == [("", "• Cut p99 latency by 40%."),
-                         ("", "• Owned the release train.")]
+    assert lines[1:3] == [("", "• Cut p99 latency by 40%."),
+                          ("", "• Owned the release train.")]
+    assert lines[3] == ("Junior Engineer - Beta",
+                        ", Paris, France (January, 2020 - December, 2021)")
 
 
 def test_blank_education_details_add_no_line():
@@ -150,6 +158,24 @@ def test_ids_resolve_mid_line_not_only_alone():
     assert line == "Francés, B2 - Intermedio"
 
 
+def test_clean_text_does_not_delete_a_run_that_holds_a_drawing(tmp_path):
+    """`_clean_text` writes `run.text`, which clears a run's XML children --
+    including a `w:drawing` a text run never held to begin with, if the run
+    is touched without checking it actually carries a `w:t` first."""
+    path = tmp_path / "with_drawing.docx"
+    document = Document(str(TEMPLATE))
+    paragraph = document.paragraphs[0]
+    run = paragraph.add_run()
+    drawing = run._r.makeelement(f"{{{docx_gen._W}}}drawing", {})
+    run._r.append(drawing)
+    document.save(str(path))
+
+    reopened = Document(str(path))
+    docx_gen._clean_text(reopened)
+
+    assert reopened.element.body.findall(f".//{{{docx_gen._W}}}drawing")
+
+
 def test_the_bold_lead_in_is_its_own_run(rendered):
     header = next(paragraph for paragraph in rendered.paragraphs
                   if paragraph.text.startswith("Backend Engineer"))
@@ -158,6 +184,17 @@ def test_the_bold_lead_in_is_its_own_run(rendered):
         ("Backend Engineer - Acme", True),
         (", Lille, France (January, 2022 - Present)", False),
     ]
+
+
+def test_a_job_s_last_bullet_keeps_space_before_the_next_job(rendered):
+    """No gap within a job's bullets; a gap once the next line is a new job."""
+    paragraphs = {paragraph.text: paragraph for paragraph in rendered.paragraphs}
+
+    within_job = paragraphs["• Cut p99 latency by 40%."]
+    last_bullet = paragraphs["• Owned the release train."]
+
+    assert within_job.paragraph_format.space_after == 0
+    assert last_bullet.paragraph_format.space_after != 0
 
 
 def test_sections_stay_in_the_template_order(rendered):

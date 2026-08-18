@@ -34,6 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from i18n import DEFAULT_LOCALE, available_locales, t  # noqa: E402
+
 #: Sequential default from the design palette: one hue, used for every
 #: single-series magnitude chart here (which is nearly all of them).
 BLUE = "#2a78d6"
@@ -48,6 +50,18 @@ GRAY = "#9c9b95"
 
 TEXT = "#0b0b0b"
 MUTED = "#52514e"
+
+
+def locale_selector() -> None:
+    """Sidebar language picker, one call per page (Streamlit reruns the whole
+    script per page, so the selection lives in `st.session_state`, not here).
+    """
+    locales = available_locales()
+    current = st.session_state.get("locale", DEFAULT_LOCALE)
+    st.sidebar.selectbox("Language", locales,
+                         index=locales.index(current) if current in locales
+                         else 0,
+                         key="locale")
 
 
 def style_axes(ax, xlabel: str = "", ylabel: str = "") -> None:
@@ -128,7 +142,8 @@ def counts_chart(column: pd.Series, xlabel: str, top: int = 0):
     Returns:
         The figure, or None if the column is empty.
     """
-    counts = column.fillna("(blank)").replace("", "(blank)").value_counts()
+    blank = t("common.blank")
+    counts = column.fillna(blank).replace("", blank).value_counts()
 
     if counts.empty:
         return None
@@ -238,11 +253,13 @@ def run_with_log(label: str, work: Callable[[Callable[[str], None]], dict]):
         try:
             stats = work(log)
         except Exception as exc:
-            status.update(label=f"{label} - failed", state="error")
+            status.update(label=t("common.status.failed", label=label),
+                          state="error")
             st.exception(exc)
 
             return None
 
-        status.update(label=f"{label} - done", state="complete")
+        status.update(label=t("common.status.done", label=label),
+                      state="complete")
 
     return stats

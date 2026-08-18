@@ -16,21 +16,24 @@ from docx import Document
 from ai import cv_generation
 from cv_generator import docx_gen, pdf_gen
 from db import db_connection
+from i18n import t
 
 ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
 CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv", "url", "timestamp"]
 
-GRADE_COLUMN = st.column_config.ProgressColumn("grade", min_value=0,
-                                               max_value=100, format="%d")
+st.set_page_config(page_title=t("cv.page_title"), layout="wide")
+common.locale_selector()
 
-st.set_page_config(page_title="CV generation", layout="wide")
-st.title("CV generation")
+GRADE_COLUMN = st.column_config.ProgressColumn(t("common.column.grade"),
+                                               min_value=0, max_value=100,
+                                               format="%d")
+
+st.title(t("cv.title"))
 
 db_connection.create_tables()
 
-min_grade = st.slider("Minimum grade", 0, 100, 70,
-                      help="Postings graded below this are not worth a "
-                           "tailored CV, so they stay out of the list.")
+min_grade = st.slider(t("cv.form.min_grade"), 0, 100, 70,
+                      help=t("cv.help.min_grade"))
 
 eligible = pd.DataFrame(db_connection.select_jobs_for_cv(min_grade),
                         columns=ELIGIBLE_COLUMNS)
@@ -38,84 +41,85 @@ generated = pd.DataFrame(db_connection.select_generated_cvs(),
                          columns=CV_COLUMNS)
 
 columns = st.columns(2)
-columns[0].metric(f"Eligible postings (grade >= {min_grade})",
+columns[0].metric(t("cv.metric.eligible", min_grade=min_grade),
                   f"{len(eligible):,}")
-columns[1].metric("CVs generated", f"{len(generated):,}")
+columns[1].metric(t("cv.metric.generated"), f"{len(generated):,}")
 
-st.subheader("Postings without a CV")
-st.caption("Best fit first. Select one, then generate.")
+st.subheader(t("cv.subheader.without_cv"))
+st.caption(t("cv.caption.select_generate"))
 
 table = st.dataframe(
     eligible[["grade", "company", "title", "place", "url"]],
     use_container_width=True, hide_index=True, on_select="rerun",
     selection_mode="single-row",
-    column_config={"url": st.column_config.LinkColumn("url"),
+    column_config={"url": st.column_config.LinkColumn(t("common.column.url")),
                    "grade": GRADE_COLUMN},
 )
 
 selected = table.selection["rows"]
 job = eligible.iloc[selected[0]] if selected else None
 
-st.caption("One Sonnet call: budget around half a minute.")
+st.caption(t("cv.caption.budget"))
 launched = st.button(
-    f"Generate a CV for {job['title']}" if job is not None
-    else "Generate a CV (select a posting first)",
+    t("cv.button.generate_for", title=job["title"]) if job is not None
+    else t("cv.button.generate_disabled"),
     type="primary", disabled=job is None,
 )
 
 if launched:
     def workflow(log):
         """Generate and store the CV for the selected posting."""
-        log(f"job {job['job_id']}: {job['company']} - {job['title']}")
+        log(t("cv.log.generating", job_id=job["job_id"], company=job["company"],
+             title=job["title"]))
         locale = cv_generation.generate_cv(int(job["job_id"]))
-        log(f"stored, written in {locale}")
+        log(t("cv.log.stored", locale=locale))
 
         return {"locale": locale}
 
-    stats = common.run_with_log("generating the CV", workflow)
+    stats = common.run_with_log(t("cv.status.generating"), workflow)
 
     if stats:
-        st.success(f"CV stored, written in {stats['locale']}.")
-        st.button("Reload the lists")
+        st.success(t("cv.success.stored", locale=stats["locale"]))
+        st.button(t("cv.button.reload"))
 
 st.divider()
-st.subheader("Generated CVs")
+st.subheader(t("cv.subheader.generated"))
 
 if generated.empty:
-    st.info("No CVs generated yet.")
+    st.info(t("cv.info.none_generated"))
     st.stop()
 
-st.caption("Newest first. Select one to read it.")
+st.caption(t("cv.caption.newest_first"))
 
 cv_table = st.dataframe(
     generated[["title", "company", "grade", "timestamp"]], use_container_width=True, hide_index=True,
     on_select="rerun", selection_mode="single-row",
     column_config={
         "grade": GRADE_COLUMN,
-        "timestamp": st.column_config.DatetimeColumn("generated", format="DD/MM/YYYY HH:mm"),
+        "timestamp": st.column_config.DatetimeColumn(
+            t("cv.column.generated"), format="DD/MM/YYYY HH:mm"),
     },
 )
 
 chosen = cv_table.selection["rows"]
 
 if not chosen:
-    st.info("Select a CV above to read it.")
+    st.info(t("cv.info.select_cv"))
     st.stop()
 
 row = generated.iloc[chosen[0]]
 cv = json.loads(row["cv"])
 
 st.divider()
-st.subheader(row["title"] or "(untitled)")
-st.caption(f"{row['company']} - graded {row['grade']}/100 - "
-           f"written in {row['locale']}")
+st.subheader(row["title"] or t("cv.untitled"))
+st.caption(t("cv.caption.cv_summary", company=row["company"],
+            grade=row["grade"], locale=row["locale"]))
 
 photo = st.radio(
-    "Photo", ["With photo", "No photo (ATS-safe)"], horizontal=True,
-    help="Applicant tracking systems skip images, and some reject a file that "
-         "carries one. Pick the ATS-safe version only when submitting through "
-         "an automated system.",
-) == "With photo"
+    t("cv.radio.photo"),
+    [t("cv.radio.no_photo"), t("cv.radio.with_photo")], horizontal=True,
+    help=t("cv.help.photo"),
+) == t("cv.radio.with_photo")
 
 blocks = docx_gen.sections(cv)
 l10n = docx_gen.load_l10n(row["locale"])
@@ -129,28 +133,18 @@ except (FileNotFoundError, RuntimeError) as exc:
     # The template is gitignored, so a fresh clone has only the _example one,
     # and a template can also name a locale ID no values_*.json defines. Both
     # are the user's to fix, and a page that died here would hide the message.
-    st.error(f"cannot build the CV: {exc}")
+    st.error(t("cv.error.docx_build", error=exc))
     st.stop()
 
 cols = st.columns(2)
-
-if photo:
-    pdf_name = docx_gen.filename(row["company"], row["title"]).replace(
-        ".docx", ".pdf")
-    cols[0].download_button(
-        "Download .pdf", data=document, file_name=pdf_name,
-        mime="application/pdf", type="primary",
-    )
-else:
-    cols[0].download_button(
-        "Download .docx", data=document,
-        file_name=docx_gen.filename(row["company"], row["title"]),
-        mime="application/vnd.openxmlformats-officedocument."
-             "wordprocessingml.document",
-        type="primary",
-    )
-
-cols[1].link_button("View job posting", row["url"])
+cols[0].download_button(
+    t("cv.button.download"), data=document,
+    file_name=docx_gen.filename(row["company"], row["title"]),
+    mime="application/vnd.openxmlformats-officedocument."
+         "wordprocessingml.document",
+    type="primary",
+)
+cols[1].link_button(t("cv.button.view_posting"), row["url"])
 
 st.divider()
 
@@ -166,5 +160,5 @@ else:
             st.markdown("".join(f"**{run.text}**" if run.bold else run.text
                                 for run in paragraph.runs))
 
-with st.expander("Raw JSON"):
+with st.expander(t("cv.expander.raw_json")):
     st.json(cv)

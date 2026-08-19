@@ -123,6 +123,8 @@ JOB_URL_HITS = [
     ("/global/en/careers/offers/detail/744000142576829",
      "two segments, bare numeric id slug -- talan's shape"),
     ("/careers/data_engineer_h_f", "underscore-joined slug, not just hyphenated"),
+    ("/fr/details-doffre/data-engineer-7485457", "French elision 'd'offre' "
+     "glued onto the job word with no separating hyphen -- Deezer's shape"),
 ]
 
 #: Shapes that must keep missing: a category/listing page, not a posting.

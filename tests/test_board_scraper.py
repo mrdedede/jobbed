@@ -829,6 +829,45 @@ def test_njoyn_job_path_still_covers_the_board_if_the_scraper_finds_nothing():
     assert scrape_links(generic) == []
 
 
+DEEZER_URL = "https://www.deezerjobs.com/fr/offres/"
+
+#: Deezer's WordPress plugin: the posting id lives entirely in the query
+#: string, and the path carries no slug at all for JOB_URL_RE's path-only
+#: match to land on.
+DEEZER_BOARD = page(
+    "<a href='/fr/details-doffre/?jid=7485457'>Design System Manager</a>"
+    "<a href='/fr/details-doffre/?jid=7629174'>Senior Front End Engineer</a>"
+    "<a href='/fr/'>Home</a>"
+    "<a href='/fr/details-doffre/?utm_source=abc'>Not a posting</a>"
+)
+
+
+def test_links_falls_back_to_a_query_string_job_id_when_no_ats_is_known():
+    """Deezer's shape: no vendor JOB_PATH override, id only in `?jid=`.
+
+    JOB_URL_RE alone never matches -- there is no path slug after the job
+    word for its trailing /{_JOB_SLUG} to land on -- so scrape_links needs
+    its own query-aware fallback, not just a widened JOB_URL_RE.
+    """
+    jobs = _dedupe(scrape_links(board({DEEZER_URL: DEEZER_BOARD},
+                                      url=DEEZER_URL)))
+
+    assert [job.url for job in jobs] == [
+        "https://www.deezerjobs.com/fr/details-doffre/?jid=7485457",
+        "https://www.deezerjobs.com/fr/details-doffre/?jid=7629174",
+    ]
+
+
+def test_query_id_fallback_is_skipped_when_an_ats_already_has_a_shape():
+    """A vendor JOB_PATH override already says exactly where its ids live --
+    the generic query-id guess must not run alongside it and risk a false
+    positive on a board that already has a precise answer."""
+    jobs = scrape_links(board({DEEZER_URL: DEEZER_BOARD},
+                              ats=ATSName.NJOYN, url=DEEZER_URL))
+
+    assert jobs == []
+
+
 # ======================================================================
 # Strategy 1f: WordPress REST -- a platform, not an ATS
 # ======================================================================

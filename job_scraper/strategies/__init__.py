@@ -11,6 +11,7 @@ from typing import Callable, Dict
 from job_scraper.detector import ATSName
 from job_scraper.strategies.comeet import scrape_comeet
 from job_scraper.strategies.feed import FEEDS, Feed, scrape_feed
+from job_scraper.strategies.inline_json import scrape_inline_json
 from job_scraper.strategies.links import JOB_PATH, scrape_links
 from job_scraper.strategies.njoyn import scrape_njoyn
 from job_scraper.strategies.notes import VENDOR_NOTES
@@ -40,6 +41,7 @@ __all__ = [
     "VENDOR_SCRAPERS",
     "scrape_comeet",
     "scrape_feed",
+    "scrape_inline_json",
     "scrape_links",
     "scrape_njoyn",
     "scrape_sitemap",

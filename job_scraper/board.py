@@ -1,7 +1,8 @@
 """One job board, and the decision of how to scrape it.
 
 Scraping tries strategies cheapest-first: feed (JSON), WordPress REST, sitemap
-(JSON-LD), links (heuristic), and -- only with a renderer -- a browser pass for
+(JSON-LD), links (heuristic), inline JSON (a listing dumped in a `<script>`
+tag instead of anchors), and -- only with a renderer -- a browser pass for
 boards that build their listing in JS. Each Job records its source in the `via`
 field, which ensures a misdetected ATS doesn't silently get scraped by the
 wrong strategy.
@@ -20,6 +21,7 @@ from job_scraper.strategies import (
     FEEDS,
     VENDOR_SCRAPERS,
     scrape_feed,
+    scrape_inline_json,
     scrape_links,
     scrape_sitemap,
     scrape_wordpress,
@@ -154,8 +156,8 @@ class Board:
             The jobs from the first strategy that produced any, deduplicated.
             Empty if every strategy came back empty.
         """
-        for strategy in (self._feed, self._wordpress,
-                         self._sitemap, self._links, self._rendered):
+        for strategy in (self._feed, self._wordpress, self._sitemap,
+                         self._links, self._inline_json, self._rendered):
             jobs = strategy()
 
             if jobs:
@@ -205,6 +207,20 @@ class Board:
             List of Job results, or empty list if no job-like anchors found.
         """
         return scrape_links(self)
+
+    def _inline_json(self) -> List[Job]:
+        """Try reading postings out of an inline `<script>` JSON blob.
+
+        Cheaper than a browser pass and reads the same unrendered HTML
+        `_links` already has -- the boards this reaches (Atos, Eviden) build
+        their visible anchors from this exact blob client-side, so the data
+        is already server-rendered, just not as markup `_links` can see.
+
+        Returns:
+            List of Job results, or empty list if no script on the page
+            carries a title/url-shaped record.
+        """
+        return scrape_inline_json(self)
 
     def _rendered(self) -> List[Job]:
         """Anchors again, but on HTML a browser finished drawing.

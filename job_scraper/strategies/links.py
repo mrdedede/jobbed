@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 from job_scraper.detector import ATSName
 from job_scraper.models import Job
-from job_scraper.urls import JOB_URL_RE, title_from_url
+from job_scraper.urls import JOB_QUERY_ID_RE, JOB_URL_RE, title_from_url
 
 if TYPE_CHECKING:
     from job_scraper.board import Board
@@ -148,13 +148,26 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
     if not html:
         return []
 
-    shape = JOB_PATH.get(board.ats) or JOB_URL_RE.pattern
+    vendor_shape = JOB_PATH.get(board.ats)
+    shape = vendor_shape or JOB_URL_RE.pattern
     pattern = re.compile(shape, re.I)
     # Most boards put the posting id in the path, so matching the path alone
     # keeps a query string full of filters from creating false positives.
     # A row that spells out "?" is asking for the query too -- the only way to
     # express a vendor like njoyn, whose postings all share one path.
     with_query = "?" in shape
+
+    # A board with no vendor override falls back to JOB_URL_RE, which is
+    # path-only -- so a board like Deezer, whose id lives entirely in the
+    # query string (/details-doffre/?jid=<id>, no path slug for JOB_URL_RE's
+    # trailing segment to match), is invisible to the first pattern no matter
+    # what the anchor's path says. JOB_QUERY_ID_RE is that same shape's query
+    # counterpart, tried only when there was no vendor-specific shape to
+    # begin with -- an ATS override already says exactly where its ids live,
+    # and guessing a second shape on top would just risk a false positive on
+    # a board that already has a precise answer.
+    query_pattern = None if vendor_shape else JOB_QUERY_ID_RE
+
     base = board.url
     jobs = []
 
@@ -194,8 +207,11 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
             f"{parts.path}?{parts.query}" if with_query and parts.query
             else parts.path
         )
+        query_target = f"{parts.path}?{parts.query}" if parts.query else ""
 
-        if not pattern.search(target or ""):
+        if not pattern.search(target or "") and not (
+            query_pattern and query_pattern.search(query_target)
+        ):
             continue
 
         jobs.append(Job(

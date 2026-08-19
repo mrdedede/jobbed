@@ -34,6 +34,14 @@ JOB_PATH: Dict[ATSName, str] = {
     ATSName.JOBVITE: r"/[^/?#]+/job/[a-z0-9_-]+",
     ATSName.COMEET: r"/jobs/[^/?#]+/[^/?#]+/[^/?#]+/[^/?#]+",
     ATSName.PINPOINT: r"/jobs/\d+/?$",
+    # "jobs" sits in the hostname (jobs.ashbyhq.com), not the path, so the
+    # generic shape -- which requires a job word in the path -- never matches
+    # a bare /{tenant}/{uuid}. Same UUID shape as the detector's own
+    # ashby.posting_uuid rule (detector.py), kept in sync with it.
+    ATSName.ASHBY: (
+        r"^/[^/?#]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+        r"-[0-9a-f]{12}"
+    ),
     # Locale-prefixed (/en_US/, /de_DE/). Worth a row even though these boards
     # have no feed: the generic shape needs a job word straight after a slash,
     # so "externaljobs" never matches it and Avature postings are missed

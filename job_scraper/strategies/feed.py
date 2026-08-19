@@ -261,8 +261,14 @@ def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
     Returns:
         List of jobs, or empty list on any error.
     """
-    token = _token(board.final_url, feed.token) or _token(
-        board.board_url, feed.token
+    # A board that embeds the ATS as a widget rather than linking to it
+    # (owkin's Ashby embed, `<div data-ashby-src="...ashbyhq.com/owkin/embed">`)
+    # never puts the token in its own URL -- only in the page it serves. The
+    # page is already cached on Board, so this costs no extra request.
+    token = (
+        _token(board.final_url, feed.token)
+        or _token(board.board_url, feed.token)
+        or _token(board.html or "", feed.token)
     )
 
     if not token:

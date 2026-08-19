@@ -383,6 +383,39 @@ def test_an_unpaged_feed_still_makes_exactly_one_request():
     ]
 
 
+def test_feed_finds_the_token_in_an_embed_widget_when_the_url_has_none():
+    """owkin.com embeds Ashby as a widget rather than linking to it, so the
+    tenant token is only in the page body -- not in board_url or final_url."""
+    owkin_page = page(
+        '<div id="ashby_embed" data-ashby-src='
+        '"https://jobs.ashbyhq.com/owkin/embed"></div>'
+    )
+
+    made = board(
+        {
+            "https://www.owkin.com/careers": owkin_page,
+            "https://api.ashbyhq.com/posting-api/job-board/owkin":
+                json.dumps({"jobs": [
+                    {"title": "ML Engineer",
+                     "jobUrl": "https://jobs.ashbyhq.com/owkin/1",
+                     "location": "Paris"},
+                ]}),
+        },
+        ats=ATSName.ASHBY,
+        url="https://www.owkin.com/careers",
+    )
+
+    jobs = scrape_feed(made, FEEDS[ATSName.ASHBY])
+
+    assert jobs == [Job(
+        company="acme",
+        title="ML Engineer",
+        url="https://jobs.ashbyhq.com/owkin/1",
+        place="Paris",
+        via="feed",
+    )]
+
+
 def test_feed_returns_nothing_rather_than_raising_when_the_endpoint_is_down():
     made = board({}, ats=ATSName.GREENHOUSE,
                  url="https://boards.greenhouse.io/acme")
@@ -960,6 +993,33 @@ def test_avature_postings_are_missed_entirely_without_its_job_path():
     assert [job.url for job in tuned] == [
         "https://jobs.siemens.com/en_US/externaljobs/JobDetail/498916",
         "https://jobs.siemens.com/de_DE/externaljobs/JobDetail/512004",
+    ]
+
+
+ASHBY_PAGE = page(
+    "<a href='https://jobs.ashbyhq.com/notion/"
+    "a59ae31e-059e-4f6b-84a7-0fa9db88c72b'>Software Engineer</a>"
+    "<a href='https://jobs.ashbyhq.com/notion/"
+    "9fe70944-f84f-421c-8168-bbf21d4b4ca4'>Product Designer</a>"
+    "<a href='/careers'>All careers</a>"
+)
+
+
+def test_ashby_postings_are_missed_entirely_without_its_job_path():
+    """Ashby puts "jobs" in the hostname, not the path -- the generic shape
+    looks only at the path, so it finds nothing here."""
+    generic = scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
+                                 url="https://notion.com/careers"))
+
+    assert generic == []
+
+    tuned = scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
+                               ats=ATSName.ASHBY,
+                               url="https://notion.com/careers"))
+
+    assert [job.url for job in tuned] == [
+        "https://jobs.ashbyhq.com/notion/a59ae31e-059e-4f6b-84a7-0fa9db88c72b",
+        "https://jobs.ashbyhq.com/notion/9fe70944-f84f-421c-8168-bbf21d4b4ca4",
     ]
 
 

@@ -9,7 +9,7 @@ filtered at all or has to be fetched blind.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import unquote, urlparse
 
 from job_scraper.detector import ATS_REGISTRY, ATSName, _host_hit
@@ -87,6 +87,42 @@ JOB_QUERY_ID_RE = re.compile(
     r"\?(?:[\w.%+-]+=[\w.%+-]*&)*\w*id=\d+",
     re.I,
 )
+
+def job_href_matches(url: str, ats: Optional[ATSName],
+                      job_path: Dict[ATSName, str]) -> bool:
+    """Decide whether one absolute anchor URL is job-shaped for this ATS.
+
+    The single source of truth for "is this a posting link" -- scrape_links
+    filters anchors with it, diagnose.py uses it to tell a missed job-shaped
+    link from a genuinely empty page. Two independently-written regex passes
+    over the same href used to disagree; now there is exactly one.
+
+    Args:
+        url: Absolute anchor URL (already run through urljoin).
+        ats: The board's detected ATS, or None.
+        job_path: Vendor-specific path/query shapes (links.JOB_PATH).
+
+    Returns:
+        True if the URL matches the vendor shape, or the generic JOB_URL_RE
+        / JOB_QUERY_ID_RE fallback for boards with no vendor shape.
+    """
+    vendor_shape = job_path.get(ats) if ats else None
+    shape = vendor_shape or JOB_URL_RE.pattern
+    pattern = re.compile(shape, re.I)
+    with_query = "?" in shape
+    query_pattern = None if vendor_shape else JOB_QUERY_ID_RE
+
+    parts = urlparse(url)
+    target = (
+        f"{parts.path}?{parts.query}" if with_query and parts.query
+        else parts.path
+    )
+    query_target = f"{parts.path}?{parts.query}" if parts.query else ""
+
+    return bool(pattern.search(target or "")) or bool(
+        query_pattern and query_pattern.search(query_target)
+    )
+
 
 #: A path segment that is only an identifier, carrying no words to read. The
 #: hex arm needs {8,} rather than a shorter bound: at 4 it eats real English

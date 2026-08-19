@@ -789,6 +789,11 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "Ashby embed script",
                 in_text("script_text", "ashby_embed"),
             ),
+            rule(
+                "ashby.embed_container", "dom", 30, TIER_STRONG,
+                "Ashby embed container element",
+                has_id("ashby_embed"),
+            ),
         ),
     ),
     ATS(

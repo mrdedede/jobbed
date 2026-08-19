@@ -9,7 +9,7 @@ import common
 import streamlit as st
 
 from job_scraper import paths
-from job_scraper.main_scraper import scrape_boards
+from job_scraper.main_scraper import DEFAULT_WORKERS, scrape_boards
 
 st.set_page_config(page_title="Scrape boards", layout="wide")
 st.title("Scrape boards")
@@ -22,9 +22,11 @@ st.caption(f"{len(boards)} boards configured - last run "
            f"{common.file_stamp(paths.JOBS_CSV)}")
 
 with st.form("scrape_boards"):
-    left, right = st.columns([1, 2])
+    left, middle, right = st.columns(3)
     limit = left.number_input("Boards to scrape (0 = all)", min_value=0,
                               max_value=max(len(boards), 1), value=0, step=1)
+    workers = middle.number_input("Workers", min_value=1, max_value=32,
+                                  value=DEFAULT_WORKERS, step=1)
     render = right.checkbox(
         "Render JS listings (slow; needs playwright + chromium)"
     )
@@ -34,16 +36,22 @@ with st.form("scrape_boards"):
 
 if launched:
     renderer = None
+    run_workers = int(workers)
 
     if render:
         # Imported inside the branch, as main_scraper.main does: playwright is
         # an opt-in extra and this must run on a machine with no browser.
         from job_scraper.render import render as renderer
+        from job_scraper.main_scraper import MAX_RENDER_WORKERS
+        # Each render is a full headless Chromium launch -- capped separately,
+        # same as the CLI, so a general worker bump doesn't also mean "launch
+        # more browsers at once".
+        run_workers = min(run_workers, MAX_RENDER_WORKERS)
 
     stats = common.run_with_log(
         "scraping boards",
         lambda log: scrape_boards(limit=int(limit), render=renderer,
-                                  on_board=log),
+                                  on_board=log, workers=run_workers),
     )
 
     if stats:

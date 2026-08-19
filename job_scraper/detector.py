@@ -188,6 +188,42 @@ def on_vendor_host(page: Page, ats: "ATS") -> bool:
     return bool(_host_hit(page.host, ats.hosts))
 
 
+def anchor_path_re(pattern: str) -> Matcher:
+    """Match a single outbound anchor whose path has the vendor's own shape.
+
+    A bare domain hit on `anchor` needs 3 links (min_hits) because a lone
+    footer badge or share button proves nothing. A path that already has the
+    vendor's posting/apply shape -- a Lever posting UUID, a SmartRecruiters
+    tenant segment -- is different: no other vendor produces that shape, so
+    one such link is as strong as three plain domain hits. Lets a single
+    "Apply on Lever" button (agicap, teamwork) qualify a board that links out
+    to an ATS instead of embedding it.
+
+    Args:
+        pattern: Regex searched against the anchor URL's path.
+
+    Returns:
+        A matcher function.
+    """
+    compiled = re.compile(pattern, re.I)
+
+    def test(page: Page, ats: "ATS") -> Optional[str]:
+        domains = ats.hosts + ats.assets
+
+        for url in page.anchor_urls:
+            host = _normalize_host(urlparse(url).hostname or "")
+
+            if host == page.host or not _host_hit(host, domains):
+                continue
+
+            if compiled.search(urlparse(url).path):
+                return url
+
+        return None
+
+    return test
+
+
 def host_is() -> Matcher:
     """The page is served from a vendor-owned hostname."""
     def test(page: Page, ats: "ATS") -> Optional[str]:
@@ -615,6 +651,15 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "SmartRecruiters API referenced in script",
                 in_text("script_text", "api.smartrecruiters.com"),
             ),
+            rule(
+                "smartrecruiters.posting_link", "anchor", 45,
+                TIER_DEFINITIVE,
+                "SmartRecruiters posting/apply link",
+                anchor_path_re(
+                    r"/(?:oneclick-ui/company/[\w.-]+/publication|"
+                    r"[\w.-]+/[\w-]+)/[0-9a-f-]{8,}"
+                ),
+            ),
         ),
     ),
     ATS(
@@ -723,6 +768,14 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "lever.posting_uuid", "path", 40, TIER_STRONG,
                 "Lever posting UUID in job path",
                 path_re(
+                    r"^/[^/?#]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+                    r"-[0-9a-f]{4}-[0-9a-f]{12}",
+                ),
+            ),
+            rule(
+                "lever.posting_link", "anchor", 40, TIER_DEFINITIVE,
+                "Lever posting/apply link",
+                anchor_path_re(
                     r"^/[^/?#]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
                     r"-[0-9a-f]{4}-[0-9a-f]{12}",
                 ),

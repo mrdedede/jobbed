@@ -109,7 +109,12 @@ FEEDS: Dict[ATSName, Feed] = {
             "https://api.smartrecruiters.com/v1/companies/{token}"
             "/postings?limit=100"
         ),
-        token=(r"smartrecruiters\.com/([\w.-]+)",),
+        token=(
+            # oneclick-ui URLs put the tenant after /company/, not right
+            # after the hostname -- must be tried before the generic form.
+            r"smartrecruiters\.com/oneclick-ui/company/([\w.-]+)",
+            r"smartrecruiters\.com/([\w.-]+)",
+        ),
         items="content",
         title="name",
         place="location",

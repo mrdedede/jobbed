@@ -1,19 +1,70 @@
 """Grade the postings the model has not seen yet and store each verdict.
 
-One `claude` CLI call per posting, serially -- see `ai.analysis`. Which
-postings are due is `db_connection.select_jobs_to_analyse`'s decision, and it
-already excludes anything with a row in ai_analysis, so a rerun is idempotent.
+One `claude` CLI call per posting -- see `ai.analysis`. Which postings are due
+is `db_connection.select_jobs_to_analyse`'s decision, and it already excludes
+anything with a row in ai_analysis, so a rerun is idempotent.
 """
 
 import sys
-from typing import Callable, Optional
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple
 
 from ai import analysis, call_model
 from db import db_connection
 
+#: Half of job_scraper.main_scraper.DEFAULT_WORKERS (not imported -- these are
+#: two independent pipeline stages). Lower because each unit of work here
+#: spawns a whole `claude` CLI process, not a single HTTP request.
+DEFAULT_WORKERS = 2
+
+
+@dataclass
+class AnalysisResult:
+    """One posting's grading outcome, before it is written to the DB.
+
+    Kept side-effect free (no DB insert, no callback) so it can run on any
+    thread and be tested on its own.
+    """
+
+    job_id: int
+    company: str
+    title: str
+    verdict: Optional[dict]
+    error: Optional[Exception]
+
+
+def grade_one_job(job: Tuple) -> AnalysisResult:
+    """Grade a single posting.
+
+    Args:
+        job: A (id, company, title, description) row, as returned by
+            `db_connection.select_jobs_to_analyse`.
+
+    Returns:
+        An AnalysisResult carrying either the verdict or the exception that
+        stopped this job -- never raises, so one bad posting can't take down
+        the pool.
+    """
+    job_id, company, title, _ = job
+
+    try:
+        verdict = analysis.analyze(job)
+
+        # send_claude_request returns None on a non-zero exit or unparseable
+        # output. Subscripting that raises TypeError, which the old bare
+        # `except` reported as an unexplained failure.
+        if verdict is None:
+            raise RuntimeError("no verdict returned")
+    except Exception as exc:
+        return AnalysisResult(job_id, company, title, verdict=None, error=exc)
+
+    return AnalysisResult(job_id, company, title, verdict=verdict, error=None)
+
 
 def run_analysis(limit: int = 20, window: str = "-24 hours",
-                 on_progress: Optional[Callable[[str], None]] = None) -> dict:
+                 on_progress: Optional[Callable[[str], None]] = None,
+                 workers: int = DEFAULT_WORKERS) -> dict:
     """Grade up to `limit` ungraded postings and insert the results.
 
     Args:
@@ -23,6 +74,8 @@ def run_analysis(limit: int = 20, window: str = "-24 hours",
         on_progress: Optional callback given one line per posting. Prints
             nothing itself, so a Streamlit page can take the same lines a
             terminal does.
+        workers: Thread pool size. Postings are graded concurrently; each
+            `insert_analysis` call still runs on the main thread in job order.
 
     Returns:
         Dict with `analysed` and `failed` counts and the number of postings
@@ -31,30 +84,27 @@ def run_analysis(limit: int = 20, window: str = "-24 hours",
     jobs = db_connection.select_jobs_to_analyse(limit, window)
     analysed = failed = 0
 
-    for index, job in enumerate(jobs, start=1):
-        job_id, company, title, _ = job
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # pool.map yields in input order on this thread, so the DB insert and
+        # on_progress call below stay single-threaded and in the same order
+        # as before, with no lock needed.
+        for index, result in enumerate(pool.map(grade_one_job, jobs),
+                                       start=1):
+            if result.error is not None:
+                failed += 1
+                note = f"FAIL {type(result.error).__name__}: {result.error}"
+            else:
+                db_connection.insert_analysis([
+                    result.verdict["adequation_grade"],
+                    result.verdict["depth_analysis"],
+                    call_model.HAIKU_MODEL, result.job_id,
+                ])
+                analysed += 1
+                note = f"{result.verdict['adequation_grade']:3}"
 
-        try:
-            verdict = analysis.analyze(job)
-
-            # send_claude_request returns None on a non-zero exit or
-            # unparseable output. Subscripting that raises TypeError, which
-            # the old bare `except` reported as an unexplained failure.
-            if verdict is None:
-                raise RuntimeError("no verdict returned")
-
-            db_connection.insert_analysis([
-                verdict["adequation_grade"], verdict["depth_analysis"],
-                call_model.HAIKU_MODEL, job_id,
-            ])
-            analysed += 1
-            note = f"{verdict['adequation_grade']:3}"
-        except Exception as exc:
-            failed += 1
-            note = f"FAIL {type(exc).__name__}: {exc}"
-
-        if on_progress:
-            on_progress(f"[{index}/{len(jobs)}] {note}  {company} - {title}")
+            if on_progress:
+                on_progress(f"[{index}/{len(jobs)}] {note}  "
+                            f"{result.company} - {result.title}")
 
     return {"analysed": analysed, "failed": failed, "due": len(jobs)}
 
@@ -65,7 +115,14 @@ def main() -> int:
     Returns:
         0 on success.
     """
-    stats = run_analysis(20, on_progress=print)
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    args = parser.parse_args()
+
+    stats = run_analysis(args.limit, on_progress=print, workers=args.workers)
     print(f"\n{stats['analysed']} analysed, {stats['failed']} failed")
 
     return 0

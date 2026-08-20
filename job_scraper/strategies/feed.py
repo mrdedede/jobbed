@@ -174,6 +174,19 @@ FEEDS: Dict[ATSName, Feed] = {
         place="city",
         link="url",
     ),
+    ATSName.HR_MANAGER: Feed(
+        # The RSS feed is what the board page itself links to for an alerts
+        # subscription -- same "customer" tenant token, no extra discovery.
+        # Confirmed live against api.hr-manager.net/JobPortal.svc/hrmanager/
+        # PositionList/rss/ 2026-08-20: standard RSS <item> with only
+        # title/link, no location element at all, so place is left at its
+        # default and simply resolves to None for every posting.
+        url="https://api.hr-manager.net/JobPortal.svc/{token}/PositionList/rss/?incads=true",
+        token=(r"[?&]customer=([\w.-]+)",),
+        item_tag="item",
+        title="title",
+        link="link",
+    ),
 }
 
 

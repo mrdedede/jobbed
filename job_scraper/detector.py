@@ -530,6 +530,11 @@ class ATSName(StrEnum):
     PINPOINT = auto()
     JOBVITE = auto()
     JAZZHR = auto()
+    TALEEZ = auto()
+    FLATCHR = auto()
+    JOBPOSTINGPRO = auto()
+    KISSMYJOB = auto()
+    HR_MANAGER = auto()
 
     # Enterprise career-site platforms. These almost always run on the
     # employer's own domain, so they are identified by vendor infrastructure
@@ -541,6 +546,8 @@ class ATSName(StrEnum):
     SOFTGARDEN = auto()
     NJOYN = auto()
     DIGITALRECRUITERS = auto()
+    ORACLE_FUSION = auto()
+    CORNERSTONE = auto()
 
 
 @dataclass(frozen=True)
@@ -1049,6 +1056,36 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
             ),
         ),
     ),
+    ATS(
+        name=ATSName.TALEEZ,
+        hosts=("taleez.com",),
+        assets=("taleez.com",),
+        terms=("taleez",),
+    ),
+    ATS(
+        name=ATSName.FLATCHR,
+        hosts=("flatchr.io",),
+        assets=("flatchr.io",),
+        terms=("flatchr",),
+    ),
+    ATS(
+        name=ATSName.JOBPOSTINGPRO,
+        hosts=("jobposting.pro",),
+        assets=("jobposting.pro",),
+        terms=("jobposting.pro",),
+    ),
+    ATS(
+        name=ATSName.KISSMYJOB,
+        hosts=("kissmyjob.com",),
+        assets=("kissmyjob.com",),
+        terms=("kissmyjob",),
+    ),
+    ATS(
+        name=ATSName.HR_MANAGER,
+        hosts=("hr-manager.net",),
+        assets=("hr-manager.net",),
+        terms=("hr-manager",),
+    ),
 
     # ------------------------------------------------------------------
     # Enterprise career-site platforms.
@@ -1100,6 +1137,32 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("digitalrecruiters.com",),
         assets=("digitalrecruiters.com",),
         terms=("digitalrecruiters",),
+    ),
+    ATS(
+        name=ATSName.ORACLE_FUSION,
+        # Multi-tenant, employer-hosted on a per-tenant oraclecloud.com
+        # subdomain -- there is no vendor host shared across tenants, and
+        # oraclecloud.com itself is generic Oracle infrastructure, not
+        # exclusive to Fusion Recruiting, so it is deliberately not in
+        # `assets` either (would false-positive on any Oracle Cloud page).
+        # The /hcmUI/CandidateExperience/ path segment is the one shape
+        # that is actually specific to this product; it alone must qualify
+        # detection, hence TIER_DEFINITIVE rather than TIER_STRONG.
+        terms=("oracle fusion", "oracle cloud"),
+        rules=(
+            rule(
+                "oracle_fusion.candidate_experience_path", "path", 45,
+                TIER_DEFINITIVE,
+                "Oracle Fusion Recruiting CandidateExperience path",
+                path_re(r"/hcmUI/CandidateExperience/", gated=False),
+            ),
+        ),
+    ),
+    ATS(
+        name=ATSName.CORNERSTONE,
+        hosts=("csod.com",),
+        assets=("csod.com",),
+        terms=("cornerstone ondemand", "csod"),
     ),
 )
 

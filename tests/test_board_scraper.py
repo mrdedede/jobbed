@@ -478,6 +478,13 @@ RECORDED_FEEDS = {
         "https://healthforce.applytojob.com/apply",
         "https://app.jazz.co/feeds/export/jobs/healthforce",
     ),
+    ATSName.HR_MANAGER: (
+        "hr_manager_hrmanager.xml",
+        "https://candidate.hr-manager.net/vacancies/list.aspx?"
+        "customer=hrmanager",
+        "https://api.hr-manager.net/JobPortal.svc/hrmanager/PositionList/"
+        "rss/?incads=true",
+    ),
 }
 
 
@@ -537,6 +544,17 @@ def test_recorded_feed_derives_its_endpoint_and_yields_jobs(ats):
         url=("http://healthforce.applytojob.com/apply/jU66d1wbId/"
              "Travel-Registered-Nurse-PACU-Job"),
         place="Lancaster",
+        via="feed",
+    )),
+    # Standard RSS <item>, no location element at all -- place stays None.
+    (ATSName.HR_MANAGER, Job(
+        company="acme",
+        title="Ar Project",
+        url=(
+            "https://candidate.hr-manager.net/ApplicationInit.aspx?cid=1&"
+            "ProjectId=169330&DepartmentId=21326&MediaId=5"
+        ),
+        place=None,
         via="feed",
     )),
 ])

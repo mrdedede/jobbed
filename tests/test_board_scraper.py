@@ -30,6 +30,7 @@ from job_scraper.strategies import (
     scrape_sitemap,
     scrape_wordpress,
     scrape_workday,
+    scrape_wttj,
 )
 from job_scraper.strategies.comeet import COMEET_API
 from job_scraper.strategies.feed import _token
@@ -37,6 +38,7 @@ from job_scraper.strategies.sitemap import (
     _nested_sitemaps,
     job_urls_from_sitemap,
 )
+from job_scraper.strategies.welcometothejungle import ALGOLIA_URL, ORG_API
 from job_scraper.urls import (
     JOB_URL_RE as _JOB_URL_RE,
     ats_from_host as _ats_from_host,
@@ -1533,3 +1535,104 @@ def test_dedupe_collapses_fragments_and_trailing_slashes():
     ]
 
     assert [job.title for job in _dedupe(jobs)] == ["Dev", "Other"]
+
+
+# ======================================================================
+# Strategy 1e: Welcome to the Jungle -- Algolia, with a rename fallback
+# ======================================================================
+
+
+WTTJ_BOARD_URL = "https://www.welcometothejungle.com/fr/companies-v1/acme/jobs"
+
+WTTJ_HIT = {
+    "name": "Ingénieur Logiciel",
+    "slug": "ingenieur-logiciel_paris",
+    "summary": "Rejoignez notre équipe.",
+    "profile": "Vous avez 3 ans d'expérience.",
+    "key_missions": ["Concevoir des API.", "Écrire des tests."],
+    "offices": [{"city": "Paris"}],
+}
+
+
+def _algolia_page(filters_by_hits):
+    """Build a FakeSession page value that reads the request's own filter.
+
+    Algolia POSTs to one fixed URL for every query; the fake has to branch on
+    the request body, not the URL, or a slug retry can never be distinguished
+    from the first attempt.
+    """
+    def responder(payload):
+        params = payload["requests"][0]["params"]
+
+        for needle, hits in filters_by_hits.items():
+            if needle in params:
+                return json.dumps({"results": [{"hits": hits}]})
+
+        return json.dumps({"results": [{"hits": []}]})
+
+    return responder
+
+
+def wttj_board(**overrides):
+    pages = {
+        ALGOLIA_URL: _algolia_page({'organization.slug:"acme"': [WTTJ_HIT]}),
+    }
+    pages.update(overrides)
+
+    return board(pages, ats=ATSName.WTTJ, url=WTTJ_BOARD_URL)
+
+
+def test_wttj_reads_the_slug_off_the_board_url():
+    jobs = scrape_wttj(wttj_board())
+
+    assert jobs[0] == Job(
+        company="acme",
+        title="Ingénieur Logiciel",
+        url=("https://www.welcometothejungle.com/fr/companies/acme/jobs/"
+             "ingenieur-logiciel_paris"),
+        place="Paris",
+        via="wttj",
+        description=(
+            "Rejoignez notre équipe.\n\n"
+            "Vous avez 3 ans d'expérience.\n\n"
+            "- Concevoir des API.\n- Écrire des tests."
+        ),
+    )
+
+
+def test_wttj_falls_back_to_the_org_name_when_the_url_slug_has_moved():
+    """swile.job_boards.csv still points at /lunchr/ from before the rename;
+    Algolia's own organization.slug moved to "swile" and no longer answers to
+    the old one, so a 0-hit slug query has to resolve through the org API."""
+    made = wttj_board(**{
+        ALGOLIA_URL: _algolia_page({
+            'organization.name:"Acme Renamed"': [WTTJ_HIT],
+        }),
+        ORG_API.format(slug="acme"): json.dumps({
+            "organization": {"name": "Acme Renamed"},
+        }),
+    })
+
+    jobs = scrape_wttj(made)
+
+    assert jobs[0].title == "Ingénieur Logiciel"
+    assert made.session.requested == [
+        ALGOLIA_URL, ORG_API.format(slug="acme"), ALGOLIA_URL,
+    ]
+
+
+def test_wttj_gives_up_quietly_when_the_org_cannot_be_resolved():
+    assert scrape_wttj(wttj_board(**{
+        ALGOLIA_URL: _algolia_page({}),
+        ORG_API.format(slug="acme"): json.dumps({"organization": {}}),
+    })) == []
+
+
+def test_wttj_gives_up_quietly_with_no_slug_in_the_url():
+    made = board(
+        {ALGOLIA_URL: _algolia_page({})},
+        ats=ATSName.WTTJ,
+        url="https://www.welcometothejungle.com/fr/",
+    )
+
+    assert scrape_wttj(made) == []

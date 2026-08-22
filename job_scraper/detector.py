@@ -52,7 +52,7 @@ INFRA_DENYLIST: Tuple[str, ...] = (
     "website-editor.net", "website-files.com", "windows.net", "bugherd",
     "cr-relay.com", "s81c.com",
     "cloudinary", "adobeaemcloud", "brightcove", "mux.com",
-    "indeed.com", "glassdoor", "welcometothejungle", "jobijoba",
+    "indeed.com", "glassdoor", "jobijoba",
     "hellowork",
 )
 
@@ -548,6 +548,11 @@ class ATSName(StrEnum):
     DIGITALRECRUITERS = auto()
     ORACLE_FUSION = auto()
     CORNERSTONE = auto()
+
+    # Job aggregator with a public Algolia-backed search API -- not the
+    # employer's own ATS, but scrapable the same way once a strategy targets
+    # the org's slug (strategies/welcometothejungle.py).
+    WTTJ = auto()
 
 
 @dataclass(frozen=True)
@@ -1163,6 +1168,10 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("csod.com",),
         assets=("csod.com",),
         terms=("cornerstone ondemand", "csod"),
+    ),
+    ATS(
+        name=ATSName.WTTJ,
+        hosts=("welcometothejungle.com",),
     ),
 )
 

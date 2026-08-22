@@ -278,6 +278,15 @@ def fetch_job(row: Dict[str, str]) -> Job:
 
     if (row.get("ats") or "") == "workday":
         found = _from_workday(url)
+    elif (row.get("ats") or "") == "wttj":
+        # Posting pages sit behind the same WAF wall as the board page; the
+        # board stage already pulled the full posting from Algolia, so there
+        # is nothing left here to fetch.
+        found = {
+            "title": row.get("title", ""),
+            "description": row.get("description", ""),
+            "via": "wttj",
+        }
     else:
         html = fetch(session(), url)
 

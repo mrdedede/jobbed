@@ -20,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from job_scraper.fetching import decode_response, is_textual
-from job_scraper.strategies.links import JOB_PATH
+from job_scraper.strategies.links import JOB_PATH, _same_page
 from job_scraper.urls import job_href_matches
 
 #: SPA bootstraps: the root element or state blob a client-side listing hangs
@@ -117,9 +117,14 @@ def _analyse(html: str, ats=None, base_url: str = "") -> str:
     # A job-shaped link already on the page outranks the SPA-marker guess:
     # the marker only *predicts* that postings arrive after render, and a
     # real match on this same fetch disproves that prediction outright.
+    # Same-page anchors (nav skip-links, empty CTAs) are excluded first --
+    # scrape_links already does this, so a diagnosis that skipped it could
+    # flag a page as "job-shaped links present" over links no strategy would
+    # ever have read either.
     if anchors and any(
         job_href_matches(urljoin(base_url, href), ats, JOB_PATH)
         for href in anchors
+        if not _same_page(urljoin(base_url, href), base_url)
     ):
         return (f"job-shaped links present but no strategy read them ({shape})")
 

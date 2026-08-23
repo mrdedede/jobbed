@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Dict, List, Optional
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import urldefrag, urljoin
 
 from bs4 import BeautifulSoup
 
 from job_scraper.detector import ATSName
 from job_scraper.models import Job
-from job_scraper.urls import JOB_URL_RE, title_from_url
+from job_scraper.urls import job_href_matches, title_from_url
 
 if TYPE_CHECKING:
     from job_scraper.board import Board
@@ -34,6 +33,14 @@ JOB_PATH: Dict[ATSName, str] = {
     ATSName.JOBVITE: r"/[^/?#]+/job/[a-z0-9_-]+",
     ATSName.COMEET: r"/jobs/[^/?#]+/[^/?#]+/[^/?#]+/[^/?#]+",
     ATSName.PINPOINT: r"/jobs/\d+/?$",
+    # "jobs" sits in the hostname (jobs.ashbyhq.com), not the path, so the
+    # generic shape -- which requires a job word in the path -- never matches
+    # a bare /{tenant}/{uuid}. Same UUID shape as the detector's own
+    # ashby.posting_uuid rule (detector.py), kept in sync with it.
+    ATSName.ASHBY: (
+        r"^/[^/?#]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}"
+        r"-[0-9a-f]{12}"
+    ),
     # Locale-prefixed (/en_US/, /de_DE/). Worth a row even though these boards
     # have no feed: the generic shape needs a job word straight after a slash,
     # so "externaljobs" never matches it and Avature postings are missed
@@ -140,13 +147,6 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
     if not html:
         return []
 
-    shape = JOB_PATH.get(board.ats) or JOB_URL_RE.pattern
-    pattern = re.compile(shape, re.I)
-    # Most boards put the posting id in the path, so matching the path alone
-    # keeps a query string full of filters from creating false positives.
-    # A row that spells out "?" is asking for the query too -- the only way to
-    # express a vendor like njoyn, whose postings all share one path.
-    with_query = "?" in shape
     base = board.url
     jobs = []
 
@@ -181,13 +181,7 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
         if _same_page(url, base):
             continue
 
-        parts = urlparse(url)
-        target = (
-            f"{parts.path}?{parts.query}" if with_query and parts.query
-            else parts.path
-        )
-
-        if not pattern.search(target or ""):
+        if not job_href_matches(url, board.ats, JOB_PATH):
             continue
 
         jobs.append(Job(

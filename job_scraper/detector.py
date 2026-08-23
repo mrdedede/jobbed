@@ -52,7 +52,7 @@ INFRA_DENYLIST: Tuple[str, ...] = (
     "website-editor.net", "website-files.com", "windows.net", "bugherd",
     "cr-relay.com", "s81c.com",
     "cloudinary", "adobeaemcloud", "brightcove", "mux.com",
-    "indeed.com", "glassdoor", "welcometothejungle", "jobijoba",
+    "indeed.com", "glassdoor", "jobijoba",
     "hellowork",
 )
 
@@ -186,6 +186,42 @@ def _host_hit(host: str, domains: Sequence[str]) -> Optional[str]:
 
 def on_vendor_host(page: Page, ats: "ATS") -> bool:
     return bool(_host_hit(page.host, ats.hosts))
+
+
+def anchor_path_re(pattern: str) -> Matcher:
+    """Match a single outbound anchor whose path has the vendor's own shape.
+
+    A bare domain hit on `anchor` needs 3 links (min_hits) because a lone
+    footer badge or share button proves nothing. A path that already has the
+    vendor's posting/apply shape -- a Lever posting UUID, a SmartRecruiters
+    tenant segment -- is different: no other vendor produces that shape, so
+    one such link is as strong as three plain domain hits. Lets a single
+    "Apply on Lever" button (agicap, teamwork) qualify a board that links out
+    to an ATS instead of embedding it.
+
+    Args:
+        pattern: Regex searched against the anchor URL's path.
+
+    Returns:
+        A matcher function.
+    """
+    compiled = re.compile(pattern, re.I)
+
+    def test(page: Page, ats: "ATS") -> Optional[str]:
+        domains = ats.hosts + ats.assets
+
+        for url in page.anchor_urls:
+            host = _normalize_host(urlparse(url).hostname or "")
+
+            if host == page.host or not _host_hit(host, domains):
+                continue
+
+            if compiled.search(urlparse(url).path):
+                return url
+
+        return None
+
+    return test
 
 
 def host_is() -> Matcher:
@@ -494,6 +530,11 @@ class ATSName(StrEnum):
     PINPOINT = auto()
     JOBVITE = auto()
     JAZZHR = auto()
+    TALEEZ = auto()
+    FLATCHR = auto()
+    JOBPOSTINGPRO = auto()
+    KISSMYJOB = auto()
+    HR_MANAGER = auto()
 
     # Enterprise career-site platforms. These almost always run on the
     # employer's own domain, so they are identified by vendor infrastructure
@@ -505,6 +546,13 @@ class ATSName(StrEnum):
     SOFTGARDEN = auto()
     NJOYN = auto()
     DIGITALRECRUITERS = auto()
+    ORACLE_FUSION = auto()
+    CORNERSTONE = auto()
+
+    # Job aggregator with a public Algolia-backed search API -- not the
+    # employer's own ATS, but scrapable the same way once a strategy targets
+    # the org's slug (strategies/welcometothejungle.py).
+    WTTJ = auto()
 
 
 @dataclass(frozen=True)
@@ -614,6 +662,15 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "smartrecruiters.api", "script_text", 20, TIER_SUPPORTING,
                 "SmartRecruiters API referenced in script",
                 in_text("script_text", "api.smartrecruiters.com"),
+            ),
+            rule(
+                "smartrecruiters.posting_link", "anchor", 45,
+                TIER_DEFINITIVE,
+                "SmartRecruiters posting/apply link",
+                anchor_path_re(
+                    r"/(?:oneclick-ui/company/[\w.-]+/publication|"
+                    r"[\w.-]+/[\w-]+)/[0-9a-f-]{8,}"
+                ),
             ),
         ),
     ),
@@ -727,6 +784,14 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                     r"-[0-9a-f]{4}-[0-9a-f]{12}",
                 ),
             ),
+            rule(
+                "lever.posting_link", "anchor", 40, TIER_DEFINITIVE,
+                "Lever posting/apply link",
+                anchor_path_re(
+                    r"^/[^/?#]+/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}"
+                    r"-[0-9a-f]{4}-[0-9a-f]{12}",
+                ),
+            ),
         ),
     ),
     ATS(
@@ -788,6 +853,11 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
                 "ashby.embed", "script_text", 30, TIER_STRONG,
                 "Ashby embed script",
                 in_text("script_text", "ashby_embed"),
+            ),
+            rule(
+                "ashby.embed_container", "dom", 30, TIER_STRONG,
+                "Ashby embed container element",
+                has_id("ashby_embed"),
             ),
         ),
     ),
@@ -991,6 +1061,36 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
             ),
         ),
     ),
+    ATS(
+        name=ATSName.TALEEZ,
+        hosts=("taleez.com",),
+        assets=("taleez.com",),
+        terms=("taleez",),
+    ),
+    ATS(
+        name=ATSName.FLATCHR,
+        hosts=("flatchr.io",),
+        assets=("flatchr.io",),
+        terms=("flatchr",),
+    ),
+    ATS(
+        name=ATSName.JOBPOSTINGPRO,
+        hosts=("jobposting.pro",),
+        assets=("jobposting.pro",),
+        terms=("jobposting.pro",),
+    ),
+    ATS(
+        name=ATSName.KISSMYJOB,
+        hosts=("kissmyjob.com",),
+        assets=("kissmyjob.com",),
+        terms=("kissmyjob",),
+    ),
+    ATS(
+        name=ATSName.HR_MANAGER,
+        hosts=("hr-manager.net",),
+        assets=("hr-manager.net",),
+        terms=("hr-manager",),
+    ),
 
     # ------------------------------------------------------------------
     # Enterprise career-site platforms.
@@ -1042,6 +1142,36 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("digitalrecruiters.com",),
         assets=("digitalrecruiters.com",),
         terms=("digitalrecruiters",),
+    ),
+    ATS(
+        name=ATSName.ORACLE_FUSION,
+        # Multi-tenant, employer-hosted on a per-tenant oraclecloud.com
+        # subdomain -- there is no vendor host shared across tenants, and
+        # oraclecloud.com itself is generic Oracle infrastructure, not
+        # exclusive to Fusion Recruiting, so it is deliberately not in
+        # `assets` either (would false-positive on any Oracle Cloud page).
+        # The /hcmUI/CandidateExperience/ path segment is the one shape
+        # that is actually specific to this product; it alone must qualify
+        # detection, hence TIER_DEFINITIVE rather than TIER_STRONG.
+        terms=("oracle fusion", "oracle cloud"),
+        rules=(
+            rule(
+                "oracle_fusion.candidate_experience_path", "path", 45,
+                TIER_DEFINITIVE,
+                "Oracle Fusion Recruiting CandidateExperience path",
+                path_re(r"/hcmUI/CandidateExperience/", gated=False),
+            ),
+        ),
+    ),
+    ATS(
+        name=ATSName.CORNERSTONE,
+        hosts=("csod.com",),
+        assets=("csod.com",),
+        terms=("cornerstone ondemand", "csod"),
+    ),
+    ATS(
+        name=ATSName.WTTJ,
+        hosts=("welcometothejungle.com",),
     ),
 )
 

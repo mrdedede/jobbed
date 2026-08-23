@@ -29,7 +29,7 @@ from job_scraper.models import Job
 INPUT_FILE = paths.BOARDS_CSV
 OUTPUT_FILE = paths.JOBS_CSV
 
-FIELDNAMES = ["company", "title", "url", "place", "via", "ats"]
+FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
 MISS_FIELDNAMES = ["company", "url", "reason"]
 
 #: Boards do more work per item than a single post fetch (ATS detection +
@@ -152,8 +152,9 @@ def scrape_boards(input_file: Optional[Path] = None,
     with output_file.open("w", newline="", encoding="utf-8") as output, \
             paths.NO_JOBS_CSV.open("w", newline="",
                                    encoding="utf-8") as empties:
-        # extrasaction: Job carries a `description` the board stage never
-        # fills, and this CSV has no column for it.
+        # extrasaction: most strategies leave `description` blank -- WTTJ is
+        # the one exception, since its posting pages are as WAF-walled as its
+        # board page and everything it has comes from the board-stage call.
         writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
                                 extrasaction="ignore")
         writer.writeheader()

@@ -11,10 +11,12 @@ from typing import Callable, Dict
 from job_scraper.detector import ATSName
 from job_scraper.strategies.comeet import scrape_comeet
 from job_scraper.strategies.feed import FEEDS, Feed, scrape_feed
+from job_scraper.strategies.inline_json import scrape_inline_json
 from job_scraper.strategies.links import JOB_PATH, scrape_links
 from job_scraper.strategies.njoyn import scrape_njoyn
 from job_scraper.strategies.notes import VENDOR_NOTES
 from job_scraper.strategies.sitemap import scrape_sitemap
+from job_scraper.strategies.welcometothejungle import scrape_wttj
 from job_scraper.strategies.wordpress import scrape_wordpress
 from job_scraper.strategies.workday import scrape_workday
 
@@ -30,6 +32,7 @@ VENDOR_SCRAPERS: Dict[ATSName, Callable] = {
     ATSName.WORKDAY: scrape_workday,
     ATSName.COMEET: scrape_comeet,
     ATSName.NJOYN: scrape_njoyn,
+    ATSName.WTTJ: scrape_wttj,
 }
 
 __all__ = [
@@ -40,9 +43,11 @@ __all__ = [
     "VENDOR_SCRAPERS",
     "scrape_comeet",
     "scrape_feed",
+    "scrape_inline_json",
     "scrape_links",
     "scrape_njoyn",
     "scrape_sitemap",
     "scrape_wordpress",
     "scrape_workday",
+    "scrape_wttj",
 ]

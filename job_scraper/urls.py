@@ -9,7 +9,7 @@ filtered at all or has to be fetched blind.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Dict, Optional
 from urllib.parse import unquote, urlparse
 
 from job_scraper.detector import ATS_REGISTRY, ATSName, _host_hit
@@ -61,11 +61,68 @@ _JOB_SLUG = r"(?:[^/?#]*[-_][^/?#]*|\d{3,})"
 #: /company/careers/jobs/mirakl/<id>. Capped at two: wider risks matching a
 #: job word that is only in the path for navigation, with the actual posting
 #: several sections away.
+#:
+#: `d?` directly before the job word covers the French elision "d'offre" /
+#: "d'emploi" glued on with no hyphen -- Deezer files its listing at
+#: /details-doffre/, and the `[\w]+-` prefix alone never reaches it: it
+#: greedily consumes "details-d" as one word (the only hyphen available), which
+#: leaves "offre" needing to start exactly where "d" was already eaten from.
 JOB_URL_RE = re.compile(
-    rf"/(?:[\w]+-)?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?(?![a-zA-Z])"
+    rf"/(?:[\w]+-)?d?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?(?![a-zA-Z])"
     rf"(?:/[^/?#]+){{0,2}}/{_JOB_SLUG}",
     re.I,
 )
+
+#: A second posting shape, for boards that file the id in the query string
+#: instead of the path -- Deezer's WordPress plugin links every posting as
+#: /details-doffre/?jid=<id>, with no slug segment at all for JOB_URL_RE's
+#: trailing /{_JOB_SLUG} to land on. Gated the same way: a job word has to
+#: appear in the path, so this does not turn every "?id=" on the web into a
+#: posting -- only ones already sitting behind a jobs/careers/offres path.
+#: `links.py` opts a board's anchors into checking the query string at all
+#: (the same `with_query` switch njoyn's JOB_PATH entry uses); this regex is
+#: the generic fallback for boards with no vendor-specific override.
+JOB_QUERY_ID_RE = re.compile(
+    rf"/(?:[\w]+-)?d?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?(?![a-zA-Z])[^?]*"
+    r"\?(?:[\w.%+-]+=[\w.%+-]*&)*\w*id=\d+",
+    re.I,
+)
+
+def job_href_matches(url: str, ats: Optional[ATSName],
+                      job_path: Dict[ATSName, str]) -> bool:
+    """Decide whether one absolute anchor URL is job-shaped for this ATS.
+
+    The single source of truth for "is this a posting link" -- scrape_links
+    filters anchors with it, diagnose.py uses it to tell a missed job-shaped
+    link from a genuinely empty page. Two independently-written regex passes
+    over the same href used to disagree; now there is exactly one.
+
+    Args:
+        url: Absolute anchor URL (already run through urljoin).
+        ats: The board's detected ATS, or None.
+        job_path: Vendor-specific path/query shapes (links.JOB_PATH).
+
+    Returns:
+        True if the URL matches the vendor shape, or the generic JOB_URL_RE
+        / JOB_QUERY_ID_RE fallback for boards with no vendor shape.
+    """
+    vendor_shape = job_path.get(ats) if ats else None
+    shape = vendor_shape or JOB_URL_RE.pattern
+    pattern = re.compile(shape, re.I)
+    with_query = "?" in shape
+    query_pattern = None if vendor_shape else JOB_QUERY_ID_RE
+
+    parts = urlparse(url)
+    target = (
+        f"{parts.path}?{parts.query}" if with_query and parts.query
+        else parts.path
+    )
+    query_target = f"{parts.path}?{parts.query}" if parts.query else ""
+
+    return bool(pattern.search(target or "")) or bool(
+        query_pattern and query_pattern.search(query_target)
+    )
+
 
 #: A path segment that is only an identifier, carrying no words to read. The
 #: hex arm needs {8,} rather than a shorter bound: at 4 it eats real English

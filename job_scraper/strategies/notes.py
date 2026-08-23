@@ -101,4 +101,56 @@ VENDOR_NOTES: Dict[ATSName, str] = {
         "verified against the synopsys fixtures, which drop the /search-jobs "
         "style collection pages the generic shape lets through."
     ),
+    ATSName.TALEEZ: (
+        "Probed 2026-08-20 (gandi.taleez.com): plain curl fetch returns only "
+        "an Angular app shell (main-*.js bundle), zero server-rendered "
+        "anchors or embedded JSON, and no discoverable API endpoint "
+        "referenced in the bundle's script srcs. Needs a captured browser "
+        "session's XHR traffic to find the real job-search endpoint before "
+        "any feed/JOB_PATH work is possible."
+    ),
+    ATSName.FLATCHR: (
+        "Probed 2026-08-20 (careers.flatchr.io/company/divalto/): Next.js "
+        "SSR page carries a __NEXT_DATA__ blob, but its pageProps is only "
+        "i18n translation strings -- no job data server-side. The listing is "
+        "fetched client-side after load. Falls through to --render "
+        "meanwhile; once rendered, a JOB_PATH row may be enough since the "
+        "page is otherwise ordinary anchor markup."
+    ),
+    ATSName.JOBPOSTINGPRO: (
+        "Probed 2026-08-20 (jobposting.pro/societe-ippon+technologies-..."
+        "#jobs): static HTML has no listing markup at all, just page meta "
+        "and social-share links -- this specific board may simply have zero "
+        "open postings right now rather than being JS-rendered. Needs "
+        "checking against a jobposting.pro board with confirmed open "
+        "listings before deciding whether a JOB_PATH row is even needed."
+    ),
+    ATSName.KISSMYJOB: (
+        "Probed 2026-08-20 (career.kissmyjob.com/1/jobs): plain curl fetch "
+        "returns only an Angular app shell (main-*.js bundle), zero "
+        "server-rendered anchors or embedded JSON. Same wall as Taleez; "
+        "needs a captured browser session to find the real API."
+    ),
+    ATSName.ORACLE_FUSION: (
+        "Probed 2026-08-20 (iadugs.fa.ocs.oraclecloud.com/hcmUI/"
+        "CandidateExperience/...): pure Angular SPA (main-minimal.js from "
+        "static.oracle.com), zero server-rendered content. Employer-hosted "
+        "with a per-tenant subdomain, so there is no single vendor host to "
+        "match -- registry entry is assets-only (oraclecloud.com) plus a "
+        "path_re on the /hcmUI/CandidateExperience/ URL shape shared across "
+        "tenants. Oracle Fusion Recruiting does have a real job-search REST "
+        "API, but it needs a per-tenant finder/site ID that is not present "
+        "in the static page -- same discovery-step shape as comeet.py, "
+        "blocked until a live session capture provides one."
+    ),
+    ATSName.CORNERSTONE: (
+        "Probed 2026-08-20 (hris-suez.csod.com/ux/ats/careersite/...): "
+        "static fetch returns only the player-career-site JS bundle's asset "
+        "links (CSS/JS), zero job content -- Cornerstone's careersite "
+        "widget is fully client-rendered. Registry entry is assets-only "
+        "(csod.com); no path shape confirmed yet since the /player-career-"
+        "site/ path seen is the JS bundle's own asset path, not a posting "
+        "URL. Needs a captured browser session before any feed/JOB_PATH "
+        "work is possible."
+    ),
 }

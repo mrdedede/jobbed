@@ -109,7 +109,12 @@ FEEDS: Dict[ATSName, Feed] = {
             "https://api.smartrecruiters.com/v1/companies/{token}"
             "/postings?limit=100"
         ),
-        token=(r"smartrecruiters\.com/([\w.-]+)",),
+        token=(
+            # oneclick-ui URLs put the tenant after /company/, not right
+            # after the hostname -- must be tried before the generic form.
+            r"smartrecruiters\.com/oneclick-ui/company/([\w.-]+)",
+            r"smartrecruiters\.com/([\w.-]+)",
+        ),
         items="content",
         title="name",
         place="location",
@@ -168,6 +173,19 @@ FEEDS: Dict[ATSName, Feed] = {
         title="title",
         place="city",
         link="url",
+    ),
+    ATSName.HR_MANAGER: Feed(
+        # The RSS feed is what the board page itself links to for an alerts
+        # subscription -- same "customer" tenant token, no extra discovery.
+        # Confirmed live against api.hr-manager.net/JobPortal.svc/hrmanager/
+        # PositionList/rss/ 2026-08-20: standard RSS <item> with only
+        # title/link, no location element at all, so place is left at its
+        # default and simply resolves to None for every posting.
+        url="https://api.hr-manager.net/JobPortal.svc/{token}/PositionList/rss/?incads=true",
+        token=(r"[?&]customer=([\w.-]+)",),
+        item_tag="item",
+        title="title",
+        link="link",
     ),
 }
 
@@ -261,8 +279,14 @@ def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
     Returns:
         List of jobs, or empty list on any error.
     """
-    token = _token(board.final_url, feed.token) or _token(
-        board.board_url, feed.token
+    # A board that embeds the ATS as a widget rather than linking to it
+    # (owkin's Ashby embed, `<div data-ashby-src="...ashbyhq.com/owkin/embed">`)
+    # never puts the token in its own URL -- only in the page it serves. The
+    # page is already cached on Board, so this costs no extra request.
+    token = (
+        _token(board.final_url, feed.token)
+        or _token(board.board_url, feed.token)
+        or _token(board.html or "", feed.token)
     )
 
     if not token:

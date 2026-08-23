@@ -348,6 +348,49 @@ POSITIVE = [
         ),
         "radancy",
     ),
+    (
+        "taleez board",
+        "https://acme.taleez.com",
+        page("<h1>Nos offres</h1>"),
+        "taleez",
+    ),
+    (
+        "flatchr board",
+        "https://careers.flatchr.io/company/acme/",
+        page("<h1>Offres</h1>"),
+        "flatchr",
+    ),
+    (
+        "jobposting.pro board",
+        "https://www.jobposting.pro/societe-acme-123456",
+        page("<h1>Offres d'emploi</h1>"),
+        "jobpostingpro",
+    ),
+    (
+        "kissmyjob board",
+        "https://career.kissmyjob.com/1/jobs",
+        page("<h1>Jobs</h1>"),
+        "kissmyjob",
+    ),
+    (
+        "hr-manager.net board",
+        "https://candidate.hr-manager.net/vacancies/list.aspx?customer=acme",
+        page("<h1>Vacancies</h1>"),
+        "hr_manager",
+    ),
+    (
+        "oracle fusion recruiting on a per-tenant subdomain",
+        "https://abcd.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/"
+        "en/sites/CX_1/jobs",
+        page("<h1>Careers</h1>"),
+        "oracle_fusion",
+    ),
+    (
+        "cornerstone ondemand career site",
+        "https://acme.csod.com/ux/ats/careersite/1/home",
+        page("<h1>Careers</h1>"),
+        "cornerstone",
+    ),
 ]
 
 

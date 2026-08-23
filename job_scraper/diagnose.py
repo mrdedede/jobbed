@@ -14,12 +14,14 @@ failed costs a second request.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 from job_scraper.fetching import decode_response, is_textual
-from job_scraper.urls import JOB_URL_RE
+from job_scraper.strategies.links import JOB_PATH, _same_page
+from job_scraper.urls import job_href_matches
 
 #: SPA bootstraps: the root element or state blob a client-side listing hangs
 #: itself off. Their presence is the strongest single signal that the postings
@@ -64,7 +66,7 @@ def _cause(board, exc: Optional[BaseException]) -> str:
     # The page is in hand, so nothing about HTTP is left to explain: whatever
     # went wrong went wrong in the parsing.
     if html is not None:
-        return _analyse(html)
+        return _analyse(html, board.ats, board.url)
 
     return _probe(board)
 
@@ -94,10 +96,10 @@ def _probe(board) -> str:
         if not raw:
             return "empty body"
 
-        return _analyse(decode_response(response, raw))
+        return _analyse(decode_response(response, raw), board.ats, board.url)
 
 
-def _analyse(html: str) -> str:
+def _analyse(html: str, ats=None, base_url: str = "") -> str:
     """Judge a page that was fetched fine but yielded no postings."""
     if not html.strip():
         return "empty body"
@@ -115,7 +117,15 @@ def _analyse(html: str) -> str:
     # A job-shaped link already on the page outranks the SPA-marker guess:
     # the marker only *predicts* that postings arrive after render, and a
     # real match on this same fetch disproves that prediction outright.
-    if anchors and any(JOB_URL_RE.search(href) for href in anchors):
+    # Same-page anchors (nav skip-links, empty CTAs) are excluded first --
+    # scrape_links already does this, so a diagnosis that skipped it could
+    # flag a page as "job-shaped links present" over links no strategy would
+    # ever have read either.
+    if anchors and any(
+        job_href_matches(urljoin(base_url, href), ats, JOB_PATH)
+        for href in anchors
+        if not _same_page(urljoin(base_url, href), base_url)
+    ):
         return (f"job-shaped links present but no strategy read them ({shape})")
 
     if marker or (len(anchors) < FEW_ANCHORS and scripts >= MANY_SCRIPTS):

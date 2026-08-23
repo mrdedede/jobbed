@@ -37,6 +37,7 @@ CREATE_AI_ANALYSIS_TABLE = """CREATE TABLE IF NOT EXISTS ai_analysis(
     depth_analysis TEXT,
     ai_model TEXT,
     job_id BIGINT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (job_id) REFERENCES job_data(id));
 """
 
@@ -58,8 +59,8 @@ INSERT_NEW_JOB_DATA = """INSERT OR IGNORE INTO job_data(
     VALUES(?, ?, ?, ?, ?)"""
 
 INSERT_NEW_AI_ANALYSIS = """INSERT INTO ai_analysis(
-    adequation_grade, depth_analysis, ai_model, job_id)
-    VALUES(?, ?, ?, ?)"""
+    adequation_grade, depth_analysis, ai_model, job_id, timestamp)
+    VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)"""
 
 # Four columns, not the eight per-section ones this used to name -- none of
 # those exist in generated_cv, so the statement had never run. The CV itself is
@@ -111,7 +112,7 @@ SELECT_JOB_URLS = """SELECT url FROM job_data;"""
 SELECT_ANALYSES = """SELECT
     job_data.id, ai_analysis.adequation_grade, job_data.company,
     job_data.title, job_data.place, job_data.url, ai_analysis.ai_model,
-    ai_analysis.depth_analysis, job_data.description, job_data.timestamp
+    ai_analysis.depth_analysis, job_data.description, ai_analysis.timestamp
     FROM ai_analysis
     JOIN job_data ON job_data.id = ai_analysis.job_id
     ORDER BY ai_analysis.adequation_grade DESC;
@@ -129,15 +130,17 @@ SELECT_GENERATED_CV = """SELECT * FROM generated_cv
     WHERE job_id = ?;
 """
 
-#: Graded postings that have no CV yet, best fit first. The grade floor is
-#: bound, not baked in: the page's slider decides what is worth writing for.
+#: Graded postings that have no CV yet, best fit first. The grade floor and
+#: analysis window are both bound, not baked in: the page's controls decide
+#: what is worth writing for.
 SELECT_JOBS_FOR_CV = """SELECT
     job_data.id, ai_analysis.adequation_grade, job_data.company,
-    job_data.title, job_data.place, job_data.url
+    job_data.title, job_data.place, job_data.url, ai_analysis.timestamp
     FROM ai_analysis
     JOIN job_data ON job_data.id = ai_analysis.job_id
     WHERE job_data.id NOT IN (SELECT job_id FROM generated_cv)
     AND ai_analysis.adequation_grade >= ?
+    AND ai_analysis.timestamp >= datetime('now', ?)
     ORDER BY ai_analysis.adequation_grade DESC;
 """
 
@@ -197,6 +200,17 @@ def create_tables() -> None:
             )
         con.execute(
             "UPDATE generated_cv SET timestamp = CURRENT_TIMESTAMP"
+            " WHERE timestamp IS NULL"
+        )
+
+        cursor.execute("PRAGMA table_info(ai_analysis)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "timestamp" not in columns:
+            con.execute(
+                "ALTER TABLE ai_analysis ADD COLUMN timestamp DATETIME"
+            )
+        con.execute(
+            "UPDATE ai_analysis SET timestamp = CURRENT_TIMESTAMP"
             " WHERE timestamp IS NULL"
         )
 
@@ -354,23 +368,28 @@ def select_analyses() -> List[Tuple]:
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
-        ai_model, depth_analysis, description, timestamp).
+        ai_model, depth_analysis, description, analysed_at).
     """
     with sqlite3.connect(DB_ADDRESS) as con:
         return con.execute(SELECT_ANALYSES).fetchall()
 
 
-def select_jobs_for_cv(min_grade: int = 0) -> List[Tuple]:
+def select_jobs_for_cv(
+        min_grade: int = 0, window: str = "-100 years") -> List[Tuple]:
     """The graded postings still missing a CV, best fit first.
 
     Args:
         min_grade: Lowest adequation grade worth writing a CV for.
+        window: SQLite modifier applied to `datetime('now', ?)`, as in
+            `select_jobs_to_analyse`. Defaults to effectively no floor.
 
     Returns:
-        List of (job_id, adequation_grade, company, title, place, url).
+        List of (job_id, adequation_grade, company, title, place, url,
+        analysed_at).
     """
     with sqlite3.connect(DB_ADDRESS) as con:
-        return con.execute(SELECT_JOBS_FOR_CV, (min_grade,)).fetchall()
+        return con.execute(
+            SELECT_JOBS_FOR_CV, (min_grade, window)).fetchall()
 
 
 def select_generated_cvs() -> List[Tuple]:

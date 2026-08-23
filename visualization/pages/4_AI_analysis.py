@@ -23,7 +23,7 @@ WINDOWS = {
 }
 
 COLUMNS = ["job_id", "grade", "company", "title", "place", "url", "model",
-           "depth_analysis", "description", "stored_at"]
+           "depth_analysis", "description", "analysed_at"]
 
 st.set_page_config(page_title="AI analysis", layout="wide")
 st.title("AI analysis")
@@ -93,12 +93,15 @@ st.subheader("Graded postings")
 st.caption("Best fit first. Select a row to read the full analysis.")
 
 table = st.dataframe(
-    analyses[["grade", "company", "title", "place", "model", "url"]],
+    analyses[["grade", "company", "title", "place", "model", "analysed_at",
+              "url"]],
     use_container_width=True, hide_index=True, on_select="rerun",
     selection_mode="single-row",
     column_config={"url": st.column_config.LinkColumn("url"),
                    "grade": st.column_config.ProgressColumn(
-                       "grade", min_value=0, max_value=100, format="%d")},
+                       "grade", min_value=0, max_value=100, format="%d"),
+                   "analysed_at": st.column_config.DatetimeColumn(
+                       "analysed", format="DD/MM/YYYY HH:mm")},
 )
 
 selected = table.selection["rows"]
@@ -113,7 +116,7 @@ st.divider()
 st.subheader(job["title"] or "(untitled)")
 st.caption(f"{job['company']} - {job['place'] or 'no place given'} - "
            f"graded {job['grade']}/100 by {job['model']} - "
-           f"stored {job['stored_at']}")
+           f"analysed {job['analysed_at']}")
 st.link_button("Open the posting", job["url"])
 
 st.markdown("### What the model said")

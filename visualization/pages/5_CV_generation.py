@@ -17,8 +17,19 @@ from ai import cv_generation
 from cv_generator import docx_gen, pdf_gen
 from db import db_connection
 
-ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url"]
+ELIGIBLE_COLUMNS = ["job_id", "grade", "company", "title", "place", "url",
+                    "analysed_at"]
 CV_COLUMNS = ["cv_id", "title", "company", "grade", "locale", "cv", "url", "timestamp"]
+
+#: Label -> SQLite modifier for datetime('now', ?). Same shape as the
+#: AI analysis page's backlog window; "all time" is an epoch, not a special
+#: case, so the query stays one shape.
+WINDOWS = {
+    "last 24 hours": "-24 hours",
+    "last 7 days": "-7 days",
+    "last 30 days": "-30 days",
+    "all time": "-100 years",
+}
 
 GRADE_COLUMN = st.column_config.ProgressColumn("grade", min_value=0,
                                                max_value=100, format="%d")
@@ -28,11 +39,16 @@ st.title("CV generation")
 
 db_connection.create_tables()
 
-min_grade = st.slider("Minimum grade", 0, 100, 70,
-                      help="Postings graded below this are not worth a "
-                           "tailored CV, so they stay out of the list.")
+left, right = st.columns(2)
+min_grade = left.slider("Minimum grade", 0, 100, 70,
+                        help="Postings graded below this are not worth a "
+                             "tailored CV, so they stay out of the list.")
+window_label = right.selectbox("Graded within", list(WINDOWS), index=3,
+                               help="Only show postings analysed within "
+                                    "this window.")
+window = WINDOWS[window_label]
 
-eligible = pd.DataFrame(db_connection.select_jobs_for_cv(min_grade),
+eligible = pd.DataFrame(db_connection.select_jobs_for_cv(min_grade, window),
                         columns=ELIGIBLE_COLUMNS)
 generated = pd.DataFrame(db_connection.select_generated_cvs(),
                          columns=CV_COLUMNS)
@@ -46,11 +62,13 @@ st.subheader("Postings without a CV")
 st.caption("Best fit first. Select one, then generate.")
 
 table = st.dataframe(
-    eligible[["grade", "company", "title", "place", "url"]],
+    eligible[["grade", "company", "title", "place", "analysed_at", "url"]],
     use_container_width=True, hide_index=True, on_select="rerun",
     selection_mode="single-row",
     column_config={"url": st.column_config.LinkColumn("url"),
-                   "grade": GRADE_COLUMN},
+                   "grade": GRADE_COLUMN,
+                   "analysed_at": st.column_config.DatetimeColumn(
+                       "analysed", format="DD/MM/YYYY HH:mm")},
 )
 
 selected = table.selection["rows"]

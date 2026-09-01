@@ -58,7 +58,15 @@ def render(url: str, timeout: int = TIMEOUT_MS) -> Optional[str]:
             browser = play.chromium.launch()
 
             try:
-                page = browser.new_page()
+                # service_workers="block" + CDP setCacheDisabled: a plain new
+                # context/page still lets Chromium serve cached responses (disk
+                # cache, or a site's own service worker) within this one load,
+                # which is enough to make a re-scraped board look unchanged.
+                context = browser.new_context(service_workers="block")
+                page = context.new_page()
+                cdp = context.new_cdp_session(page)
+                cdp.send("Network.enable")
+                cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
                 page.goto(url, wait_until=WAIT_UNTIL, timeout=timeout)
                 page.wait_for_timeout(SETTLE_MS)
                 # ponytail: one fixed scroll + settle, not a real "wait until

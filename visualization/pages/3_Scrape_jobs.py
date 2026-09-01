@@ -11,17 +11,19 @@ import common
 import streamlit as st
 
 from db import db_connection
+from i18n import t
 from job_scraper import filters, paths
 from job_scraper.post_scraper import already_done, scrape_details
 
-st.set_page_config(page_title="Scrape jobs", layout="wide")
-st.title("Scrape jobs and store them")
+st.set_page_config(page_title=t("scrape_jobs.page_title"), layout="wide")
+common.locale_selector()
+st.title(t("scrape_jobs.title"))
 
 jobs = common.load_csv(paths.JOBS_CSV,
                        ["company", "title", "url", "place", "via", "ats"])
 
 if jobs.empty:
-    st.info("temp/jobs.csv is empty -- scrape the boards first.")
+    st.info(t("scrape_jobs.info.empty"))
     st.stop()
 
 
@@ -55,29 +57,27 @@ kept, todo, fresh = pending_rows(
     paths.DETAILED_CSV.stat().st_mtime if paths.DETAILED_CSV.exists() else 0,
 )
 
-st.subheader("Before you run")
+st.subheader(t("scrape_jobs.subheader.before_run"))
 
 columns = st.columns(4)
-columns[0].metric("Pass the first filter", f"{len(kept):,}",
-                  help="Title and URL only -- keywords, blacklist, and the "
-                       "capped exemption for postings with no title.")
-columns[1].metric("Already stored", f"{len(kept) - len(todo):,}")
-columns[2].metric("Fetched but not stored", f"{len(todo) - len(fresh):,}",
-                  help="Their page was read on an earlier run and the second "
-                       "filter rejected it. With resume on they cost nothing.")
-columns[3].metric("Pages this run would fetch", f"{len(fresh):,}",
-                  help="One HTTP request each, with resume on. Cap it below "
-                       "for a trial run.")
+columns[0].metric(t("scrape_jobs.metric.pass_first_filter"), f"{len(kept):,}",
+                  help=t("scrape_jobs.help.pass_first_filter"))
+columns[1].metric(t("scrape_jobs.metric.already_stored"),
+                  f"{len(kept) - len(todo):,}")
+columns[2].metric(t("scrape_jobs.metric.fetched_not_stored"),
+                  f"{len(todo) - len(fresh):,}",
+                  help=t("scrape_jobs.help.fetched_not_stored"))
+columns[3].metric(t("scrape_jobs.metric.pages_to_fetch"), f"{len(fresh):,}",
+                  help=t("scrape_jobs.help.pages_to_fetch"))
 
 with st.form("scrape_jobs"):
     left, middle, right = st.columns(3)
-    limit = left.number_input("Postings to fetch (0 = all pending)",
+    limit = left.number_input(t("scrape_jobs.form.limit"),
                               min_value=0, value=25, step=25)
-    workers = middle.number_input("Workers", min_value=1, max_value=32,
-                                  value=8, step=1)
-    resume = right.checkbox("Resume (skip URLs already in detailed_jobs.csv)",
-                            value=True)
-    launched = st.form_submit_button("Fetch, filter and store",
+    workers = middle.number_input(t("scrape_jobs.form.workers"), min_value=1,
+                                  max_value=32, value=8, step=1)
+    resume = right.checkbox(t("scrape_jobs.form.resume"), value=True)
+    launched = st.form_submit_button(t("scrape_jobs.form.submit"),
                                      type="primary")
 
 if launched:
@@ -88,7 +88,7 @@ if launched:
         # CSV is rewritten anyway, so everything pending goes back in.
         queue = fresh if resume else todo
         rows = queue.head(int(limit)) if limit else queue
-        log(f"{len(rows)} postings queued")
+        log(t("scrape_jobs.log.queued", count=len(rows)))
 
         # fillna first: scrape_details is written against csv.DictReader,
         # which yields "" for a missing field. A DataFrame yields nan, and
@@ -102,7 +102,7 @@ if launched:
         # it judges everything ever fetched rather than only this batch.
         # INSERT OR IGNORE makes re-offering the old rows free.
         survivors = filters.second_filter()
-        log(f"{len(survivors)} rows pass the second filter")
+        log(t("scrape_jobs.log.second_filter", count=len(survivors)))
 
         # NaN out, empty string in: a missing place would otherwise be stored
         # as the float nan. And an empty batch is never handed to insert_jobs,
@@ -115,55 +115,60 @@ if launched:
         inserted, skipped = (
             db_connection.insert_jobs(rows=batch) if batch else (0, 0)
         )
-        log(f"{inserted} inserted, {skipped} already known")
+        log(t("scrape_jobs.log.inserted", inserted=inserted, skipped=skipped))
 
         return {**stats, "kept": len(survivors), "inserted": inserted,
                 "skipped": skipped}
 
-    stats = common.run_with_log("fetching postings", workflow)
+    stats = common.run_with_log(t("scrape_jobs.status.fetching"), workflow)
 
     if stats:
         columns = st.columns(4)
-        columns[0].metric("Pages fetched", f"{stats['pending']:,}")
-        columns[1].metric("Pass the second filter", f"{stats['kept']:,}")
-        columns[2].metric("Inserted", f"{stats['inserted']:,}")
-        columns[3].metric("Already known", f"{stats['skipped']:,}")
+        columns[0].metric(t("scrape_jobs.metric.pages_fetched"),
+                          f"{stats['pending']:,}")
+        columns[1].metric(t("scrape_jobs.metric.pass_second_filter"),
+                          f"{stats['kept']:,}")
+        columns[2].metric(t("scrape_jobs.metric.inserted"),
+                          f"{stats['inserted']:,}")
+        columns[3].metric(t("scrape_jobs.metric.already_known"),
+                          f"{stats['skipped']:,}")
 
         if stats["counts"]:
-            st.subheader("How each page was read")
-            st.caption("A spike in `none` means pages that gave nothing -- "
-                       "dead links, 403s or JS shells.")
+            st.subheader(t("scrape_jobs.subheader.how_read"))
+            st.caption(t("scrape_jobs.caption.how_read"))
             st.pyplot(
                 common.barh(list(stats["counts"]), list(stats["counts"].values()),
-                            xlabel="postings"),
+                            xlabel=t("common.axis.postings")),
                 use_container_width=False,
             )
 
         st.cache_data.clear()
-        st.button("Reload the views below")
+        st.button(t("scrape_jobs.button.reload"))
 
-st.subheader("What survives the first filter")
+st.subheader(t("scrape_jobs.subheader.survives_first_filter"))
 
 left, right = st.columns(2)
 
 with left:
     st.pyplot(
-        common.barh(["dropped", "kept"], [len(jobs) - len(kept), len(kept)],
-                    xlabel="postings"),
+        common.barh([t("scrape_jobs.bar.dropped"), t("scrape_jobs.bar.kept")],
+                    [len(jobs) - len(kept), len(kept)],
+                    xlabel=t("common.axis.postings")),
         use_container_width=False,
     )
 
 with right:
-    st.caption("Companies contributing the most pages still to fetch")
-    figure = common.counts_chart(fresh["company"], "postings", top=20)
+    st.caption(t("scrape_jobs.caption.top_companies"))
+    figure = common.counts_chart(fresh["company"], t("common.axis.postings"),
+                                 top=20)
 
     if figure is None:
-        st.info("Nothing left to fetch -- every filtered posting has been "
-                "read already.")
+        st.info(t("scrape_jobs.info.nothing_left"))
     else:
         st.pyplot(figure, use_container_width=False)
 
-st.subheader("Queued postings")
+st.subheader(t("scrape_jobs.subheader.queued"))
 st.dataframe(fresh[["company", "title", "place", "ats", "url"]],
              use_container_width=True, hide_index=True,
-             column_config={"url": st.column_config.LinkColumn("url")})
+             column_config={"url": st.column_config.LinkColumn(
+                 t("common.column.url"))})

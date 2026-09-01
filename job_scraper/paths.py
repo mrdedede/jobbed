@@ -50,4 +50,8 @@ GENERATE_CV_MD = AI / "generate-cv.md"
 #: renderer reads these; nothing else does.
 L10N = ROOT / "cv_generator" / "l10n"
 
+#: UI strings for the Streamlit dashboard, one file per supported locale.
+#: Separate from L10N above: that one is CV content, this one is the app chrome.
+UI_L10N = ROOT / "l10n"
+
 TEMP.mkdir(exist_ok=True)

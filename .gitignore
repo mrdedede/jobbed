@@ -13,6 +13,7 @@ job_boards.csv
 keywords.txt
 blacklist.txt
 CV_placeholder.docx
+france_travail_credentials.json
 *.bak
 joblister.db
 

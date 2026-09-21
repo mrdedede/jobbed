@@ -43,6 +43,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from job_scraper import paths
+from job_scraper.api_sources import API_SOURCES
 from job_scraper.fetching import (
     dig,
     fetch,
@@ -286,6 +287,14 @@ def fetch_job(row: Dict[str, str]) -> Job:
             "title": row.get("title", ""),
             "description": row.get("description", ""),
             "via": "wttj",
+        }
+    elif (row.get("ats") or "") in API_SOURCES:
+        # An API source's search response already carries the full posting,
+        # same reasoning as WTTJ above -- there is no page left to fetch.
+        found = {
+            "title": row.get("title", ""),
+            "description": row.get("description", ""),
+            "via": row.get("ats", ""),
         }
     else:
         html = fetch(session(), url)

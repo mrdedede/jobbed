@@ -22,6 +22,7 @@ from typing import Callable, List, Optional
 import requests
 
 from job_scraper import diagnose, paths
+from job_scraper.api_sources import API_SOURCES
 from job_scraper.board import Board
 from job_scraper.fetching import new_session
 from job_scraper.models import Job
@@ -213,6 +214,18 @@ def scrape_boards(input_file: Optional[Path] = None,
                 for job in jobs:
                     writer.writerow({**asdict(job), "ats": ats or ""})
                     total_jobs += 1
+
+        # Not a board: one nationwide search per source rather than one call
+        # per row, so it runs after the pool rather than inside it.
+        for source_name, fetch_jobs in API_SOURCES.items():
+            jobs = fetch_jobs(session())
+
+            for job in jobs:
+                writer.writerow({**asdict(job), "ats": source_name})
+                total_jobs += 1
+
+            if on_board:
+                on_board(f"{len(jobs):4} jobs  {source_name:24} api")
 
     return {
         "boards": len(boards),

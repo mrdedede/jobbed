@@ -16,6 +16,7 @@ from job_scraper.strategies.links import JOB_PATH, scrape_links
 from job_scraper.strategies.njoyn import scrape_njoyn
 from job_scraper.strategies.notes import VENDOR_NOTES
 from job_scraper.strategies.sitemap import scrape_sitemap
+from job_scraper.strategies.werecruit import scrape_werecruit
 from job_scraper.strategies.welcometothejungle import scrape_wttj
 from job_scraper.strategies.wordpress import scrape_wordpress
 from job_scraper.strategies.workday import scrape_workday
@@ -33,6 +34,7 @@ VENDOR_SCRAPERS: Dict[ATSName, Callable] = {
     ATSName.COMEET: scrape_comeet,
     ATSName.NJOYN: scrape_njoyn,
     ATSName.WTTJ: scrape_wttj,
+    ATSName.WERECRUIT: scrape_werecruit,
 }
 
 __all__ = [
@@ -47,6 +49,7 @@ __all__ = [
     "scrape_links",
     "scrape_njoyn",
     "scrape_sitemap",
+    "scrape_werecruit",
     "scrape_wordpress",
     "scrape_workday",
     "scrape_wttj",

@@ -554,6 +554,10 @@ class ATSName(StrEnum):
     # the org's slug (strategies/welcometothejungle.py).
     WTTJ = auto()
 
+    # Multi-tenant career sites: one host, one path segment per employer
+    # (strategies/werecruit.py).
+    WERECRUIT = auto()
+
 
 @dataclass(frozen=True)
 class ATS:
@@ -1172,6 +1176,12 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
     ATS(
         name=ATSName.WTTJ,
         hosts=("welcometothejungle.com",),
+    ),
+    ATS(
+        name=ATSName.WERECRUIT,
+        hosts=("careers.werecruit.io",),
+        assets=("werecruit.io",),
+        terms=("werecruit",),
     ),
 )
 

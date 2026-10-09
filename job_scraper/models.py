@@ -23,7 +23,7 @@ class Job:
         place: Location, if a source named one.
         via: Which source produced this row. The board stage writes "feed" for
             a FEEDS row, the vendor's own name for a scraper that needed its
-            own logic (workday, comeet, njoyn, werecruit), or wordpress/sitemap/links for
+            own logic (workday, comeet, njoyn, werecruit, beetween), or wordpress/sitemap/links for
             the generic fallbacks; "rendered" means it took a browser, so the
             board is unscrapable without one. The detail stage overwrites it
             with the extractor that read the posting page -- workday, jsonld,

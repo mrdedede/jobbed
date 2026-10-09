@@ -557,6 +557,7 @@ class ATSName(StrEnum):
     # Multi-tenant career sites: one host, one path segment per employer
     # (strategies/werecruit.py).
     WERECRUIT = auto()
+    BEETWEEN = auto()
 
 
 @dataclass(frozen=True)
@@ -1182,6 +1183,12 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("careers.werecruit.io",),
         assets=("werecruit.io",),
         terms=("werecruit",),
+    ),
+    ATS(
+        name=ATSName.BEETWEEN,
+        hosts=("nos-recrutements.fr",),
+        assets=("beetween.com",),
+        terms=("beetween",),
     ),
 )
 

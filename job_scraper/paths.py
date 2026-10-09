@@ -26,6 +26,7 @@ KEYWORDS_TXT = USER_INFO / "keywords.txt"
 BLACKLIST_TXT = USER_INFO / "blacklist.txt"
 CV_MD = USER_INFO / "my_cv.md"
 CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
+FRANCE_TRAVAIL_CREDENTIALS = USER_INFO / "france_travail_credentials.json"
 
 # Stage outputs, in pipeline order.
 JOBS_CSV = TEMP / "jobs.csv"

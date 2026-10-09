@@ -9,6 +9,7 @@ through to the next.
 from typing import Callable, Dict
 
 from job_scraper.detector import ATSName
+from job_scraper.strategies.beetween import scrape_beetween
 from job_scraper.strategies.comeet import scrape_comeet
 from job_scraper.strategies.feed import FEEDS, Feed, scrape_feed
 from job_scraper.strategies.inline_json import scrape_inline_json
@@ -35,6 +36,7 @@ VENDOR_SCRAPERS: Dict[ATSName, Callable] = {
     ATSName.NJOYN: scrape_njoyn,
     ATSName.WTTJ: scrape_wttj,
     ATSName.WERECRUIT: scrape_werecruit,
+    ATSName.BEETWEEN: scrape_beetween,
 }
 
 __all__ = [
@@ -43,6 +45,7 @@ __all__ = [
     "JOB_PATH",
     "VENDOR_NOTES",
     "VENDOR_SCRAPERS",
+    "scrape_beetween",
     "scrape_comeet",
     "scrape_feed",
     "scrape_inline_json",

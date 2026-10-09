@@ -6,9 +6,17 @@ fetches against in-memory doubles. Left alone it turns a 5-second run into
 several minutes of sleeping at fake HTTP.
 """
 
+import os
+
 import pytest
+from sqlalchemy import create_engine
 
 from job_scraper import fetching, paths
+
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+psycopg://joblister:joblister@localhost:5432/joblister_test",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -62,3 +70,44 @@ def filter_files(tmp_path, monkeypatch):
 def anyio_backend():
     """Async tests run on asyncio only; trio is not installed or supported."""
     return "asyncio"
+
+
+@pytest.fixture(scope="session")
+def _db_schema():
+    """Create every table once per test session, against TEST_DATABASE_URL.
+
+    Points db.engine.engine at the test database for the rest of the run,
+    then creates the schema directly from db.tables' metadata -- Alembic
+    owns migrations for dev/prod, but a test run wants a clean, disposable
+    schema every time rather than a migration history to maintain.
+    """
+    import db.engine as db_engine_module
+    from db.tables import metadata
+
+    test_engine = create_engine(TEST_DATABASE_URL)
+    db_engine_module.engine = test_engine
+
+    metadata.drop_all(test_engine)
+    metadata.create_all(test_engine)
+
+    yield test_engine
+
+    metadata.drop_all(test_engine)
+    test_engine.dispose()
+
+
+@pytest.fixture
+def db(_db_schema):
+    """A clean set of tables for one test: every row truncated beforehand.
+
+    Truncating (not dropping/recreating) between tests is what makes this
+    fast enough to run per-test rather than per-session; CASCADE follows the
+    FKs so child tables empty along with their parents regardless of order.
+    """
+    from db.tables import metadata
+
+    with _db_schema.begin() as conn:
+        for table in reversed(metadata.sorted_tables):
+            conn.execute(table.delete())
+
+    return _db_schema

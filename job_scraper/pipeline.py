@@ -16,11 +16,12 @@ a crash, and every measurement in REFACTORING.md was taken from them after the
 fact.
 """
 
+import asyncio
 from typing import Callable, Dict, List, Optional
 
 from job_scraper import filters, paths
 from job_scraper.main_scraper import scrape_boards
-from job_scraper.post_scraper import scrape_details
+from job_scraper.post_scraper import DEFAULT_WORKERS, scrape_details
 
 #: Stage names in run order. The CLI's --from/--to index into this.
 STAGES: List[str] = ["scrape", "filter", "detail", "refilter", "store"]
@@ -91,7 +92,7 @@ def store(on_progress: Optional[Callable[[str], None]] = None) -> dict:
 
 def run(from_stage: str = STAGES[0], to_stage: str = STAGES[-1],
         limit: int = 0, render: Optional[Callable] = None,
-        workers: int = 8, resume: bool = True,
+        workers: int = DEFAULT_WORKERS, resume: bool = True,
         on_progress: Optional[Callable[[str], None]] = None) -> Dict[str, dict]:
     """Run a contiguous slice of the pipeline.
 
@@ -99,8 +100,8 @@ def run(from_stage: str = STAGES[0], to_stage: str = STAGES[-1],
         from_stage: First stage to run; one of STAGES.
         to_stage: Last stage to run, inclusive.
         limit: Cap on boards (scrape) and postings (detail). 0 means no cap.
-        render: Optional Playwright renderer for JS-built listings.
-        workers: Thread pool size for the detail stage.
+        render: Optional async renderer for JS-built listings.
+        workers: Postings fetched concurrently in the detail stage.
         resume: Whether the detail stage skips URLs it already fetched.
         on_progress: Optional callback given progress lines from every stage.
 
@@ -131,16 +132,16 @@ def run(from_stage: str = STAGES[0], to_stage: str = STAGES[-1],
         announce(name)
 
         if name == "scrape":
-            results[name] = scrape_boards(
+            results[name] = asyncio.run(scrape_boards(
                 limit=limit, render=render, on_board=on_progress
-            )
+            ))
         elif name == "filter":
             results[name] = filter_first(on_progress)
         elif name == "detail":
-            results[name] = scrape_details(
+            results[name] = asyncio.run(scrape_details(
                 limit=limit, workers=workers, resume=resume,
                 on_progress=on_progress,
-            )
+            ))
         elif name == "refilter":
             results[name] = filter_second(on_progress)
         elif name == "store":

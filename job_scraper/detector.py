@@ -8,17 +8,25 @@ engine over it. Adding an ATS is a dict entry.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum, auto
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import (Awaitable, Callable, Dict, List, Optional, Sequence,
+                    Set, Tuple)
 from urllib.parse import parse_qs, urljoin, urlparse
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
-from job_scraper.fetching import decode_response, new_session, walk_strings
+from job_scraper.fetching import (
+    decode_response,
+    new_client,
+    read_body,
+    request,
+    walk_strings,
+)
 
 RULESET_VERSION = "2026.08.1"
 
@@ -1212,7 +1220,21 @@ KNOWN_DOMAINS: frozenset = frozenset(
 # failing a test run.
 
 
-Renderer = Callable[[str], Optional[str]]
+Renderer = Callable[[str], Awaitable[Optional[str]]]
+
+
+#: What the detector introduces itself as. Per request, not per client: the
+#: shared client carries the scrapers' browser UA.
+DETECTOR_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; ATSDetector/2.0; "
+        "+https://example.com/ats-detector)"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,*/*;q=0.8"
+    ),
+}
 
 
 class ATSDetector:
@@ -1221,35 +1243,25 @@ class ATSDetector:
     Args:
         timeout: Request timeout in seconds.
         max_bytes: Maximum response body size.
-        max_redirects: Maximum redirect chain length.
-        render: Optional browser renderer for JS-rendered pages.
-        session: Optional requests.Session to fetch through. Pass one when the
-            caller will also want the page -- otherwise the same URL is
-            fetched twice and a connection pool is built and discarded per
-            call. Defaults to a private retrying session.
+        render: Optional async browser renderer for JS-rendered pages.
+        session: The httpx.AsyncClient to fetch through. Pass the one the
+            caller will also want the page from -- otherwise the same URL is
+            fetched twice. Omitted, `detect` builds a private client for the
+            call, which is what the command line does.
+
+    Redirects follow the client's own limit (see fetching.new_client); httpx
+    has no per-request cap, so the old per-detector `max_redirects` is gone.
     """
 
     def __init__(self, timeout: int = 15, max_bytes: int = 5_000_000,
-                 max_redirects: int = 5,
                  render: Optional[Renderer] = None,
                  session=None):
         self.timeout = timeout
         self.max_bytes = max_bytes
         self.render = render
+        self.session = session
 
-        self.session = session or new_session({
-            "User-Agent": (
-                "Mozilla/5.0 (compatible; ATSDetector/2.0; "
-                "+https://example.com/ats-detector)"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,"
-                "application/xml;q=0.9,*/*;q=0.8"
-            ),
-        })
-        self.session.max_redirects = max_redirects
-
-    def detect(self, url: str) -> DetectionResult:
+    async def detect(self, url: str) -> DetectionResult:
         """Fetch a URL and detect its ATS.
 
         Args:
@@ -1258,77 +1270,81 @@ class ATSDetector:
         Returns:
             DetectionResult with verdict and evidence.
         """
+        if self.session is None:
+            async with new_client() as client:
+                return await ATSDetector(
+                    self.timeout, self.max_bytes, self.render, client
+                ).detect(url)
+
+        async def read(response: httpx.Response) -> DetectionResult:
+            response.raise_for_status()
+
+            content_type = response.headers.get("Content-Type", "").lower()
+            final_url = str(response.url)
+
+            if content_type and not any(
+                kind in content_type
+                for kind in ("text/html", "application/xhtml")
+            ):
+                return self._failed(
+                    url, final_url,
+                    f"Non-HTML content type: {content_type}",
+                    response.status_code,
+                )
+
+            declared = response.headers.get("Content-Length")
+
+            if declared and declared.isdigit() and \
+                    int(declared) > self.max_bytes:
+                return self._failed(
+                    url, final_url,
+                    "Response exceeds maximum allowed size",
+                    response.status_code,
+                )
+
+            raw = await read_body(response, self.max_bytes + 1)
+
+            if len(raw) > self.max_bytes:
+                return self._failed(
+                    url, final_url,
+                    "Response exceeds maximum allowed size",
+                    response.status_code,
+                )
+
+            # Same decode the scrapers use, and it has to stay the same:
+            # Board reuses this exact string as its board page, and
+            # trusting response.encoding turned Scalian's and Sopra
+            # Steria's accented titles into "DÃ©veloppeur".
+            html = decode_response(response, raw)
+
+            redirects = [str(item.url) for item in response.history]
+
+            # Scoring walks up to 20k elements: off the loop thread so a big
+            # page does not stall every other request into a timeout.
+            result = await asyncio.to_thread(
+                self.detect_html,
+                html,
+                final_url,
+                headers=dict(response.headers),
+                input_url=url,
+                redirect_chain=redirects + [final_url],
+                status_code=response.status_code,
+            )
+
+            result.html = html
+
+            return await self._maybe_render(result, final_url, url)
+
         try:
-            with self.session.get(
-                url,
-                timeout=self.timeout,
-                allow_redirects=True,
-                stream=True,
-            ) as response:
-                response.raise_for_status()
-
-                content_type = response.headers.get(
-                    "Content-Type", ""
-                ).lower()
-
-                if content_type and not any(
-                    kind in content_type
-                    for kind in ("text/html", "application/xhtml")
-                ):
-                    return self._failed(
-                        url, response.url,
-                        f"Non-HTML content type: {content_type}",
-                        response.status_code,
-                    )
-
-                declared = response.headers.get("Content-Length")
-
-                if declared and declared.isdigit() and \
-                        int(declared) > self.max_bytes:
-                    return self._failed(
-                        url, response.url,
-                        "Response exceeds maximum allowed size",
-                        response.status_code,
-                    )
-
-                raw = response.raw.read(
-                    self.max_bytes + 1,
-                    decode_content=True,
-                )
-
-                if len(raw) > self.max_bytes:
-                    return self._failed(
-                        url, response.url,
-                        "Response exceeds maximum allowed size",
-                        response.status_code,
-                    )
-
-                # Same decode the scrapers use, and it has to stay the same:
-                # Board reuses this exact string as its board page, and
-                # trusting response.encoding turned Scalian's and Sopra
-                # Steria's accented titles into "DÃ©veloppeur".
-                html = decode_response(response, raw)
-
-                redirects = [item.url for item in response.history]
-
-                result = self.detect_html(
-                    html,
-                    response.url,
-                    headers=dict(response.headers),
-                    input_url=url,
-                    redirect_chain=redirects + [response.url],
-                    status_code=response.status_code,
-                )
-
-                result.html = html
-
-                return self._maybe_render(result, response.url, url)
-
-        except requests.RequestException as exc:
+            return await request(
+                self.session, url, read, timeout=self.timeout,
+                headers=DETECTOR_HEADERS,
+            )
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             return self._failed(url, url, str(exc), None)
 
-    def _maybe_render(self, result: DetectionResult, final_url: str,
-                      input_url: str) -> DetectionResult:
+    async def _maybe_render(self, result: DetectionResult, final_url: str,
+                            input_url: str) -> DetectionResult:
         """Retry rendering if page appears to be JS-rendered.
 
         Args:
@@ -1342,12 +1358,13 @@ class ATSDetector:
         if self.render is None or not result.needs_rendering:
             return result
 
-        rendered = self.render(final_url)
+        rendered = await self.render(final_url)
 
         if not rendered:
             return result
 
-        second = self.detect_html(
+        second = await asyncio.to_thread(
+            self.detect_html,
             rendered,
             final_url,
             input_url=input_url,
@@ -1871,4 +1888,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    print_result(ATSDetector().detect(args.url))
+    print_result(asyncio.run(ATSDetector().detect(args.url)))

@@ -529,11 +529,12 @@ def test_no_evidence_reports_zero_confidence(detector):
     assert result.confidence == 0.0
 
 
-def test_render_fallback_runs_only_for_js_shells():
+@pytest.mark.anyio
+async def test_render_fallback_runs_only_for_js_shells():
     """Renderer is invoked only for JS-shell pages."""
     calls = []
 
-    def fake_render(url: str) -> str:
+    async def fake_render(url: str) -> str:
         calls.append(url)
         return page(
             "<div data-automation-id='jobPostingHeader'>CTO</div>",
@@ -549,22 +550,28 @@ def test_render_fallback_runs_only_for_js_shells():
     assert empty.needs_rendering is True
     assert empty.detected_ats is None
 
-    rendered = shell._maybe_render(empty, url, url)
+    rendered = await shell._maybe_render(empty, url, url)
 
     assert calls == [url]
     assert rendered.detected_ats == "workday"
 
 
-def test_render_fallback_keeps_first_pass_when_renderer_adds_nothing():
+@pytest.mark.anyio
+async def test_render_fallback_keeps_first_pass_when_renderer_adds_nothing():
     """Renderer output doesn't erase first pass evidence."""
-    detector = ATSDetector(render=lambda url: "<html><body></body></html>")
+    async def blank(url):
+        return "<html><body></body></html>"
+
+    detector = ATSDetector(render=blank)
 
     first = detector.detect_html(
         page("<div id='root'></div>", "<script src='/app.js'></script>"),
         "https://careers.example.com/jobs",
     )
 
-    assert detector._maybe_render(first, first.final_url, first.input_url) is first
+    assert await detector._maybe_render(
+        first, first.final_url, first.input_url
+    ) is first
 
 
 def test_unknown_vendor_names_the_platform_we_cannot_identify(detector):
@@ -655,3 +662,53 @@ def test_no_duplicate_signal_ids():
         seen[rule.signal_id] = rule
 
     assert not duplicated, f"duplicate signal_id in ATS_REGISTRY: {duplicated}"
+
+
+def _client(handler):
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                             follow_redirects=True)
+
+
+@pytest.mark.anyio
+async def test_detect_follows_a_redirect_and_reports_the_chain():
+    import httpx
+
+    def handler(request):
+        if request.url.path == "/old":
+            return httpx.Response(302, headers={"Location": "/jobs"})
+
+        return httpx.Response(
+            200, headers={"Content-Type": "text/html"},
+            text=page("<p>hi</p>"),
+        )
+
+    async with _client(handler) as client:
+        result = await ATSDetector(session=client).detect(
+            "https://acme.test/old"
+        )
+
+    assert result.final_url == "https://acme.test/jobs"
+    assert result.redirect_chain == ["https://acme.test/old",
+                                     "https://acme.test/jobs"]
+    assert result.html and result.error is None
+
+
+@pytest.mark.anyio
+async def test_detect_reports_a_non_html_body_and_an_http_error():
+    import httpx
+
+    def handler(request):
+        if request.url.path == "/pdf":
+            return httpx.Response(200, content=b"x",
+                                  headers={"Content-Type": "application/pdf"})
+
+        return httpx.Response(404)
+
+    async with _client(handler) as client:
+        pdf = await ATSDetector(session=client).detect("https://a.test/pdf")
+        gone = await ATSDetector(session=client).detect("https://a.test/x")
+
+    assert "Non-HTML" in pdf.error
+    assert gone.error and gone.detected_ats is None

@@ -162,7 +162,7 @@ def _find_records(node: object, depth: int = 0, budget: Optional[list] = None):
             yield from _find_records(item, depth + 1, budget)
 
 
-def scrape_inline_json(board: "Board", html: Optional[str] = None) -> List[Job]:
+async def scrape_inline_json(board: "Board", html: Optional[str] = None) -> List[Job]:
     """Extract jobs from a listing dumped as inline JSON in a `<script>` tag.
 
     Args:
@@ -174,7 +174,7 @@ def scrape_inline_json(board: "Board", html: Optional[str] = None) -> List[Job]:
         List of Job results, or empty list if no script on the page carries a
         title/url-shaped record.
     """
-    html = html or board.html
+    html = html or await board.get_html()
 
     if not html:
         return []

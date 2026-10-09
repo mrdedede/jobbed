@@ -29,17 +29,18 @@ sys.path either way.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import re
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from dataclasses import asdict
 from html import unescape
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 from job_scraper import paths
@@ -51,7 +52,7 @@ from job_scraper.fetching import (
     first_string,
     jobposting_place,
     jsonld_nodes,
-    new_session,
+    new_client,
     walk_jobpostings,
     workday_endpoint,
 )
@@ -66,7 +67,9 @@ FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats"]
 # page's furniture, not a posting. Everything genuine measured under 16k.
 MAX_DESCRIPTION = 20_000
 
-DEFAULT_WORKERS = 8
+#: Postings in flight at once. They span many hosts, so the cap that protects
+#: any one host is fetching.PER_HOST, not this.
+DEFAULT_WORKERS = 50
 
 #: Page furniture, dropped before any text-level extraction. Removing it is
 #: what makes the <body> rung usable at all, and it also trims the "Rechercher
@@ -75,25 +78,6 @@ CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
                "aside", "form", "svg")
 
 _BLANK_LINES = re.compile(r"\n{3,}")
-
-
-_local = threading.local()
-
-
-def session() -> requests.Session:
-    """The calling thread's session.
-
-    requests.Session is not documented thread-safe, and one per worker keeps
-    connection pooling -- which matters here because a board's postings all
-    share a host.
-    """
-    found = getattr(_local, "session", None)
-
-    if found is None:
-        found = new_session()
-        _local.session = found
-
-    return found
 
 
 def _clean(fragment: object) -> str:
@@ -139,7 +123,8 @@ def _workday_api(url: str) -> Optional[str]:
     return f"{root}/wday/cxs/{tenant}/" + "/".join(segments)
 
 
-def _from_workday(url: str) -> Optional[dict]:
+async def _from_workday(url: str,
+                        client: httpx.AsyncClient) -> Optional[dict]:
     """Read a Workday posting from its JSON endpoint.
 
     The rendered page is a 158-character shell, so this runs instead of the
@@ -147,6 +132,7 @@ def _from_workday(url: str) -> Optional[dict]:
 
     Args:
         url: Public posting URL.
+        client: The run's shared AsyncClient.
 
     Returns:
         Field dict, or None if the endpoint gave nothing usable.
@@ -156,7 +142,7 @@ def _from_workday(url: str) -> Optional[dict]:
     if not endpoint:
         return None
 
-    info = dig(fetch_json(session(), endpoint), "jobPostingInfo")
+    info = dig(await fetch_json(client, endpoint), "jobPostingInfo")
 
     if not isinstance(info, dict):
         return None
@@ -264,11 +250,33 @@ def _from_body(soup: BeautifulSoup, title: Optional[str]) -> Optional[dict]:
     return {"title": title, "description": _text(body), "via": "body"}
 
 
-def fetch_job(row: Dict[str, str]) -> Job:
+def _from_html(html: str) -> Optional[dict]:
+    """The page ladder: JSON-LD, then <main>, then the de-chromed <body>.
+
+    Synchronous and CPU-bound -- fetch_job runs it off the event loop.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    found = _from_jsonld(soup)
+
+    if found:
+        return found
+
+    # After the JSON-LD rung, never before: de-chroming drops the
+    # <script> tags the ld+json blocks live in.
+    title = _page_title(soup)
+
+    for tag in soup.find_all(CHROME_TAGS):
+        tag.decompose()
+
+    return _from_main(soup, title) or _from_body(soup, title)
+
+
+async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
     """Read one posting's page, falling back to the row when a field is absent.
 
     Args:
         row: A first_filtered_file.csv row -- company, title, url, place, ats.
+        client: The run's shared AsyncClient.
 
     Returns:
         A Job. Never raises: a dead page yields via="none" with an empty
@@ -297,21 +305,10 @@ def fetch_job(row: Dict[str, str]) -> Job:
             "via": row.get("ats", ""),
         }
     else:
-        html = fetch(session(), url)
+        html = await fetch(client, url)
 
         if html:
-            soup = BeautifulSoup(html, "html.parser")
-            found = _from_jsonld(soup)
-
-            if not found:
-                # After the JSON-LD rung, never before: de-chroming drops the
-                # <script> tags the ld+json blocks live in.
-                title = _page_title(soup)
-
-                for tag in soup.find_all(CHROME_TAGS):
-                    tag.decompose()
-
-                found = _from_main(soup, title) or _from_body(soup, title)
+            found = await asyncio.to_thread(_from_html, html)
 
     found = found or {}
 
@@ -335,6 +332,37 @@ def fetch_job(row: Dict[str, str]) -> Job:
     )
 
 
+def start_order(rows: List[Dict[str, str]]) -> List[int]:
+    """Indices of `rows`, round-robin across hosts.
+
+    The input is sorted by company, so its first rows all hit one or two
+    hosts. Started in that order, they fill every worker slot while queued
+    behind a single host's limit and the rest of the hosts sit idle.
+
+    Args:
+        rows: Postings in output order.
+
+    Returns:
+        Row indices in the order to start them; each host's own rows keep
+        their relative order.
+    """
+    queues: Dict[Optional[str], deque] = {}
+
+    for index, row in enumerate(rows):
+        queues.setdefault(urlparse(row["url"]).hostname, deque()).append(index)
+
+    order: List[int] = []
+
+    while queues:
+        for host in list(queues):
+            order.append(queues[host].popleft())
+
+            if not queues[host]:
+                del queues[host]
+
+    return order
+
+
 def already_done(path: Path) -> set:
     """URLs an earlier run already wrote.
 
@@ -351,13 +379,13 @@ def already_done(path: Path) -> set:
         return {row["url"] for row in csv.DictReader(handle) if row.get("url")}
 
 
-def scrape_details(input_file: Optional[Path] = None,
-                   output_file: Optional[Path] = None,
-                   limit: int = 0,
-                   workers: int = DEFAULT_WORKERS,
-                   resume: bool = True,
-                   on_progress: Optional[Callable[[str], None]] = None,
-                   rows: Optional[List[Dict[str, str]]] = None) -> dict:
+async def scrape_details(input_file: Optional[Path] = None,
+                         output_file: Optional[Path] = None,
+                         limit: int = 0,
+                         workers: int = DEFAULT_WORKERS,
+                         resume: bool = True,
+                         on_progress: Optional[Callable[[str], None]] = None,
+                         rows: Optional[List[Dict[str, str]]] = None) -> dict:
     """Fetch each filtered posting's own page and write the detail CSV.
 
     Args:
@@ -366,8 +394,8 @@ def scrape_details(input_file: Optional[Path] = None,
             repoints `paths` is actually followed. Ignored when `rows` is given.
         output_file: Where to write postings with descriptions.
         limit: Only fetch the first N postings; 0 means all of them.
-        workers: Thread pool size. See fetching.REQUEST_DELAY for what this
-            implies about request rate.
+        workers: Postings fetched concurrently. Per-host request rate is
+            bounded by fetching.PER_HOST and REQUEST_DELAY, whatever this is.
         resume: Skip URLs the output already holds and append to it. False
             rewrites the file from scratch.
         on_progress: Optional callback given progress lines.
@@ -408,24 +436,48 @@ def scrape_details(input_file: Optional[Path] = None,
         if fresh:
             writer.writeheader()
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for index, (row, job) in enumerate(
-                zip(pending, pool.map(fetch_job, pending)), start=1
-            ):
-                # pool.map yields in this thread, in order, so no lock is
-                # needed. Flushed per row: a crash at 8000 keeps the first
-                # 7999, and the next run resumes from exactly there.
-                writer.writerow({**asdict(job), "ats": row.get("ats", "")})
-                output.flush()
+        async with new_client() as client:
+            gate = asyncio.Semaphore(workers)
 
-                counts[job.via] = counts.get(job.via, 0) + 1
+            async def bounded(row: Dict[str, str]) -> Job:
+                async with gate:
+                    return await fetch_job(row, client)
 
-                if on_progress and (index % 50 == 0 or index == len(pending)):
-                    on_progress(
-                        f"  {index}/{len(pending)}  "
-                        + "  ".join(f"{via}={n}"
-                                    for via, n in sorted(counts.items()))
+            # Started spread across hosts, awaited in input order.
+            started = {
+                index: asyncio.create_task(bounded(pending[index]))
+                for index in start_order(pending)
+            }
+            tasks = [started[index] for index in range(len(pending))]
+
+            try:
+                # Awaited in input order, like pool.map was, so the writer
+                # stays in one task and needs no lock. Flushed per row: a
+                # crash at 8000 keeps the first 7999, and the next run
+                # resumes from exactly there.
+                for index, (row, task) in enumerate(
+                    zip(pending, tasks), start=1
+                ):
+                    job = await task
+                    writer.writerow(
+                        {**asdict(job), "ats": row.get("ats", "")}
                     )
+                    output.flush()
+
+                    counts[job.via] = counts.get(job.via, 0) + 1
+
+                    if on_progress and (index % 50 == 0
+                                        or index == len(pending)):
+                        on_progress(
+                            f"  {index}/{len(pending)}  "
+                            + "  ".join(f"{via}={n}"
+                                        for via, n in sorted(counts.items()))
+                        )
+            finally:
+                # An error or Ctrl-C must not leave fetches running against a
+                # client that is about to close.
+                for task in tasks:
+                    task.cancel()
 
     return {
         "pending": len(pending),
@@ -446,7 +498,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=0,
                         help="only scrape the first N postings")
-    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="postings fetched concurrently")
     parser.add_argument("--input", type=Path, default=FILTERED_JOBS)
     parser.add_argument("--output", type=Path, default=DETAILED_JOBS)
     parser.add_argument("--no-resume", action="store_true",
@@ -454,14 +507,14 @@ def main() -> int:
                              "already holds")
     args = parser.parse_args()
 
-    stats = scrape_details(
+    stats = asyncio.run(scrape_details(
         input_file=args.input,
         output_file=args.output,
         limit=args.limit,
         workers=args.workers,
         resume=not args.no_resume,
         on_progress=print,
-    )
+    ))
 
     print(f"\n-> {stats['output']}")
 

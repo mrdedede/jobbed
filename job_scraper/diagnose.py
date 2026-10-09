@@ -13,13 +13,14 @@ failed costs a second request.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 from urllib.parse import urljoin
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
-from job_scraper.fetching import decode_response, is_textual
+from job_scraper.fetching import decode_response, is_textual, request
 from job_scraper.strategies.links import JOB_PATH, _same_page
 from job_scraper.urls import job_href_matches
 
@@ -49,7 +50,7 @@ MANY_SCRIPTS = 10
 MAX_REDIRECT_LEN = 120
 
 
-def explain(board, exc: Optional[BaseException] = None) -> str:
+async def explain(board, exc: Optional[BaseException] = None) -> str:
     """Say why this board yielded nothing.
 
     Args:
@@ -59,34 +60,27 @@ def explain(board, exc: Optional[BaseException] = None) -> str:
     Returns:
         One line naming the most likely cause.
     """
-    return _cause(board, exc) + _context(board)
+    return await _cause(board, exc) + _context(board)
 
 
-def _cause(board, exc: Optional[BaseException]) -> str:
+async def _cause(board, exc: Optional[BaseException]) -> str:
     """The primary reason, before any board-level context is appended."""
     if exc is not None:
         return f"{type(exc).__name__}: {exc}"
 
-    html = board.html
+    html = await board.get_html()
 
     # The page is in hand, so nothing about HTTP is left to explain: whatever
     # went wrong went wrong in the parsing.
     if html is not None:
-        return _analyse(html, board.ats, board.url)
+        return await asyncio.to_thread(_analyse, html, board.ats, board.url)
 
-    return _probe(board)
+    return await _probe(board)
 
 
-def _probe(board) -> str:
+async def _probe(board) -> str:
     """Re-request a board whose fetch returned None, to learn why it did."""
-    try:
-        response = board.session.get(
-            board.url, timeout=20, allow_redirects=True, stream=True
-        )
-    except requests.RequestException as err:
-        return f"fetch failed: {type(err).__name__}"
-
-    with response:
+    async def read(response: httpx.Response) -> str:
         if response.status_code != 200:
             return f"http {response.status_code}"
 
@@ -97,12 +91,19 @@ def _probe(board) -> str:
 
         # 200 and textual, yet fetch() returned None: the body was empty, or it
         # exceeded the fetch cap and came back truncated past parsing.
-        raw = response.raw.read(decode_content=True)
+        raw = await response.aread()
 
         if not raw:
             return "empty body"
 
-        return _analyse(decode_response(response, raw), board.ats, board.url)
+        return await asyncio.to_thread(
+            _analyse, decode_response(response, raw), board.ats, board.url
+        )
+
+    try:
+        return await request(board.session, board.url, read)
+    except httpx.HTTPError as err:
+        return f"fetch failed: {type(err).__name__}"
 
 
 def _analyse(html: str, ats=None, base_url: str = "") -> str:

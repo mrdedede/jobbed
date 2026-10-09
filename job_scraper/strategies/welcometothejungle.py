@@ -45,14 +45,14 @@ def _extract_slug(board_url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _search(session, filters: str) -> List[dict]:
+async def _search(session, filters: str) -> List[dict]:
     payload = {
         "requests": [{
             "indexName": ALGOLIA_INDEX,
             "params": f"filters={filters}&hitsPerPage=1000",
         }]
     }
-    data = fetch_json(
+    data = await fetch_json(
         session, ALGOLIA_URL, method="post", json=payload,
         headers=ALGOLIA_HEADERS, max_bytes=FEED_MAX_BYTES,
     )
@@ -61,7 +61,7 @@ def _search(session, filters: str) -> List[dict]:
     return hits if isinstance(hits, list) else []
 
 
-def _resolve_org_name(session, slug: str) -> Optional[str]:
+async def _resolve_org_name(session, slug: str) -> Optional[str]:
     """Look up the canonical org name for a slug WTTJ has since renamed.
 
     api.welcometothejungle.com is a separate, un-walled origin -- it accepts
@@ -69,7 +69,7 @@ def _resolve_org_name(session, slug: str) -> Optional[str]:
     Algolia's own records have already moved to (organization.name, not
     organization.slug).
     """
-    data = fetch_json(session, ORG_API.format(slug=slug), max_bytes=FEED_MAX_BYTES)
+    data = await fetch_json(session, ORG_API.format(slug=slug), max_bytes=FEED_MAX_BYTES)
 
     return first_string(dig(data, "organization.name"))
 
@@ -95,7 +95,7 @@ def _job_url(locale: str, org_slug: str, hit: dict) -> Optional[str]:
     return f"https://www.welcometothejungle.com/{locale}/companies/{org_slug}/jobs/{slug}"
 
 
-def scrape_wttj(board: "Board") -> List[Job]:
+async def scrape_wttj(board: "Board") -> List[Job]:
     """Scrape a Welcome to the Jungle company board through its Algolia index.
 
     Args:
@@ -112,18 +112,18 @@ def scrape_wttj(board: "Board") -> List[Job]:
     locale_match = re.search(r"welcometothejungle\.com/([a-z]{2})/", board.url)
     locale = locale_match.group(1) if locale_match else "en"
 
-    hits = _search(board.session, f'organization.slug:"{org_slug}"')
+    hits = await _search(board.session, f'organization.slug:"{org_slug}"')
 
     if not hits:
         # The URL can still carry a slug WTTJ has since renamed away from --
         # organization.slug in Algolia moves with the rename, the board URL
         # does not. Resolve through the org API and retry on the current name.
-        org_name = _resolve_org_name(board.session, org_slug)
+        org_name = await _resolve_org_name(board.session, org_slug)
 
         if not org_name:
             return []
 
-        hits = _search(board.session, f'organization.name:"{org_name}"')
+        hits = await _search(board.session, f'organization.name:"{org_name}"')
 
         if not hits:
             return []

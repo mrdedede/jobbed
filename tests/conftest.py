@@ -18,6 +18,7 @@ def no_request_delay(monkeypatch):
     Nothing here talks to a real host, so there is nobody to be polite to.
     """
     monkeypatch.setattr(fetching, "REQUEST_DELAY", 0)
+    monkeypatch.setattr(fetching, "RETRY_BACKOFF", 0)
 
 
 @pytest.fixture
@@ -55,3 +56,9 @@ def filter_files(tmp_path, monkeypatch):
         return files
 
     return write
+
+
+@pytest.fixture
+def anyio_backend():
+    """Async tests run on asyncio only; trio is not installed or supported."""
+    return "asyncio"

@@ -11,20 +11,20 @@ rest.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-import requests
+import httpx
 
 from job_scraper import diagnose, paths
 from job_scraper.api_sources import API_SOURCES
 from job_scraper.board import Board
-from job_scraper.fetching import new_session
+from job_scraper.detector import Renderer
+from job_scraper.fetching import new_client
 from job_scraper.models import Job
 
 INPUT_FILE = paths.BOARDS_CSV
@@ -33,40 +33,22 @@ OUTPUT_FILE = paths.JOBS_CSV
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
 MISS_FIELDNAMES = ["company", "url", "reason"]
 
-#: Boards do more work per item than a single post fetch (ATS detection +
-#: multi-strategy scrape), so a lower default than post_scraper's 8 keeps a
-#: hundred-board run from hammering that many hosts at once.
-DEFAULT_WORKERS = 4
+#: Boards in flight at once. A board does more work than a single post fetch
+#: (ATS detection + multi-strategy scrape), but each is mostly waiting on the
+#: network; politeness is enforced per host in fetching, not here.
+DEFAULT_WORKERS = 20
 
 #: A render pass launches a whole headless Chromium instance per board; this
 #: many at once is already a heavy concurrent load for one machine.
 MAX_RENDER_WORKERS = 3
-
-_local = threading.local()
-
-
-def session() -> requests.Session:
-    """The calling thread's session.
-
-    Mirrors post_scraper.session(): requests.Session is not documented
-    thread-safe, and one per worker keeps connection pooling, which matters
-    here since a board's own page and its ATS-detection fetch share a host.
-    """
-    found = getattr(_local, "session", None)
-
-    if found is None:
-        found = new_session()
-        _local.session = found
-
-    return found
 
 
 @dataclass
 class BoardResult:
     """Everything the reporting loop needs about one scraped board.
 
-    Kept side-effect free (no CSV writes, no callbacks) so it can run on any
-    thread and be tested on its own.
+    Kept side-effect free (no CSV writes, no callbacks) so it can run in any
+    task and be tested on its own.
     """
 
     company: str
@@ -77,36 +59,38 @@ class BoardResult:
     error: Optional[Exception]
 
 
-def scrape_one_board(entry: dict, render: Optional[Callable] = None) -> BoardResult:
+async def scrape_one_board(entry: dict, client: httpx.AsyncClient,
+                           render: Optional[Renderer] = None) -> BoardResult:
     """Detect and scrape a single board entry.
 
     Args:
         entry: One job_boards.csv row (company, url).
-        render: Optional Playwright renderer for JS-built listings.
+        client: The run's shared AsyncClient.
+        render: Optional async renderer for JS-built listings.
 
     Returns:
         A BoardResult carrying either the scraped jobs or the exception that
         stopped this board -- never raises, so one hostile board can't take
-        down the pool.
+        down the run.
     """
     company, url = entry["company"], entry["url"]
-    board = Board(company, url, session=session(), render=render)
+    board = Board(company, url, session=client, render=render)
 
     try:
-        ats = board.detect_ats()
-        jobs = board.scrape_board()
+        ats = await board.detect_ats()
+        jobs = await board.scrape_board()
     except Exception as exc:
         return BoardResult(company, url, board, ats=None, jobs=None, error=exc)
 
     return BoardResult(company, url, board, ats=ats, jobs=jobs, error=None)
 
 
-def scrape_boards(input_file: Optional[Path] = None,
-                  output_file: Optional[Path] = None,
-                  limit: int = 0,
-                  render: Optional[Callable] = None,
-                  on_board: Optional[Callable[[str], None]] = None,
-                  workers: int = DEFAULT_WORKERS) -> dict:
+async def scrape_boards(input_file: Optional[Path] = None,
+                        output_file: Optional[Path] = None,
+                        limit: int = 0,
+                        render: Optional[Renderer] = None,
+                        on_board: Optional[Callable[[str], None]] = None,
+                        workers: int = DEFAULT_WORKERS) -> dict:
     """Scrape every board in the input CSV and write one row per posting.
 
     A board that raises is reported and skipped rather than allowed to end the
@@ -120,12 +104,11 @@ def scrape_boards(input_file: Optional[Path] = None,
             original file.
         output_file: Where to write the scraped postings.
         limit: Only scrape the first N boards; 0 means all of them.
-        render: Optional Playwright renderer for JS-built listings.
+        render: Optional async renderer for JS-built listings.
         on_board: Optional callback given one progress line per board. Left to
             the caller so this function stays usable from something that is
             not a terminal.
-        workers: Thread pool size. Boards are scraped concurrently; each
-            worker gets its own session (see `session()` above).
+        workers: Boards scraped concurrently, all through one shared client.
 
     Returns:
         Dict with `boards`, `jobs` and `failed` counts, the `output` path, the
@@ -150,82 +133,102 @@ def scrape_boards(input_file: Optional[Path] = None,
     # silently merges boards and reports four as one.
     per_board: dict = {}
 
-    with output_file.open("w", newline="", encoding="utf-8") as output, \
-            paths.NO_JOBS_CSV.open("w", newline="",
-                                   encoding="utf-8") as empties:
-        # extrasaction: most strategies leave `description` blank -- WTTJ is
-        # the one exception, since its posting pages are as WAF-walled as its
-        # board page and everything it has comes from the board-stage call.
-        writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
-                                extrasaction="ignore")
-        writer.writeheader()
+    async with new_client() as client:
+        gate = asyncio.Semaphore(workers)
 
-        misses = csv.DictWriter(empties, fieldnames=MISS_FIELDNAMES)
-        misses.writeheader()
+        async def bounded(entry: dict) -> BoardResult:
+            async with gate:
+                return await scrape_one_board(entry, client, render=render)
 
-        def record_miss(board, company, url, exc=None) -> None:
-            """Write one no_jobs row, never letting diagnosis end the run.
+        tasks = [asyncio.create_task(bounded(entry)) for entry in boards]
+        # Not boards: one nationwide search per source rather than one call
+        # per row. Started now so it overlaps the board pass; written after
+        # it, so the file keeps its order.
+        sources = {
+            name: asyncio.create_task(fetch_jobs(client))
+            for name, fetch_jobs in API_SOURCES.items()
+        }
 
-            Broad for the same reason the scrape loop below is: this is a
-            reporting aid, and it has no business costing anyone a run of a
-            hundred boards.
-            """
-            try:
-                reason = diagnose.explain(board, exc)
-            except Exception as err:
-                reason = f"diagnosis failed: {type(err).__name__}: {err}"
+        try:
+            with output_file.open("w", newline="", encoding="utf-8") as output, \
+                    paths.NO_JOBS_CSV.open("w", newline="",
+                                           encoding="utf-8") as empties:
+                # extrasaction: most strategies leave `description` blank --
+                # WTTJ is the one exception, since its posting pages are as
+                # WAF-walled as its board page and everything it has comes
+                # from the board-stage call.
+                writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
+                                        extrasaction="ignore")
+                writer.writeheader()
 
-            misses.writerow({"company": company, "url": url,
-                             "reason": reason})
+                misses = csv.DictWriter(empties, fieldnames=MISS_FIELDNAMES)
+                misses.writeheader()
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = pool.map(
-                lambda entry: scrape_one_board(entry, render=render), boards
-            )
+                async def record_miss(board, company, url, exc=None) -> None:
+                    """Write one no_jobs row, never letting diagnosis end the run.
 
-            # pool.map yields in input order on this thread, so every write
-            # below -- writer, misses, on_board -- stays single-threaded and
-            # in the same order as the sequential version, with no lock.
-            for index, result in enumerate(results, start=1):
-                company, url, board = result.company, result.url, result.board
+                    Broad for the same reason the scrape loop below is: this
+                    is a reporting aid, and it has no business costing anyone
+                    a run of a hundred boards.
+                    """
+                    try:
+                        reason = await diagnose.explain(board, exc)
+                    except Exception as err:
+                        reason = (f"diagnosis failed: "
+                                  f"{type(err).__name__}: {err}")
 
-                if result.error is not None:
-                    failed += 1
-                    per_board[url] = None
-                    record_miss(board, company, url, result.error)
+                    misses.writerow({"company": company, "url": url,
+                                     "reason": reason})
+
+                # Awaited in input order, like pool.map was: every write below
+                # -- writer, misses, on_board -- stays in one task and in the
+                # same order as the sequential version, with no lock.
+                for index, task in enumerate(tasks, start=1):
+                    result = await task
+                    company, url, board = (result.company, result.url,
+                                           result.board)
+
+                    if result.error is not None:
+                        failed += 1
+                        per_board[url] = None
+                        await record_miss(board, company, url, result.error)
+
+                        if on_board:
+                            on_board(f"[{index}/{len(boards)}] FAIL   "
+                                     f"{company}: {result.error}")
+
+                        continue
+
+                    ats, jobs = result.ats, result.jobs
+                    via = jobs[0].via if jobs else "none"
+                    per_board[url] = len(jobs)
+
+                    if not jobs:
+                        await record_miss(board, company, url)
 
                     if on_board:
-                        on_board(f"[{index}/{len(boards)}] FAIL   {company}: "
-                                 f"{result.error}")
+                        on_board(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
+                                 f"{company:24} {ats or 'unknown':16} "
+                                 f"via {via}")
 
-                    continue
+                    for job in jobs:
+                        writer.writerow({**asdict(job), "ats": ats or ""})
+                        total_jobs += 1
 
-                ats, jobs = result.ats, result.jobs
-                via = jobs[0].via if jobs else "none"
-                per_board[url] = len(jobs)
+                for source_name, source in sources.items():
+                    jobs = await source
 
-                if not jobs:
-                    record_miss(board, company, url)
+                    for job in jobs:
+                        writer.writerow({**asdict(job), "ats": source_name})
+                        total_jobs += 1
 
-                if on_board:
-                    on_board(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
-                             f"{company:24} {ats or 'unknown':16} via {via}")
-
-                for job in jobs:
-                    writer.writerow({**asdict(job), "ats": ats or ""})
-                    total_jobs += 1
-
-        # Not a board: one nationwide search per source rather than one call
-        # per row, so it runs after the pool rather than inside it.
-        for source_name, fetch_jobs in API_SOURCES.items():
-            jobs = fetch_jobs(session())
-
-            for job in jobs:
-                writer.writerow({**asdict(job), "ats": source_name})
-                total_jobs += 1
-
-            if on_board:
-                on_board(f"{len(jobs):4} jobs  {source_name:24} api")
+                    if on_board:
+                        on_board(f"{len(jobs):4} jobs  {source_name:24} api")
+        finally:
+            # An error or Ctrl-C must not leave scraping tasks running against
+            # a client that is about to close.
+            for task in (*tasks, *sources.values()):
+                task.cancel()
 
     return {
         "boards": len(boards),
@@ -248,7 +251,8 @@ def main() -> int:
                         help="only scrape the first N boards")
     parser.add_argument("--input", type=Path, default=INPUT_FILE)
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
-    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="boards scraped concurrently")
     parser.add_argument(
         "--render", action="store_true",
         help="last-resort browser pass for boards that build their listing "
@@ -263,20 +267,20 @@ def main() -> int:
     if args.render:
         # Imported here, not at module scope: Playwright is an opt-in extra
         # and this script has to keep running on a machine with no browser.
-        from job_scraper.render import render as renderer
+        from job_scraper.render import arender as renderer
         # Each render is a full headless Chromium launch -- capped separately
         # from --workers so a general "run with more workers" bump doesn't
         # also mean "launch more browsers at once".
         workers = min(workers, MAX_RENDER_WORKERS)
 
-    stats = scrape_boards(
+    stats = asyncio.run(scrape_boards(
         input_file=args.input,
         output_file=args.output,
         limit=args.limit,
         render=renderer,
         on_board=print,
         workers=workers,
-    )
+    ))
 
     print(f"\n{stats['jobs']} postings from {stats['boards']} boards "
           f"-> {stats['output']}")

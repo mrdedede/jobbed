@@ -12,12 +12,15 @@ Usage:
     from job_scraper.render import render
     Board(company, url, render=render)
 
-`render` satisfies detector.Renderer -- Callable[[str], Optional[str]] -- so it
-also feeds ATSDetector's existing rendered-retry path.
+`arender` satisfies detector.Renderer -- Callable[[str], Awaitable[Optional[str]]]
+-- so it also feeds ATSDetector's existing rendered-retry path. `render` stays
+synchronous: sync_playwright refuses to run inside a running event loop, so
+`arender` hands it to a worker thread, where there is none.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 #: DOMContentLoaded, not networkidle: several boards (decathlon, casino) keep
@@ -35,6 +38,16 @@ SETTLE_MS = 3_500
 #: that has not settled by then is not worth a longer wall-clock hit across a
 #: hundred-board run.
 TIMEOUT_MS = 30_000
+
+
+async def arender(url: str, timeout: int = TIMEOUT_MS) -> Optional[str]:
+    """`render`, off the event loop.
+
+    # ponytail: still one Chromium launch per call. Upgrade path is
+    # playwright.async_api with one browser per run and a semaphore of
+    # contexts, if render time ever dominates a --render run.
+    """
+    return await asyncio.to_thread(render, url, timeout)
 
 
 def render(url: str, timeout: int = TIMEOUT_MS) -> Optional[str]:

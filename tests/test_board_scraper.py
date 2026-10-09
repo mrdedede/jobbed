@@ -8,13 +8,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from job_scraper.board import Board, dedupe as _dedupe
 from job_scraper.fetching import (
     MAX_FETCH_BYTES,
     dig as _dig,
-    fetch as _fetch,
     first_string as _first_string,
 )
 from job_scraper.models import Job
@@ -50,6 +50,9 @@ from job_scraper.detector import (
 )
 
 
+pytestmark = pytest.mark.anyio
+
+
 def page(body: str, head: str = "") -> str:
     return f"<html><head>{head}</head><body>{body}</body></html>"
 
@@ -59,48 +62,35 @@ def page(body: str, head: str = "") -> str:
 # ======================================================================
 
 
-class FakeResponse:
-    def __init__(self, body, content_type="text/html; charset=utf-8"):
-        self.status_code = 200 if body is not None else 404
-        self._body = (body or "").encode()
-        self.encoding = "utf-8"
-        self.headers = {"Content-Type": content_type}
-        self.raw = self
-
-    def read(self, amount, decode_content=True):
-        return self._body[:amount]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
-class FakeSession:
-    """Mock requests.Session for testing.
+class FakeSession(httpx.AsyncClient):
+    """A real AsyncClient whose network is a dict.
 
     Attributes:
-        pages: URL -> body map. Body may be string or callable (for payloads).
-        requested: List of requested URLs.
-        headers: Request headers dict.
+        pages: URL -> body map. A body may be a string, None (404), or a
+            callable given the decoded JSON request body (for POST payloads).
+        requested: Every URL asked for, in order.
     """
 
     def __init__(self, pages: dict):
         self.pages = pages
         self.requested = []
-        self.headers = {}
+        super().__init__(transport=httpx.MockTransport(self._answer),
+                         follow_redirects=True)
 
-    def get(self, url, **kwargs):
-        self.requested.append(url)
-
-        return FakeResponse(self.pages.get(url))
-
-    def post(self, url, json=None, **kwargs):
+    def _answer(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
         self.requested.append(url)
         body = self.pages.get(url)
 
-        return FakeResponse(body(json) if callable(body) else body)
+        if callable(body):
+            body = body(json.loads(request.content) if request.content
+                        else None)
+
+        return httpx.Response(
+            200 if body is not None else 404,
+            content=(body or "").encode(),
+            headers={"Content-Type": "text/html; charset=utf-8"},
+        )
 
 
 def board(pages: dict, ats=None, url="https://acme.fr/jobs",
@@ -168,8 +158,8 @@ def test_nested_sitemaps_follows_only_job_children():
 # ======================================================================
 
 
-def test_sitemap_reads_title_and_place_from_jsonld():
-    jobs = scrape_sitemap(board({
+async def test_sitemap_reads_title_and_place_from_jsonld():
+    jobs = await scrape_sitemap(board({
         "https://acme.fr/sitemap.xml": SITEMAP,
         "https://acme.fr/jobs/842306": POSTING,
     }))
@@ -184,9 +174,9 @@ def test_sitemap_reads_title_and_place_from_jsonld():
     )
 
 
-def test_sitemap_falls_back_to_the_slug_when_a_posting_has_no_jsonld():
+async def test_sitemap_falls_back_to_the_slug_when_a_posting_has_no_jsonld():
     """Enumeration still beats nothing; a title is never left blank."""
-    jobs = scrape_sitemap(board({
+    jobs = await scrape_sitemap(board({
         "https://acme.fr/sitemap.xml": SITEMAP,
         "https://acme.fr/offres/dev-senior": page("<h1>Dev</h1>"),
     }))
@@ -197,9 +187,9 @@ def test_sitemap_falls_back_to_the_slug_when_a_posting_has_no_jsonld():
     assert by_url["https://acme.fr/offres/dev-senior"].place is None
 
 
-def test_sitemap_follows_an_index():
+async def test_sitemap_follows_an_index():
     """The postings live one level below the index -- as on leroymerlin."""
-    jobs = scrape_sitemap(board({
+    jobs = await scrape_sitemap(board({
         "https://acme.fr/sitemap.xml": SITEMAP_INDEX,
         "https://acme.fr/sitemap-jobs.xml": SITEMAP,
         "https://acme.fr/jobs/842306": POSTING,
@@ -208,15 +198,15 @@ def test_sitemap_follows_an_index():
     assert len(jobs) == 3
 
 
-def test_sitemap_needs_more_than_a_couple_of_links():
+async def test_sitemap_needs_more_than_a_couple_of_links():
     thin = """<urlset><url><loc>https://acme.fr/jobs/1</loc></url>
     <url><loc>https://acme.fr/jobs/2</loc></url></urlset>"""
 
-    assert scrape_sitemap(board({"https://acme.fr/sitemap.xml": thin})) == []
+    assert await scrape_sitemap(board({"https://acme.fr/sitemap.xml": thin})) == []
 
 
-def test_sitemap_falls_back_to_robots_txt():
-    jobs = scrape_sitemap(board({
+async def test_sitemap_falls_back_to_robots_txt():
+    jobs = await scrape_sitemap(board({
         "https://acme.fr/robots.txt": "Sitemap: https://acme.fr/sm-jobs.xml",
         "https://acme.fr/sm-jobs.xml": SITEMAP,
     }))
@@ -276,7 +266,7 @@ GREENHOUSE_BODY = json.dumps({"jobs": [
 ]})
 
 
-def test_feed_maps_a_greenhouse_payload():
+async def test_feed_maps_a_greenhouse_payload():
     made = board(
         {"https://boards-api.greenhouse.io/v1/boards/acme/jobs":
             GREENHOUSE_BODY},
@@ -284,7 +274,7 @@ def test_feed_maps_a_greenhouse_payload():
         url="https://boards.greenhouse.io/acme",
     )
 
-    jobs = scrape_feed(made, FEEDS[ATSName.GREENHOUSE])
+    jobs = await scrape_feed(made, FEEDS[ATSName.GREENHOUSE])
 
     assert jobs == [Job(
         company="acme",
@@ -295,7 +285,7 @@ def test_feed_maps_a_greenhouse_payload():
     )]
 
 
-def test_feed_builds_the_url_when_the_payload_omits_one():
+async def test_feed_builds_the_url_when_the_payload_omits_one():
     """SmartRecruiters returns an internal API ref, never the public URL."""
     made = board(
         {"https://api.smartrecruiters.com/v1/companies/Visa/postings"
@@ -307,7 +297,7 @@ def test_feed_builds_the_url_when_the_payload_omits_one():
         url="https://jobs.smartrecruiters.com/Visa",
     )
 
-    jobs = scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])
+    jobs = await scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])
 
     assert jobs[0].url == (
         "https://jobs.smartrecruiters.com/Visa/744000133907678"
@@ -340,7 +330,7 @@ def smartrecruiters_pages(total: int):
     return pages
 
 
-def test_feed_pages_past_the_vendor_response_cap():
+async def test_feed_pages_past_the_vendor_response_cap():
     """SmartRecruiters caps a response at 100 and reports the real total.
 
     Without paging a 250-posting board silently returned its first 100 and
@@ -349,7 +339,7 @@ def test_feed_pages_past_the_vendor_response_cap():
     made = board(smartrecruiters_pages(250), ats=ATSName.SMARTRECRUITERS,
                  url="https://jobs.smartrecruiters.com/acme")
 
-    jobs = scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])
+    jobs = await scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])
 
     assert len(jobs) == 250
     assert jobs[249].url == "https://jobs.smartrecruiters.com/acme/249"
@@ -360,16 +350,16 @@ def test_feed_pages_past_the_vendor_response_cap():
     ]
 
 
-def test_feed_stops_at_the_total_instead_of_fetching_an_empty_page():
+async def test_feed_stops_at_the_total_instead_of_fetching_an_empty_page():
     """An exact multiple of the page size must not cost a wasted request."""
     made = board(smartrecruiters_pages(200), ats=ATSName.SMARTRECRUITERS,
                  url="https://jobs.smartrecruiters.com/acme")
 
-    assert len(scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])) == 200
+    assert len(await scrape_feed(made, FEEDS[ATSName.SMARTRECRUITERS])) == 200
     assert f"{SR_ENDPOINT}&offset=200" not in made.session.requested
 
 
-def test_an_unpaged_feed_still_makes_exactly_one_request():
+async def test_an_unpaged_feed_still_makes_exactly_one_request():
     """Greenhouse and friends return the whole board; paging must stay off."""
     made = board(
         {"https://boards-api.greenhouse.io/v1/boards/acme/jobs":
@@ -378,14 +368,14 @@ def test_an_unpaged_feed_still_makes_exactly_one_request():
         url="https://boards.greenhouse.io/acme",
     )
 
-    scrape_feed(made, FEEDS[ATSName.GREENHOUSE])
+    await scrape_feed(made, FEEDS[ATSName.GREENHOUSE])
 
     assert made.session.requested == [
         "https://boards-api.greenhouse.io/v1/boards/acme/jobs"
     ]
 
 
-def test_feed_finds_the_token_in_an_embed_widget_when_the_url_has_none():
+async def test_feed_finds_the_token_in_an_embed_widget_when_the_url_has_none():
     """owkin.com embeds Ashby as a widget rather than linking to it, so the
     tenant token is only in the page body -- not in board_url or final_url."""
     owkin_page = page(
@@ -407,7 +397,7 @@ def test_feed_finds_the_token_in_an_embed_widget_when_the_url_has_none():
         url="https://www.owkin.com/careers",
     )
 
-    jobs = scrape_feed(made, FEEDS[ATSName.ASHBY])
+    jobs = await scrape_feed(made, FEEDS[ATSName.ASHBY])
 
     assert jobs == [Job(
         company="acme",
@@ -418,11 +408,11 @@ def test_feed_finds_the_token_in_an_embed_widget_when_the_url_has_none():
     )]
 
 
-def test_feed_returns_nothing_rather_than_raising_when_the_endpoint_is_down():
+async def test_feed_returns_nothing_rather_than_raising_when_the_endpoint_is_down():
     made = board({}, ats=ATSName.GREENHOUSE,
                  url="https://boards.greenhouse.io/acme")
 
-    assert scrape_feed(made, FEEDS[ATSName.GREENHOUSE]) == []
+    assert await scrape_feed(made, FEEDS[ATSName.GREENHOUSE]) == []
 
 
 @pytest.mark.parametrize("place", [
@@ -430,7 +420,7 @@ def test_feed_returns_nothing_rather_than_raising_when_the_endpoint_is_down():
     {"name": "Paris"},
     [{"city": "Paris"}],
 ])
-def test_feed_place_handles_string_dict_and_list_shapes(place):
+async def test_feed_place_handles_string_dict_and_list_shapes(place):
     """One vendor uses all three, sometimes in the same payload."""
     feed = Feed(url="https://x/{token}", token=(r"//(\w+)\.x",),
                 items="jobs", link="url", place="location")
@@ -442,7 +432,7 @@ def test_feed_place_handles_string_dict_and_list_shapes(place):
         url="https://acme.x",
     )
 
-    assert scrape_feed(made, feed)[0].place == "Paris"
+    assert (await scrape_feed(made, feed))[0].place == "Paris"
 
 
 # ======================================================================
@@ -491,12 +481,12 @@ RECORDED_FEEDS = {
 
 
 @pytest.mark.parametrize("ats", sorted(RECORDED_FEEDS))
-def test_recorded_feed_derives_its_endpoint_and_yields_jobs(ats):
+async def test_recorded_feed_derives_its_endpoint_and_yields_jobs(ats):
     """The token regex must reach the endpoint the payload came from."""
     fixture, board_url, endpoint = RECORDED_FEEDS[ats]
     made = board({endpoint: recorded(fixture)}, ats=ats, url=board_url)
 
-    jobs = scrape_feed(made, FEEDS[ats])
+    jobs = await scrape_feed(made, FEEDS[ats])
 
     assert made.session.requested == [endpoint]
     assert jobs, f"{ats} mapped no jobs from its recorded payload"
@@ -560,15 +550,15 @@ def test_recorded_feed_derives_its_endpoint_and_yields_jobs(ats):
         via="feed",
     )),
 ])
-def test_recorded_feed_maps_every_field(ats, expected):
+async def test_recorded_feed_maps_every_field(ats, expected):
     fixture, board_url, endpoint = RECORDED_FEEDS[ats]
     made = board({endpoint: recorded(fixture)}, ats=ats, url=board_url)
 
-    assert scrape_feed(made, FEEDS[ats])[0] == expected
+    assert (await scrape_feed(made, FEEDS[ats]))[0] == expected
 
 
 @pytest.mark.parametrize("ats", [ATSName.BREEZY, ATSName.PINPOINT])
-def test_nested_location_reports_city_not_first_string_in_dict(ats):
+async def test_nested_location_reports_city_not_first_string_in_dict(ats):
     """Why these rows carry a dotted `place` path rather than bare "location".
 
     Both vendors nest location. Breezy's dict leads with country and Pinpoint's
@@ -578,13 +568,13 @@ def test_nested_location_reports_city_not_first_string_in_dict(ats):
     fixture, board_url, endpoint = RECORDED_FEEDS[ats]
     made = board({endpoint: recorded(fixture)}, ats=ats, url=board_url)
 
-    places = [job.place for job in scrape_feed(made, FEEDS[ats])]
+    places = [job.place for job in await scrape_feed(made, FEEDS[ats])]
 
     assert places[0] not in ("283", "United States")
     assert any(places)
 
 
-def test_a_feed_larger_than_the_page_cap_is_not_truncated():
+async def test_a_feed_larger_than_the_page_cap_is_not_truncated():
     """JazzHR's real export is 2.7 MB.
 
     Read at MAX_FETCH_BYTES it gets cut mid-document, the XML parse fails, and
@@ -600,7 +590,7 @@ def test_a_feed_larger_than_the_page_cap_is_not_truncated():
         url="https://healthforce.applytojob.com/apply",
     )
 
-    assert len(scrape_feed(made, FEEDS[ATSName.JAZZHR])) == 3
+    assert len(await scrape_feed(made, FEEDS[ATSName.JAZZHR])) == 3
 
 
 @pytest.mark.parametrize("ats,url,expected", [
@@ -652,7 +642,7 @@ def comeet_board(**overrides):
     return board(pages, ats=ATSName.COMEET, url=COMEET_BOARD_URL)
 
 
-def test_comeet_lifts_the_uid_and_token_off_the_board_page():
+async def test_comeet_lifts_the_uid_and_token_off_the_board_page():
     """Both values, not just the UID.
 
     The careers API answers a UID on its own with "Token is missing", so a
@@ -660,7 +650,7 @@ def test_comeet_lifts_the_uid_and_token_off_the_board_page():
     """
     made = comeet_board()
 
-    jobs = scrape_comeet(made)
+    jobs = await scrape_comeet(made)
 
     assert made.session.requested == [COMEET_BOARD_URL, COMEET_API_URL]
     assert jobs[0] == Job(
@@ -673,17 +663,17 @@ def test_comeet_lifts_the_uid_and_token_off_the_board_page():
     )
 
 
-def test_comeet_gives_up_quietly_when_the_bootstrap_json_is_absent():
+async def test_comeet_gives_up_quietly_when_the_bootstrap_json_is_absent():
     """A rendered-only board must fall through, not raise -- `_feed` only
     catches NotImplementedError, so anything else would kill the board."""
-    assert scrape_comeet(comeet_board(**{
+    assert await scrape_comeet(comeet_board(**{
         COMEET_BOARD_URL: page("<h1>Careers</h1>"),
     })) == []
 
 
-def test_comeet_via_is_not_feed_so_a_misdetect_stays_visible():
+async def test_comeet_via_is_not_feed_so_a_misdetect_stays_visible():
     """Same reason Workday tags its own name rather than "feed"."""
-    assert {job.via for job in scrape_comeet(comeet_board())} == {"comeet"}
+    assert {job.via for job in await scrape_comeet(comeet_board())} == {"comeet"}
 
 
 # ======================================================================
@@ -715,7 +705,7 @@ def workday_pages(payload):
     })
 
 
-def test_workday_pages_past_the_zeroed_total():
+async def test_workday_pages_past_the_zeroed_total():
     made = board(
         {"https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/careers/jobs":
             workday_pages},
@@ -723,7 +713,7 @@ def test_workday_pages_past_the_zeroed_total():
         url="https://acme.wd3.myworkdayjobs.com/fr-FR/careers",
     )
 
-    jobs = scrape_workday(made)
+    jobs = await scrape_workday(made)
 
     assert len(jobs) == 45
     assert jobs[0] == Job(
@@ -736,7 +726,7 @@ def test_workday_pages_past_the_zeroed_total():
     )
 
 
-def test_workday_ignores_a_missing_locale_segment():
+async def test_workday_ignores_a_missing_locale_segment():
     """`/Visa` has no locale; `/fr-FR/careers` does. Both must resolve."""
     made = board(
         {"https://visa.wd5.myworkdayjobs.com/wday/cxs/visa/Visa/jobs":
@@ -745,7 +735,7 @@ def test_workday_ignores_a_missing_locale_segment():
         url="https://visa.wd5.myworkdayjobs.com/Visa",
     )
 
-    assert len(scrape_workday(made)) == 45
+    assert len(await scrape_workday(made)) == 45
 
 
 # ======================================================================
@@ -781,8 +771,8 @@ NJOYN_BOARD = page("""
 """)
 
 
-def test_njoyn_reads_the_title_from_the_row_not_the_link_text():
-    jobs = scrape_njoyn(board({NJOYN_URL: NJOYN_BOARD}, ats=ATSName.NJOYN,
+async def test_njoyn_reads_the_title_from_the_row_not_the_link_text():
+    jobs = await scrape_njoyn(board({NJOYN_URL: NJOYN_BOARD}, ats=ATSName.NJOYN,
                               url=NJOYN_URL))
 
     assert jobs == [
@@ -805,7 +795,7 @@ def test_njoyn_reads_the_title_from_the_row_not_the_link_text():
     ]
 
 
-def test_njoyn_locates_columns_by_header_not_position():
+async def test_njoyn_locates_columns_by_header_not_position():
     """The board is localised, so column order is not guaranteed."""
     swapped = page("""
     <table>
@@ -818,7 +808,7 @@ def test_njoyn_locates_columns_by_header_not_position():
     </table>
     """)
 
-    jobs = scrape_njoyn(board({NJOYN_URL: swapped}, ats=ATSName.NJOYN,
+    jobs = await scrape_njoyn(board({NJOYN_URL: swapped}, ats=ATSName.NJOYN,
                               url=NJOYN_URL))
 
     assert [(job.title, job.place) for job in jobs] == [
@@ -826,15 +816,15 @@ def test_njoyn_locates_columns_by_header_not_position():
     ]
 
 
-def test_njoyn_ignores_tables_that_are_not_the_listing():
+async def test_njoyn_ignores_tables_that_are_not_the_listing():
     """Layout tables are everywhere on a classic ASP board."""
-    assert scrape_njoyn(board(
+    assert await scrape_njoyn(board(
         {NJOYN_URL: page("<table><tr><td>nav</td></tr></table>")},
         ats=ATSName.NJOYN, url=NJOYN_URL,
     )) == []
 
 
-def test_njoyn_job_path_still_covers_the_board_if_the_scraper_finds_nothing():
+async def test_njoyn_job_path_still_covers_the_board_if_the_scraper_finds_nothing():
     """The fallback that made these postings visible in the first place.
 
     Matching the path alone found nothing: njoyn routes every posting through
@@ -842,11 +832,11 @@ def test_njoyn_job_path_still_covers_the_board_if_the_scraper_finds_nothing():
     """
     made = board({NJOYN_URL: NJOYN_BOARD}, ats=ATSName.NJOYN, url=NJOYN_URL)
 
-    assert len(scrape_links(made)) == 2
+    assert len(await scrape_links(made)) == 2
 
     generic = board({NJOYN_URL: NJOYN_BOARD}, url=NJOYN_URL)
 
-    assert scrape_links(generic) == []
+    assert await scrape_links(generic) == []
 
 
 DEEZER_URL = "https://www.deezerjobs.com/fr/offres/"
@@ -862,14 +852,14 @@ DEEZER_BOARD = page(
 )
 
 
-def test_links_falls_back_to_a_query_string_job_id_when_no_ats_is_known():
+async def test_links_falls_back_to_a_query_string_job_id_when_no_ats_is_known():
     """Deezer's shape: no vendor JOB_PATH override, id only in `?jid=`.
 
     JOB_URL_RE alone never matches -- there is no path slug after the job
     word for its trailing /{_JOB_SLUG} to land on -- so scrape_links needs
     its own query-aware fallback, not just a widened JOB_URL_RE.
     """
-    jobs = _dedupe(scrape_links(board({DEEZER_URL: DEEZER_BOARD},
+    jobs = _dedupe(await scrape_links(board({DEEZER_URL: DEEZER_BOARD},
                                       url=DEEZER_URL)))
 
     assert [job.url for job in jobs] == [
@@ -878,11 +868,11 @@ def test_links_falls_back_to_a_query_string_job_id_when_no_ats_is_known():
     ]
 
 
-def test_query_id_fallback_is_skipped_when_an_ats_already_has_a_shape():
+async def test_query_id_fallback_is_skipped_when_an_ats_already_has_a_shape():
     """A vendor JOB_PATH override already says exactly where its ids live --
     the generic query-id guess must not run alongside it and risk a false
     positive on a board that already has a precise answer."""
-    jobs = scrape_links(board({DEEZER_URL: DEEZER_BOARD},
+    jobs = await scrape_links(board({DEEZER_URL: DEEZER_BOARD},
                               ats=ATSName.NJOYN, url=DEEZER_URL))
 
     assert jobs == []
@@ -922,40 +912,40 @@ def wordpress_board(type_name="job", count=2, **extra):
     return board(pages, url=f"{WP_ROOT}/")
 
 
-def test_wordpress_discovers_the_post_type_rather_than_guessing_it():
+async def test_wordpress_discovers_the_post_type_rather_than_guessing_it():
     """The type name is the site owner's choice: "job" here, "offres" on
     leboncoin. Both are real boards in the corpus."""
     made = wordpress_board(type_name="offres")
 
-    jobs = scrape_wordpress(made)
+    jobs = await scrape_wordpress(made)
 
     assert WP_TYPES in made.session.requested
     assert jobs[0].url == f"{WP_ROOT}/offres/dev-0-h-f/"
     assert jobs[0].via == "wordpress"
 
 
-def test_wordpress_unescapes_the_rendered_title():
+async def test_wordpress_unescapes_the_rendered_title():
     """WP escapes entities; raw these read "Go developer &#8211; Team"."""
-    jobs = scrape_wordpress(wordpress_board())
+    jobs = await scrape_wordpress(wordpress_board())
 
     assert jobs[0].title == "Développeur 0 – Lyon"
 
 
-def test_wordpress_ignores_a_site_with_no_job_shaped_post_type():
+async def test_wordpress_ignores_a_site_with_no_job_shaped_post_type():
     made = board(
         {f"{WP_ROOT}/": WP_BOARD_PAGE,
          WP_TYPES: json.dumps({"post": {}, "page": {}, "attachment": {}})},
         url=f"{WP_ROOT}/",
     )
 
-    assert scrape_wordpress(made) == []
+    assert await scrape_wordpress(made) == []
 
 
-def test_wordpress_is_skipped_when_the_site_is_not_wordpress():
-    assert scrape_wordpress(board({}, url=f"{WP_ROOT}/")) == []
+async def test_wordpress_is_skipped_when_the_site_is_not_wordpress():
+    assert await scrape_wordpress(board({}, url=f"{WP_ROOT}/")) == []
 
 
-def test_wordpress_probe_is_skipped_when_the_page_has_no_wp_marker():
+async def test_wordpress_probe_is_skipped_when_the_page_has_no_wp_marker():
     """The probe is a request spent on every board, and 25 of the 35 in the
     corpus are not WordPress. A page with no wp- marker never gets one."""
     made = board(
@@ -964,18 +954,18 @@ def test_wordpress_probe_is_skipped_when_the_page_has_no_wp_marker():
         url=f"{WP_ROOT}/",
     )
 
-    assert scrape_wordpress(made) == []
+    assert await scrape_wordpress(made) == []
     assert WP_TYPES not in made.session.requested
 
 
-def test_wordpress_runs_before_the_sitemap_so_postings_cost_one_request():
+async def test_wordpress_runs_before_the_sitemap_so_postings_cost_one_request():
     """Both strategies recover a real title; the sitemap pays one request per
     posting to do it, so the cheaper one has to win."""
     made = wordpress_board(**{
         f"{WP_ROOT}/sitemap.xml": SITEMAP,
     })
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert [job.via for job in jobs] == ["wordpress", "wordpress"]
     assert f"{WP_ROOT}/sitemap.xml" not in made.session.requested
@@ -994,11 +984,11 @@ BOARD_PAGE = page(
 )
 
 
-def test_links_filters_by_the_ats_job_pattern():
+async def test_links_filters_by_the_ats_job_pattern():
     # BOARD_PAGE's chevron anchor points at the same URL as the first
     # posting; scrape_links keeps both raw rows (dedup is _dedupe's job, one
     # layer up), so the first title wins once deduped.
-    jobs = _dedupe(scrape_links(board(
+    jobs = _dedupe(await scrape_links(board(
         {"https://acme.fr/jobs": BOARD_PAGE}, ats=ATSName.TEAMTAILOR
     )))
 
@@ -1006,8 +996,8 @@ def test_links_filters_by_the_ats_job_pattern():
     assert all(job.via == "links" and job.place is None for job in jobs)
 
 
-def test_links_falls_back_to_the_generic_job_shape_for_an_unknown_ats():
-    jobs = _dedupe(scrape_links(board({"https://acme.fr/jobs": BOARD_PAGE})))
+async def test_links_falls_back_to_the_generic_job_shape_for_an_unknown_ats():
+    jobs = _dedupe(await scrape_links(board({"https://acme.fr/jobs": BOARD_PAGE})))
 
     assert len(jobs) == 2
 
@@ -1031,7 +1021,7 @@ RADANCY_PAGE = page(
 )
 
 
-def test_avature_postings_are_missed_entirely_without_its_job_path():
+async def test_avature_postings_are_missed_entirely_without_its_job_path():
     """The generic shape cannot reach an Avature posting at all.
 
     "externaljobs" is not a job word even with the prefix allowance, so the
@@ -1040,12 +1030,12 @@ def test_avature_postings_are_missed_entirely_without_its_job_path():
     the slug guard now rejects that too ("faq.html" is neither hyphenated nor
     an id).
     """
-    generic = scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
+    generic = await scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
                                  url="https://jobs.siemens.com/x"))
 
     assert generic == []
 
-    tuned = scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
+    tuned = await scrape_links(board({"https://jobs.siemens.com/x": AVATURE_PAGE},
                                ats=ATSName.AVATURE,
                                url="https://jobs.siemens.com/x"))
 
@@ -1064,15 +1054,15 @@ ASHBY_PAGE = page(
 )
 
 
-def test_ashby_postings_are_missed_entirely_without_its_job_path():
+async def test_ashby_postings_are_missed_entirely_without_its_job_path():
     """Ashby puts "jobs" in the hostname, not the path -- the generic shape
     looks only at the path, so it finds nothing here."""
-    generic = scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
+    generic = await scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
                                  url="https://notion.com/careers"))
 
     assert generic == []
 
-    tuned = scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
+    tuned = await scrape_links(board({"https://notion.com/careers": ASHBY_PAGE},
                                ats=ATSName.ASHBY,
                                url="https://notion.com/careers"))
 
@@ -1082,10 +1072,10 @@ def test_ashby_postings_are_missed_entirely_without_its_job_path():
     ]
 
 
-def test_radancy_job_path_keeps_listing_pages_out():
+async def test_radancy_job_path_keeps_listing_pages_out():
     """/search-jobs and /software-engineering-jobs are collections, not
     postings, and the generic shape lets the last one through."""
-    jobs = scrape_links(board({"https://careers.synopsys.com/x": RADANCY_PAGE},
+    jobs = await scrape_links(board({"https://careers.synopsys.com/x": RADANCY_PAGE},
                               ats=ATSName.RADANCY,
                               url="https://careers.synopsys.com/x"))
 
@@ -1095,16 +1085,16 @@ def test_radancy_job_path_keeps_listing_pages_out():
     ]
 
 
-def test_links_skips_anchors_whose_label_is_not_a_title():
+async def test_links_skips_anchors_whose_label_is_not_a_title():
     """The `>` chevron points at a real posting and must still be dropped."""
-    jobs = scrape_links(board(
+    jobs = await scrape_links(board(
         {"https://acme.fr/jobs": BOARD_PAGE}, ats=ATSName.TEAMTAILOR
     ))
 
     assert ">" not in [job.title for job in jobs]
 
 
-def test_links_keeps_the_posting_when_the_label_is_empty():
+async def test_links_keeps_the_posting_when_the_label_is_empty():
     """An out-of-range label is a reason to distrust the title, not drop the
     posting -- same trade the boilerplate branch makes.
 
@@ -1112,7 +1102,7 @@ def test_links_keeps_the_posting_when_the_label_is_empty():
     anchor's own text empty; before this the length guard `continue`d past
     the fallback chain below it and every one of these postings vanished.
     """
-    jobs = scrape_links(board(
+    jobs = await scrape_links(board(
         {"https://acme.fr/jobs": page(
             "<div class='card'><h3>Ingenieur DevOps</h3>"
             "<a href='/jobs/8142223-ingenieur-devops'></a></div>"
@@ -1123,11 +1113,11 @@ def test_links_keeps_the_posting_when_the_label_is_empty():
     assert [job.title for job in jobs] == ["Ingenieur DevOps"]
 
 
-def test_links_keeps_the_posting_when_the_label_is_the_whole_card():
+async def test_links_keeps_the_posting_when_the_label_is_the_whole_card():
     """An anchor that wraps an entire card renders hundreds of characters of
     text -- ferchau's shape. That must fall back to the slug, not disappear.
     """
-    jobs = scrape_links(board(
+    jobs = await scrape_links(board(
         {"https://acme.fr/jobs": page(
             "<a href='/jobs/8142223-ingenieur-devops'>"
             + "Ingenieur DevOps. " * 20 +
@@ -1148,7 +1138,7 @@ POSTING_WITH_SECTION_NAV = page(
 )
 
 
-def test_links_ignores_anchors_pointing_at_the_current_page():
+async def test_links_ignores_anchors_pointing_at_the_current_page():
     """Section jumps are navigation, and _dedupe strips the fragment.
 
     Without this the whole in-page nav collapses onto the posting being read
@@ -1156,7 +1146,7 @@ def test_links_ignores_anchors_pointing_at_the_current_page():
     """
     here = "https://careers.synopsys.com/job/lyon/dev-senior/44408/95675646064"
 
-    jobs = _dedupe(scrape_links(board(
+    jobs = _dedupe(await scrape_links(board(
         {here: POSTING_WITH_SECTION_NAV}, ats=ATSName.RADANCY, url=here,
     )))
 
@@ -1167,13 +1157,13 @@ def test_links_ignores_anchors_pointing_at_the_current_page():
     "Skip to main content", "Learn more", "En savoir plus", "Postuler",
     "APPLY NOW", "Voir l'offre", "Lire la suite",
 ])
-def test_links_falls_back_to_the_slug_when_the_label_is_boilerplate(label):
+async def test_links_falls_back_to_the_slug_when_the_label_is_boilerplate(label):
     """The posting is kept; only its label is distrusted.
 
     Inetum labels all 1620 of its postings "Lire la suite", so dropping the
     anchor would lose the entire board rather than just its titles.
     """
-    jobs = scrape_links(board(
+    jobs = await scrape_links(board(
         {"https://acme.fr/jobs": page(
             f"<a href='/jobs/8142223-chef-de-projet'>{label}</a>"
         )},
@@ -1195,35 +1185,35 @@ CARD_BOARD = page(
 )
 
 
-def test_links_takes_the_card_heading_when_the_label_is_boilerplate():
+async def test_links_takes_the_card_heading_when_the_label_is_boilerplate():
     """The slug is a UUID here, so without the heading these 1442 Inetum
     rows read "C7d3cf7c 3fa8 43bf B34b 91ff69500ce6"."""
-    jobs = scrape_links(board({"https://www.inetum.com/x": CARD_BOARD},
+    jobs = await scrape_links(board({"https://www.inetum.com/x": CARD_BOARD},
                               url="https://www.inetum.com/x"))
 
     assert [job.title for job in jobs] == ["Senior Data Engineer"]
 
 
-def test_links_still_prefers_the_anchor_label_over_the_card_heading():
+async def test_links_still_prefers_the_anchor_label_over_the_card_heading():
     """A card heading may be a section title; the link's own text wins."""
     marked = page(
         "<div><h3>Nos offres</h3>"
         "<a href='/offres/data-engineer-h-f'>Data Engineer H/F</a></div>"
     )
 
-    jobs = scrape_links(board({"https://acme.fr/x": marked},
+    jobs = await scrape_links(board({"https://acme.fr/x": marked},
                               url="https://acme.fr/x"))
 
     assert [job.title for job in jobs] == ["Data Engineer H/F"]
 
 
-def test_links_prefers_a_real_label_over_the_slug():
+async def test_links_prefers_a_real_label_over_the_slug():
     """Both anchors point at one posting; _dedupe keeps the first.
 
     Boards put the card heading before the "read more" button, so the real
     title is the one that survives.
     """
-    jobs = _dedupe(scrape_links(board(
+    jobs = _dedupe(await scrape_links(board(
         {"https://acme.fr/jobs": page(
             "<a href='/jobs/8142223-chef-de-projet'>Chef de projet</a>"
             "<a href='/jobs/8142223-chef-de-projet'>Learn more</a>"
@@ -1250,7 +1240,7 @@ class FakeRenderer:
         self.html = html
         self.calls = []
 
-    def __call__(self, url: str):
+    async def __call__(self, url: str):
         self.calls.append(url)
 
         return self.html
@@ -1260,39 +1250,39 @@ class FakeRenderer:
 SHELL_PAGE = page("<div id='root'></div>")
 
 
-def test_rendering_is_off_unless_a_renderer_is_supplied():
+async def test_rendering_is_off_unless_a_renderer_is_supplied():
     """The default Board stays byte-identical on a browser-less machine."""
     made = board({"https://acme.fr/jobs": SHELL_PAGE})
 
     assert made.render is None
-    assert made.scrape_board() == []
+    assert await made.scrape_board() == []
 
 
-def test_the_browser_runs_only_after_every_cheaper_strategy_is_empty():
+async def test_the_browser_runs_only_after_every_cheaper_strategy_is_empty():
     """It is the most expensive strategy by orders of magnitude. A board the
     anchors already cover must never pay for it."""
     renderer = FakeRenderer(BOARD_PAGE)
     made = board({"https://acme.fr/jobs": BOARD_PAGE}, render=renderer)
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert [job.via for job in jobs] == ["links", "links"]
     assert renderer.calls == []
 
 
-def test_the_browser_recovers_a_board_whose_listing_is_drawn_in_js():
+async def test_the_browser_recovers_a_board_whose_listing_is_drawn_in_js():
     """The ~13 uncovered boards in the corpus all fail this way: the served
     HTML is a shell, and the postings exist only after the JS runs."""
     renderer = FakeRenderer(BOARD_PAGE)
     made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=renderer)
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert renderer.calls == ["https://acme.fr/jobs"]
     assert [job.title for job in jobs] == ["Chef de projet", "Dev senior"]
 
 
-def test_rendered_via_is_not_links_so_a_browser_only_board_stays_visible():
+async def test_rendered_via_is_not_links_so_a_browser_only_board_stays_visible():
     """Same reason `via` distinguishes feed from sitemap: a board that cannot
     be scraped without a browser must not read like an ordinary anchor page."""
     made = board(
@@ -1300,18 +1290,18 @@ def test_rendered_via_is_not_links_so_a_browser_only_board_stays_visible():
         render=FakeRenderer(BOARD_PAGE),
     )
 
-    assert all(job.via == "rendered" for job in made.scrape_board())
+    assert all(job.via == "rendered" for job in await made.scrape_board())
 
 
-def test_a_failed_render_yields_nothing_rather_than_raising():
+async def test_a_failed_render_yields_nothing_rather_than_raising():
     """render() returns None for a timeout, a crashed page, or no browser at
     all -- none of which may kill a hundred-board run."""
     made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=FakeRenderer())
 
-    assert made.scrape_board() == []
+    assert await made.scrape_board() == []
 
 
-def test_the_renderer_reaches_the_detector_too(monkeypatch):
+async def test_the_renderer_reaches_the_detector_too(monkeypatch):
     """ATSDetector has its own rendered-retry path; handing it the same
     renderer can name an ATS on a shell page and so unlock a feed."""
     seen = {}
@@ -1321,7 +1311,7 @@ def test_the_renderer_reaches_the_detector_too(monkeypatch):
             seen["render"] = render
             seen["session"] = session
 
-        def detect(self, url):
+        async def detect(self, url):
             return DetectionResult(
                 input_url=url, final_url=url,
                 detected_ats=None, confidence=0.0, scores={},
@@ -1330,7 +1320,7 @@ def test_the_renderer_reaches_the_detector_too(monkeypatch):
     monkeypatch.setattr("job_scraper.board.ATSDetector", SpyDetector)
 
     renderer = FakeRenderer()
-    board({}, render=renderer).detect_ats()
+    await board({}, render=renderer).detect_ats()
 
     assert seen["render"] is renderer
 
@@ -1347,11 +1337,11 @@ FEED_BOARD = {
 }
 
 
-def test_dispatch_prefers_the_feed_over_sitemap_and_links():
+async def test_dispatch_prefers_the_feed_over_sitemap_and_links():
     made = board(FEED_BOARD, ats=ATSName.GREENHOUSE,
                  url="https://boards.greenhouse.io/acme")
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert [job.via for job in jobs] == ["feed"]
     # The cheaper path won outright: no sitemap discovery was paid for.
@@ -1360,7 +1350,7 @@ def test_dispatch_prefers_the_feed_over_sitemap_and_links():
     )
 
 
-def test_via_records_a_fallback_so_a_broken_feed_is_visible():
+async def test_via_records_a_fallback_so_a_broken_feed_is_visible():
     """A named ATS scraped by anchors must not look like a normal result.
 
     This is the whole reason `via` exists -- otherwise "fallback" quietly
@@ -1372,72 +1362,31 @@ def test_via_records_a_fallback_so_a_broken_feed_is_visible():
         url="https://boards.greenhouse.io/acme",
     )
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert jobs and all(job.via == "links" for job in jobs)
 
 
-def test_the_board_page_is_fetched_once_for_all_strategies():
+async def test_the_board_page_is_fetched_once_for_all_strategies():
     """wordpress, sitemap and links all want the same document. Before the
     Board cached it they each fetched their own copy."""
     url = "https://acme.fr/jobs"
     made = board({url: BOARD_PAGE}, url=url)
 
-    made.scrape_board()
+    await made.scrape_board()
 
     assert made.session.requested.count(url) == 1
 
 
-def test_a_dead_board_page_is_not_re_fetched_by_every_strategy():
+async def test_a_dead_board_page_is_not_re_fetched_by_every_strategy():
     """None is a real cached value here, so a plain None-check would send each
     strategy in turn back out to the same broken board."""
     url = "https://acme.fr/jobs"
     made = board({}, url=url)
 
-    assert made.scrape_board() == []
+    assert await made.scrape_board() == []
     assert made.html is None
     assert made.session.requested.count(url) == 1
-
-
-def test_an_undeclared_charset_is_read_as_utf8_not_latin1():
-    """requests defaults text/* with no charset to ISO-8859-1 (RFC 2616), which
-    HTML5 does not. Trusting it turned "Développeur" into "DÃ©veloppeur" on
-    Scalian and Sopra Steria, both of which declare utf-8 in a <meta> only."""
-    class LatinGuess(FakeResponse):
-        def __init__(self, body):
-            super().__init__(body, content_type="text/html")
-            # What requests actually reports for a charset-less text/html.
-            self.encoding = "ISO-8859-1"
-
-    class Undeclared(FakeSession):
-        def get(self, url, **kwargs):
-            self.requested.append(url)
-
-            return LatinGuess(self.pages.get(url))
-
-    url = "https://acme.fr/jobs"
-    session = Undeclared({url: "<h1>Développeur</h1>"})
-
-    assert "Développeur" in _fetch(session, url)
-
-
-def test_a_declared_charset_is_still_honoured():
-    """The fix must not override a board that says what it means."""
-    class Latin(FakeResponse):
-        def __init__(self, body):
-            super().__init__(body, content_type="text/html; charset=latin-1")
-            self._body = "Développeur".encode("latin-1")
-            self.encoding = "latin-1"
-
-    class Declared(FakeSession):
-        def get(self, url, **kwargs):
-            self.requested.append(url)
-
-            return Latin(self.pages.get(url))
-
-    url = "https://acme.fr/jobs"
-
-    assert _fetch(Declared({url: "x"}), url) == "Développeur"
 
 
 def test_every_detectable_ats_has_a_slot():
@@ -1464,7 +1413,7 @@ def test_no_ats_is_claimed_by_both_tables():
     assert not set(FEEDS) & set(VENDOR_SCRAPERS)
 
 
-def test_an_unwritten_vendor_scraper_falls_through_instead_of_crashing():
+async def test_an_unwritten_vendor_scraper_falls_through_instead_of_crashing():
     """The reason NotImplementedError is caught.
 
     Teamtailor has no vendor scraper, but its boards scrape fine from a
@@ -1479,7 +1428,7 @@ def test_an_unwritten_vendor_scraper_falls_through_instead_of_crashing():
         ats=ATSName.TEAMTAILOR,
     )
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert jobs and all(job.via == "sitemap" for job in jobs)
 
@@ -1502,11 +1451,11 @@ def test_notes_never_shadow_a_real_scraper():
     assert not set(VENDOR_NOTES) & set(FEEDS)
 
 
-def test_a_board_with_nothing_returns_no_jobs_rather_than_raising():
+async def test_a_board_with_nothing_returns_no_jobs_rather_than_raising():
     made = board({}, ats=ATSName.GREENHOUSE,
                  url="https://boards.greenhouse.io/acme")
 
-    assert made.scrape_board() == []
+    assert await made.scrape_board() == []
 
 
 @pytest.mark.parametrize("url,expected", [
@@ -1582,8 +1531,8 @@ def wttj_board(**overrides):
     return board(pages, ats=ATSName.WTTJ, url=WTTJ_BOARD_URL)
 
 
-def test_wttj_reads_the_slug_off_the_board_url():
-    jobs = scrape_wttj(wttj_board())
+async def test_wttj_reads_the_slug_off_the_board_url():
+    jobs = await scrape_wttj(wttj_board())
 
     assert jobs[0] == Job(
         company="acme",
@@ -1600,7 +1549,7 @@ def test_wttj_reads_the_slug_off_the_board_url():
     )
 
 
-def test_wttj_falls_back_to_the_org_name_when_the_url_slug_has_moved():
+async def test_wttj_falls_back_to_the_org_name_when_the_url_slug_has_moved():
     """swile.job_boards.csv still points at /lunchr/ from before the rename;
     Algolia's own organization.slug moved to "swile" and no longer answers to
     the old one, so a 0-hit slug query has to resolve through the org API."""
@@ -1613,7 +1562,7 @@ def test_wttj_falls_back_to_the_org_name_when_the_url_slug_has_moved():
         }),
     })
 
-    jobs = scrape_wttj(made)
+    jobs = await scrape_wttj(made)
 
     assert jobs[0].title == "Ingénieur Logiciel"
     assert made.session.requested == [
@@ -1621,18 +1570,18 @@ def test_wttj_falls_back_to_the_org_name_when_the_url_slug_has_moved():
     ]
 
 
-def test_wttj_gives_up_quietly_when_the_org_cannot_be_resolved():
-    assert scrape_wttj(wttj_board(**{
+async def test_wttj_gives_up_quietly_when_the_org_cannot_be_resolved():
+    assert await scrape_wttj(wttj_board(**{
         ALGOLIA_URL: _algolia_page({}),
         ORG_API.format(slug="acme"): json.dumps({"organization": {}}),
     })) == []
 
 
-def test_wttj_gives_up_quietly_with_no_slug_in_the_url():
+async def test_wttj_gives_up_quietly_with_no_slug_in_the_url():
     made = board(
         {ALGOLIA_URL: _algolia_page({})},
         ats=ATSName.WTTJ,
         url="https://www.welcometothejungle.com/fr/",
     )
 
-    assert scrape_wttj(made) == []
+    assert await scrape_wttj(made) == []

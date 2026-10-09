@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 from urllib.parse import urldefrag
 
 from job_scraper.detector import ATSDetector, ATSName, Renderer
-from job_scraper.fetching import fetch, new_session
+from job_scraper.fetching import fetch
 from job_scraper.models import Job
 from job_scraper.strategies import (
     FEEDS,
@@ -66,17 +66,17 @@ class Board:
         board_jobs: List of scraped Job results.
     """
 
-    def __init__(self, company_name: str, board_url: str, session=None,
+    def __init__(self, company_name: str, board_url: str, session,
                  render: Optional[Renderer] = None):
         """Initialize a Board scraper.
 
         Args:
             company_name: Hiring company name.
             board_url: Career board base URL.
-            session: Optional requests.Session for HTTP requests. If None,
-                a retrying session is created with default headers.
-            render: Optional Playwright browser renderer for JS-rendered
-                boards. None disables browser rendering; keep this way if your
+            session: The run's shared httpx.AsyncClient (see
+                fetching.new_client).
+            render: Optional async browser renderer for JS-rendered boards.
+                None disables browser rendering; keep this way if your
                 machine has no browser.
         """
         self.company_name = company_name
@@ -87,7 +87,7 @@ class Board:
         self.board_jobs: List[Job] = []
         self._html: object = _UNFETCHED
 
-        self.session = session or new_session()
+        self.session = session
 
     @property
     def url(self) -> str:
@@ -96,6 +96,14 @@ class Board:
 
     @property
     def html(self) -> Optional[str]:
+        """The board page if something has fetched it yet, else None.
+
+        Read-only and never fetches -- a property cannot await. Strategies
+        use `get_html()`.
+        """
+        return None if self._html is _UNFETCHED else self._html  # type: ignore[return-value]
+
+    async def get_html(self) -> Optional[str]:
         """The board page, fetched at most once per Board.
 
         Four strategies want this same document -- comeet and njoyn read their
@@ -107,11 +115,11 @@ class Board:
         normal path it costs no request at all.
         """
         if self._html is _UNFETCHED:
-            self._html = fetch(self.session, self.url)
+            self._html = await fetch(self.session, self.url)
 
         return self._html  # type: ignore[return-value]
 
-    def detect_ats(self) -> Optional[ATSName]:
+    async def detect_ats(self) -> Optional[ATSName]:
         """Detect the ATS powering this board.
 
         Runs HTTP analysis, with optional browser pass if a renderer is
@@ -123,9 +131,8 @@ class Board:
         """
         # Share the Board's session rather than letting the detector build its
         # own: the detector fetched this exact page, and without sharing the
-        # board page was fetched twice per board and a whole connection pool
-        # was built and thrown away each time.
-        detected = ATSDetector(
+        # board page was fetched twice per board.
+        detected = await ATSDetector(
             session=self.session, render=self.render
         ).detect(self.board_url)
 
@@ -140,7 +147,7 @@ class Board:
 
         return self.ats
 
-    def scrape_board(self) -> List[Job]:
+    async def scrape_board(self) -> List[Job]:
         """Feed, then WordPress REST, then sitemap, then anchors, then browser.
 
         A feed knows field semantics the other two have to infer, so it always
@@ -158,7 +165,7 @@ class Board:
         """
         for strategy in (self._feed, self._wordpress, self._sitemap,
                          self._links, self._inline_json, self._rendered):
-            jobs = strategy()
+            jobs = await strategy()
 
             if jobs:
                 self.board_jobs = dedupe(jobs)
@@ -169,7 +176,7 @@ class Board:
 
         return self.board_jobs
 
-    def _feed(self) -> List[Job]:
+    async def _feed(self) -> List[Job]:
         """Try vendor-specific feed scraper, then generic ATS feed.
 
         Returns:
@@ -178,37 +185,37 @@ class Board:
         scraper = VENDOR_SCRAPERS.get(self.ats)
 
         if scraper is not None:
-            return scraper(self)
+            return await scraper(self)
 
         feed = FEEDS.get(self.ats)
 
-        return scrape_feed(self, feed) if feed else []
+        return await scrape_feed(self, feed) if feed else []
 
-    def _wordpress(self) -> List[Job]:
+    async def _wordpress(self) -> List[Job]:
         """Try WordPress REST API scraper.
 
         Returns:
             List of Job results, or empty list if not WordPress or API fails.
         """
-        return scrape_wordpress(self)
+        return await scrape_wordpress(self)
 
-    def _sitemap(self) -> List[Job]:
+    async def _sitemap(self) -> List[Job]:
         """Try XML sitemap scraper.
 
         Returns:
             List of Job results, or empty list if no sitemap found.
         """
-        return scrape_sitemap(self)
+        return await scrape_sitemap(self)
 
-    def _links(self) -> List[Job]:
+    async def _links(self) -> List[Job]:
         """Try generic anchor-heuristic scraper.
 
         Returns:
             List of Job results, or empty list if no job-like anchors found.
         """
-        return scrape_links(self)
+        return await scrape_links(self)
 
-    def _inline_json(self) -> List[Job]:
+    async def _inline_json(self) -> List[Job]:
         """Try reading postings out of an inline `<script>` JSON blob.
 
         Cheaper than a browser pass and reads the same unrendered HTML
@@ -220,9 +227,9 @@ class Board:
             List of Job results, or empty list if no script on the page
             carries a title/url-shaped record.
         """
-        return scrape_inline_json(self)
+        return await scrape_inline_json(self)
 
-    def _rendered(self) -> List[Job]:
+    async def _rendered(self) -> List[Job]:
         """Anchors again, but on HTML a browser finished drawing.
 
         The ~13 boards left uncovered all fail for one reason: the listing is
@@ -239,7 +246,7 @@ class Board:
         if self.render is None:
             return []
 
-        html = self.render(self.url)
+        html = await self.render(self.url)
 
         if not html:
             return []
@@ -249,5 +256,5 @@ class Board:
         # under a browser has to stay visibly distinct from one that does not.
         return [
             replace(job, via="rendered")
-            for job in scrape_links(self, html=html)
+            for job in await scrape_links(self, html=html)
         ]

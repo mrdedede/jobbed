@@ -1,5 +1,5 @@
 # Runtime dependencies. Pinned to the versions this was developed against.
-requests==2.32.3
+httpx==0.28.1
 beautifulsoup4==4.12.3
 
 # job_scraper/filters.py only, and there it earns its place: both filters are

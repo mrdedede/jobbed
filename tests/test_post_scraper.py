@@ -6,6 +6,7 @@ resume bookkeeping. Same test-double style as test_board_scraper.py.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 
@@ -19,15 +20,19 @@ from job_scraper.post_scraper import (
     already_done,
     fetch_job,
 )
+from job_scraper.models import Job
 from tests.test_board_scraper import FakeSession, page
+
+
+pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
 def fake(monkeypatch):
-    """Route every session() call to one FakeSession the test can inspect."""
+    """One FakeSession the test can inspect, also handed to scrape_details."""
     made = FakeSession({})
 
-    monkeypatch.setattr(post_scraper, "session", lambda: made)
+    monkeypatch.setattr(post_scraper, "new_client", lambda: made)
 
     return made
 
@@ -60,7 +65,7 @@ def jsonld(**fields) -> str:
 # ======================================================================
 
 
-def test_jsonld_fills_every_field(fake):
+async def test_jsonld_fills_every_field(fake):
     fake.pages[row()["url"]] = jsonld(
         title="Senior Go Engineer",
         description="<p>Build things.</p>",
@@ -68,7 +73,7 @@ def test_jsonld_fills_every_field(fake):
         jobLocation={"address": {"addressLocality": "Lille"}},
     )
 
-    job = fetch_job(row())
+    job = (await fetch_job(row(), fake))
 
     assert job.via == "jsonld"
     assert job.title == "Senior Go Engineer"
@@ -77,44 +82,44 @@ def test_jsonld_fills_every_field(fake):
     assert job.description == "Build things."
 
 
-def test_jsonld_place_falls_back_to_region(fake):
+async def test_jsonld_place_falls_back_to_region(fake):
     fake.pages[row()["url"]] = jsonld(
         title="Dev",
         description="text",
         jobLocation={"address": {"addressRegion": "Hauts-de-France"}},
     )
 
-    assert fetch_job(row()).place == "Hauts-de-France"
+    assert (await fetch_job(row(), fake)).place == "Hauts-de-France"
 
 
-def test_jsonld_description_is_unescaped_and_stripped(fake):
+async def test_jsonld_description_is_unescaped_and_stripped(fake):
     fake.pages[row()["url"]] = jsonld(
         title="Dev",
         description="&lt;p&gt;R&amp;D team&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Go"
                     "&lt;/li&gt;&lt;/ul&gt;",
     )
 
-    job = fetch_job(row())
+    job = (await fetch_job(row(), fake))
 
     assert "<" not in job.description
     assert "R&D team" in job.description
     assert "Go" in job.description
 
 
-def test_description_is_capped(fake):
+async def test_description_is_capped(fake):
     fake.pages[row()["url"]] = jsonld(title="Dev", description="x" * 300_000)
 
-    assert len(fetch_job(row()).description) == MAX_DESCRIPTION
+    assert len((await fetch_job(row(), fake)).description) == MAX_DESCRIPTION
 
 
-def test_jsonld_without_description_falls_through_to_main(fake):
+async def test_jsonld_without_description_falls_through_to_main(fake):
     fake.pages[row()["url"]] = page(
         "<main>The real posting body.</main>",
         head='<script type="application/ld+json">'
              '{"@type": "JobPosting", "title": "Ignored"}</script>',
     )
 
-    job = fetch_job(row())
+    job = (await fetch_job(row(), fake))
 
     assert job.via == "main"
     assert job.description == "The real posting body."
@@ -125,12 +130,12 @@ def test_jsonld_without_description_falls_through_to_main(fake):
 # ======================================================================
 
 
-def test_main_fallback_keeps_row_company_and_place(fake):
+async def test_main_fallback_keeps_row_company_and_place(fake):
     fake.pages[row()["url"]] = page(
         '<h1>Ingénieur Backend</h1><main>Missions: du Go.</main>'
     )
 
-    job = fetch_job(row(company="engie", place="Nanterre", ats="radancy"))
+    job = (await fetch_job(row(company="engie", place="Nanterre", ats="radancy"), fake))
 
     assert job.via == "main"
     assert job.title == "Ingénieur Backend"
@@ -140,28 +145,28 @@ def test_main_fallback_keeps_row_company_and_place(fake):
     assert job.place == "Nanterre"
 
 
-def test_main_prefers_og_title_over_h1(fake):
+async def test_main_prefers_og_title_over_h1(fake):
     fake.pages[row()["url"]] = page(
         "<h1>Careers</h1><main>Body.</main>",
         head='<meta property="og:title" content="Data Engineer F/H">',
     )
 
-    assert fetch_job(row()).title == "Data Engineer F/H"
+    assert (await fetch_job(row(), fake)).title == "Data Engineer F/H"
 
 
-def test_role_main_is_accepted(fake):
+async def test_role_main_is_accepted(fake):
     fake.pages[row()["url"]] = page('<div role="main">Body text.</div>')
 
-    assert fetch_job(row()).via == "main"
+    assert (await fetch_job(row(), fake)).via == "main"
 
 
-def test_main_drops_page_chrome(fake):
+async def test_main_drops_page_chrome(fake):
     fake.pages[row()["url"]] = page(
         "<main><nav>Rechercher les offres</nav>"
         "<p>Missions.</p><footer>Mentions légales</footer></main>"
     )
 
-    assert fetch_job(row()).description == "Missions."
+    assert (await fetch_job(row(), fake)).description == "Missions."
 
 
 # ======================================================================
@@ -169,7 +174,7 @@ def test_main_drops_page_chrome(fake):
 # ======================================================================
 
 
-def test_body_fallback_when_there_is_no_main(fake):
+async def test_body_fallback_when_there_is_no_main(fake):
     # The plain WordPress/AEM shape: no JobPosting JSON-LD, no <main>.
     fake.pages[row()["url"]] = page(
         '<script type="application/ld+json">{"@type": "WebPage"}</script>'
@@ -178,7 +183,7 @@ def test_body_fallback_when_there_is_no_main(fake):
         "<p>Chez Alteca.</p></div>"
     )
 
-    job = fetch_job(row())
+    job = (await fetch_job(row(), fake))
 
     assert job.via == "body"
     assert "Chez Alteca." in job.description
@@ -187,14 +192,14 @@ def test_body_fallback_when_there_is_no_main(fake):
     assert job.title == "DevOps H/F"
 
 
-def test_html_entities_are_unescaped_in_title_and_company(fake):
+async def test_html_entities_are_unescaped_in_title_and_company(fake):
     fake.pages[row()["url"]] = jsonld(
         title="R&amp;D Engineer",
         description="text",
         hiringOrganization={"name": "IT &amp; Systèmes"},
     )
 
-    job = fetch_job(row())
+    job = (await fetch_job(row(), fake))
 
     assert job.title == "R&D Engineer"
     assert job.company == "IT & Systèmes"
@@ -218,7 +223,7 @@ def test_workday_api_url_strips_the_locale_segment():
     assert _workday_api(WORKDAY_URL) == WORKDAY_API
 
 
-def test_workday_reads_json_and_never_fetches_the_page(fake):
+async def test_workday_reads_json_and_never_fetches_the_page(fake):
     fake.pages[WORKDAY_API] = json.dumps({
         "jobPostingInfo": {
             "title": "Développeur Full-Stack",
@@ -227,7 +232,7 @@ def test_workday_reads_json_and_never_fetches_the_page(fake):
         }
     })
 
-    job = fetch_job(row(url=WORKDAY_URL, ats="workday"))
+    job = (await fetch_job(row(url=WORKDAY_URL, ats="workday"), fake))
 
     assert job.via == "workday"
     assert job.title == "Développeur Full-Stack"
@@ -242,8 +247,8 @@ def test_workday_reads_json_and_never_fetches_the_page(fake):
 # ======================================================================
 
 
-def test_gone_page_yields_a_row_rather_than_raising(fake):
-    job = fetch_job(row())
+async def test_gone_page_yields_a_row_rather_than_raising(fake):
+    job = (await fetch_job(row(), fake))
 
     assert job.via == "none"
     assert job.description == ""
@@ -274,3 +279,86 @@ def test_already_done_reads_written_urls(tmp_path):
         writer.writerow({"url": "https://acme.fr/jobs/1", "title": "Dev"})
 
     assert already_done(target) == {"https://acme.fr/jobs/1"}
+
+
+# ======================================================================
+# scrape_details: concurrency, order, resume
+# ======================================================================
+
+
+def _write_input(path, urls):
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle, fieldnames=["company", "title", "url", "place", "ats"]
+        )
+        writer.writeheader()
+
+        for url in urls:
+            writer.writerow({"company": "acme", "title": "t", "url": url,
+                             "place": "", "ats": "teamtailor"})
+
+
+def _written_urls(path):
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [r["url"] for r in csv.DictReader(handle)]
+
+
+async def test_rows_are_written_in_input_order_whatever_finishes_first(
+    tmp_path, fake, monkeypatch
+):
+    urls = [f"https://acme.fr/jobs/{n}" for n in range(6)]
+    _write_input(tmp_path / "in.csv", urls)
+
+    async def slow_first(row, client):
+        # Earlier rows take longer, so completion order is the reverse.
+        await asyncio.sleep(0.02 * (len(urls) - urls.index(row["url"])))
+
+        return Job(company="acme", title="t", description="",
+                   url=row["url"], via="none")
+
+    monkeypatch.setattr(post_scraper, "fetch_job", slow_first)
+
+    await post_scraper.scrape_details(
+        input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
+        workers=6,
+    )
+
+    assert _written_urls(tmp_path / "out.csv") == urls
+
+
+async def test_resume_skips_urls_already_written(tmp_path, fake, monkeypatch):
+    def fresh():
+        # scrape_details closes its client, so each run needs its own.
+        made = FakeSession(fake.pages)
+        made.requested = fake.requested
+
+        return made
+
+    monkeypatch.setattr(post_scraper, "new_client", fresh)
+    first, second = "https://acme.fr/jobs/1", "https://acme.fr/jobs/2"
+    _write_input(tmp_path / "in.csv", [first, second])
+    fake.pages[first] = jsonld(title="One", description="a")
+    fake.pages[second] = jsonld(title="Two", description="b")
+
+    await post_scraper.scrape_details(
+        input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
+        limit=1,
+    )
+    fake.requested.clear()
+    stats = await post_scraper.scrape_details(
+        input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
+    )
+
+    assert fake.requested == [second]
+    assert stats["skipped"] == 1 and stats["pending"] == 1
+    assert _written_urls(tmp_path / "out.csv") == [first, second]
+
+
+def test_start_order_spreads_hosts_and_keeps_each_hosts_own_order():
+    rows = [{"url": u} for u in (
+        "https://a.fr/1", "https://a.fr/2", "https://a.fr/3",
+        "https://b.fr/1", "https://c.fr/1", "https://b.fr/2",
+    )]
+
+    assert post_scraper.start_order(rows) == [0, 3, 4, 1, 5, 2]
+    assert post_scraper.start_order([]) == []

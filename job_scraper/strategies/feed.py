@@ -269,7 +269,7 @@ def _feed_jobs(board: "Board", feed: Feed, token: str,
     return jobs
 
 
-def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
+async def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
     """Scrape board from ATS vendor API endpoint.
 
     Args:
@@ -286,7 +286,7 @@ def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
     token = (
         _token(board.final_url, feed.token)
         or _token(board.board_url, feed.token)
-        or _token(board.html or "", feed.token)
+        or _token(await board.get_html() or "", feed.token)
     )
 
     if not token:
@@ -301,12 +301,12 @@ def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
 
         if feed.item_tag:
             body = None
-            items = fetch_xml_items(
+            items = await fetch_xml_items(
                 board.session, target, feed.item_tag,
                 max_bytes=FEED_MAX_BYTES,
             )
         else:
-            body = fetch_json(
+            body = await fetch_json(
                 board.session, target, max_bytes=FEED_MAX_BYTES
             )
             items = dig(body, feed.items)

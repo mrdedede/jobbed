@@ -9,14 +9,14 @@ API_SOURCES mirrors strategies.VENDOR_SCRAPERS: a name -> callable table,
 extended by adding an entry, not a class.
 """
 
-from typing import Callable, Dict, List
+from typing import Awaitable, Callable, Dict, List
 
-import requests
+import httpx
 
 from job_scraper.api_sources.france_travail import fetch_jobs as fetch_france_travail
 from job_scraper.models import Job
 
-API_SOURCES: Dict[str, Callable[[requests.Session], List[Job]]] = {
+API_SOURCES: Dict[str, Callable[[httpx.AsyncClient], Awaitable[List[Job]]]] = {
     "france_travail": fetch_france_travail,
 }
 

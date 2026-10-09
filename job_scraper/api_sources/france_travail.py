@@ -41,6 +41,9 @@ MAX_RESULTS = 1500
 #: Cached token, module-level: every call in a run shares one process, and a
 #: fresh token per call would be one extra round trip per page for no reason.
 _token: Optional[Tuple[str, float]] = None
+# ponytail: no lock. fetch_jobs runs once per run and its token calls are
+# sequential, so nothing can refresh concurrently. Add an asyncio.Lock if a
+# second concurrent caller ever appears.
 
 
 def _load_credentials() -> Optional[dict]:
@@ -60,13 +63,13 @@ def _load_credentials() -> Optional[dict]:
     return data
 
 
-def _get_token(session, credentials: dict) -> Optional[str]:
+async def _get_token(session, credentials: dict) -> Optional[str]:
     global _token
 
     if _token and _token[1] > time.time():
         return _token[0]
 
-    data = fetch_json(
+    data = await fetch_json(
         session, TOKEN_URL, method="post",
         data={
             "grant_type": "client_credentials",
@@ -104,11 +107,11 @@ def _job_from_offer(offer: dict) -> Optional[Job]:
     )
 
 
-def fetch_jobs(session) -> List[Job]:
+async def fetch_jobs(session) -> List[Job]:
     """Search France Travail's nationwide offer index for the user's keywords.
 
     Args:
-        session: Requests session (reused for both the token and search
+        session: httpx.AsyncClient (reused for both the token and search
             calls, same as every other source).
 
     Returns:
@@ -121,7 +124,7 @@ def fetch_jobs(session) -> List[Job]:
     if not credentials:
         return []
 
-    token = _get_token(session, credentials)
+    token = await _get_token(session, credentials)
 
     if not token:
         return []
@@ -134,7 +137,7 @@ def fetch_jobs(session) -> List[Job]:
 
     while start < MAX_RESULTS:
         end = start + PAGE_SIZE - 1
-        data = fetch_json(
+        data = await fetch_json(
             session, SEARCH_URL, headers={
                 **headers, "Range": f"offres {start}-{end}"
             },

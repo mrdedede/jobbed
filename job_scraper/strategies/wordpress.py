@@ -30,7 +30,7 @@ WP_PAGE = 100
 WP_MAX_PAGES = 20
 
 
-def scrape_wordpress(board: "Board") -> List[Job]:
+async def scrape_wordpress(board: "Board") -> List[Job]:
     """Scrape a WordPress careers site through its REST API.
 
     Plenty of employer career sites are just WordPress, which publishes every
@@ -50,14 +50,16 @@ def scrape_wordpress(board: "Board") -> List[Job]:
     # WordPress -- 25 of the 35 in the corpus. Nor can it hide a board: the
     # endpoint below is built from the board's own host, so a site whose REST
     # API lives elsewhere was already out of reach for this strategy.
-    if not board.html or not _WP_MARKER.search(board.html):
+    html = await board.get_html()
+
+    if not html or not _WP_MARKER.search(html):
         return []
 
     base = board.url
     parsed = urlparse(base)
     root = f"{parsed.scheme}://{parsed.netloc}"
 
-    types = fetch_json(board.session, urljoin(root, _WP_TYPES))
+    types = await fetch_json(board.session, urljoin(root, _WP_TYPES))
 
     if not isinstance(types, dict):
         return []
@@ -74,7 +76,7 @@ def scrape_wordpress(board: "Board") -> List[Job]:
     jobs: List[Job] = []
 
     for page_number in range(1, WP_MAX_PAGES + 1):
-        posts = fetch_json(
+        posts = await fetch_json(
             board.session,
             f"{endpoint}?per_page={WP_PAGE}&page={page_number}",
             max_bytes=FEED_MAX_BYTES,

@@ -129,7 +129,7 @@ def _same_page(url: str, base: str) -> bool:
             == urldefrag(base).url.rstrip("/"))
 
 
-def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
+async def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
     """Extract jobs from anchor tags using heuristic URL/title patterns.
 
     Args:
@@ -142,7 +142,7 @@ def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
         List of Job results with URL and title, or empty list if no anchors
         match.
     """
-    html = html or board.html
+    html = html or await board.get_html()
 
     if not html:
         return []

@@ -13,7 +13,31 @@ installed: `pip install -e .`. Otherwise run it as `python -m
 job_scraper.board_scraper`.
 """
 
+import asyncio
+
 from job_scraper.board import Board
+from job_scraper.fetching import new_client
+
+
+async def run(args, renderer) -> None:
+    """Detect and scrape one board, printing as it goes."""
+    async with new_client() as client:
+        board = Board(args.company, args.url, session=client,
+                      render=renderer)
+
+        print(f"Board:    {args.url}")
+        print(f"ATS:      {await board.detect_ats() or 'unknown'}")
+        print(f"Resolved: {board.final_url}")
+
+        found = await board.scrape_board()
+
+    print(f"Strategy: {found[0].via if found else 'none'}")
+    print(f"Jobs:     {len(found)}\n")
+
+    for job in found[:args.show]:
+        print(f"  {job.title}")
+        print(f"    {job.url}")
+        print(f"    place: {job.place or '-'}")
 
 
 def main() -> int:
@@ -44,23 +68,9 @@ def main() -> int:
 
     if args.render:
         # Imported here, not at module scope: Playwright is an opt-in extra.
-        from job_scraper.render import render as renderer
+        from job_scraper.render import arender as renderer
 
-    board = Board(args.company, args.url, render=renderer)
-
-    print(f"Board:    {args.url}")
-    print(f"ATS:      {board.detect_ats() or 'unknown'}")
-    print(f"Resolved: {board.final_url}")
-
-    found = board.scrape_board()
-
-    print(f"Strategy: {found[0].via if found else 'none'}")
-    print(f"Jobs:     {len(found)}\n")
-
-    for job in found[:args.show]:
-        print(f"  {job.title}")
-        print(f"    {job.url}")
-        print(f"    place: {job.place or '-'}")
+    asyncio.run(run(args, renderer))
 
     return 0
 

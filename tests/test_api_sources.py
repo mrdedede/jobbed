@@ -8,7 +8,9 @@ query string), which board scraping never sends.
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qsl
 
+import httpx
 import pytest
 
 from job_scraper import paths
@@ -16,40 +18,41 @@ from job_scraper.api_sources import france_travail
 from job_scraper.api_sources.france_travail import TOKEN_URL, SEARCH_URL
 from job_scraper.post_scraper import fetch_job
 
-
-class FakeResponse:
-    def __init__(self, body):
-        self.status_code = 200 if body is not None else 404
-        self._body = (body or "").encode()
-        self.encoding = "utf-8"
-        self.headers = {"Content-Type": "application/json"}
-        self.raw = self
-
-    def read(self, amount, decode_content=True):
-        return self._body[:amount]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+pytestmark = pytest.mark.anyio
 
 
-class FakeSession:
+class FakeSession(httpx.AsyncClient):
+    """An AsyncClient answering the token POST and the search GETs.
+
+    `requests` records ("post", url, form) and ("get", url, params, headers).
+    """
+
     def __init__(self, token_body, search_pages):
         """search_pages: list of JSON bodies, one per expected search call."""
         self.token_body = token_body
         self.search_pages = list(search_pages)
         self.requests = []
+        super().__init__(transport=httpx.MockTransport(self._answer))
 
-    def post(self, url, data=None, headers=None, **kwargs):
-        self.requests.append(("post", url, data))
-        return FakeResponse(self.token_body)
+    def _answer(self, request):
+        if request.method == "POST":
+            url = str(request.url)
+            form = dict(parse_qsl(request.content.decode()))
+            self.requests.append(("post", url, form))
+            body = self.token_body
+        else:
+            url = str(request.url).split("?")[0]
+            params = dict(request.url.params)
+            self.requests.append(
+                ("get", url, params, dict(request.headers))
+            )
+            body = self.search_pages.pop(0) if self.search_pages else None
 
-    def get(self, url, params=None, headers=None, **kwargs):
-        self.requests.append(("get", url, params, headers or {}))
-        body = self.search_pages.pop(0) if self.search_pages else None
-        return FakeResponse(body)
+        return httpx.Response(
+            200 if body is not None else 404,
+            content=(body or "").encode(),
+            headers={"Content-Type": "application/json"},
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -80,24 +83,24 @@ def _offer(url="https://example.fr/offre/1", title="Dev"):
     }
 
 
-def test_no_credentials_file_returns_empty(tmp_path, monkeypatch):
+async def test_no_credentials_file_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(
         paths, "FRANCE_TRAVAIL_CREDENTIALS", tmp_path / "missing.json"
     )
     session = FakeSession(token_body=None, search_pages=[])
 
-    assert france_travail.fetch_jobs(session) == []
+    assert await france_travail.fetch_jobs(session) == []
     assert session.requests == []
 
 
-def test_fetches_and_maps_jobs(credentials_file, monkeypatch):
+async def test_fetches_and_maps_jobs(credentials_file, monkeypatch):
     monkeypatch.setattr(france_travail, "get_keywords", lambda: ["python"])
     session = FakeSession(
         token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
         search_pages=[json.dumps({"resultats": [_offer()]})],
     )
 
-    jobs = france_travail.fetch_jobs(session)
+    jobs = await france_travail.fetch_jobs(session)
 
     assert len(jobs) == 1
     job = jobs[0]
@@ -114,10 +117,10 @@ def test_fetches_and_maps_jobs(credentials_file, monkeypatch):
 
     search_call = next(r for r in session.requests if r[0] == "get")
     assert search_call[1] == SEARCH_URL
-    assert search_call[3]["Authorization"] == "Bearer tok"
+    assert search_call[3]["authorization"] == "Bearer tok"
 
 
-def test_paginates_until_short_page(credentials_file, monkeypatch):
+async def test_paginates_until_short_page(credentials_file, monkeypatch):
     monkeypatch.setattr(france_travail, "get_keywords", lambda: [])
     monkeypatch.setattr(france_travail, "PAGE_SIZE", 1)
     session = FakeSession(
@@ -128,13 +131,13 @@ def test_paginates_until_short_page(credentials_file, monkeypatch):
         ],
     )
 
-    jobs = france_travail.fetch_jobs(session)
+    jobs = await france_travail.fetch_jobs(session)
 
     assert [j.url for j in jobs] == ["https://x/1"]
     assert sum(1 for r in session.requests if r[0] == "get") == 2
 
 
-def test_token_is_cached_across_calls(credentials_file, monkeypatch):
+async def test_token_is_cached_across_calls(credentials_file, monkeypatch):
     monkeypatch.setattr(france_travail, "get_keywords", lambda: [])
     session = FakeSession(
         token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
@@ -144,19 +147,19 @@ def test_token_is_cached_across_calls(credentials_file, monkeypatch):
         ],
     )
 
-    france_travail.fetch_jobs(session)
-    france_travail.fetch_jobs(session)
+    await france_travail.fetch_jobs(session)
+    await france_travail.fetch_jobs(session)
 
     assert sum(1 for r in session.requests if r[0] == "post") == 1
 
 
-def test_bad_token_response_returns_empty(credentials_file):
+async def test_bad_token_response_returns_empty(credentials_file):
     session = FakeSession(token_body="not json", search_pages=[])
 
-    assert france_travail.fetch_jobs(session) == []
+    assert await france_travail.fetch_jobs(session) == []
 
 
-def test_post_scraper_shortcircuits_api_source_rows():
+async def test_post_scraper_shortcircuits_api_source_rows():
     row = {
         "url": "https://example.fr/offre/1",
         "title": "Dev",
@@ -164,7 +167,7 @@ def test_post_scraper_shortcircuits_api_source_rows():
         "ats": "france_travail",
     }
 
-    job = fetch_job(row)
+    job = await fetch_job(row, None)
 
     assert job.description == "full posting text"
     assert job.via == "france_travail"

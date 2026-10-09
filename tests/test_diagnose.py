@@ -50,13 +50,15 @@ class FakeSession:
 class FakeBoard:
     """A Board reduced to the four attributes `explain` reads."""
 
-    def __init__(self, html=None, session=None, final_url=None, render=None):
+    def __init__(self, html=None, session=None, final_url=None, render=None,
+                 ats=None):
         self.html = html
         self.session = session or FakeSession()
         self.board_url = "https://example.test/careers"
         self.final_url = final_url or self.board_url
         self.url = self.final_url
         self.render = render
+        self.ats = ats
 
 
 def page(body: str = "", scripts: int = 0, head: str = "") -> str:
@@ -155,3 +157,15 @@ def test_redirect_and_renderer_are_appended_as_context():
 
     assert "redirected to https://example.test/elsewhere" in reason
     assert "renderer ran" in reason
+
+
+def test_long_redirect_url_is_truncated():
+    long_url = "https://example.test/elsewhere?" + "a=1&" * 200
+    board = FakeBoard(html=page(links(60)), final_url=long_url)
+    reason = diagnose.explain(board)
+
+    assert len(reason) < len(long_url)
+    assert reason.count("redirected to") == 1
+    note = reason.split("redirected to ", 1)[1].rstrip(")")
+    assert len(note) == diagnose.MAX_REDIRECT_LEN + len("...")
+    assert note.endswith("...")

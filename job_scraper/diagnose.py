@@ -42,6 +42,12 @@ SPA_MARKERS = (
 FEW_ANCHORS = 15
 MANY_SCRIPTS = 10
 
+#: A redirect target can carry a whole search state in its query string
+#: (facet filters, refinement lists) -- one board's final_url ran past 2,000
+#: characters and made its no_jobs.csv row unreadable. The reason line is for
+#: a human, so the note is cut to a length one still reads as a URL.
+MAX_REDIRECT_LEN = 120
+
 
 def explain(board, exc: Optional[BaseException] = None) -> str:
     """Say why this board yielded nothing.
@@ -142,7 +148,12 @@ def _context(board) -> str:
     notes = []
 
     if board.final_url and board.final_url != board.board_url:
-        notes.append(f"redirected to {board.final_url}")
+        url = board.final_url
+
+        if len(url) > MAX_REDIRECT_LEN:
+            url = url[:MAX_REDIRECT_LEN] + "..."
+
+        notes.append(f"redirected to {url}")
 
     if board.render is not None:
         notes.append("renderer ran and still found nothing")

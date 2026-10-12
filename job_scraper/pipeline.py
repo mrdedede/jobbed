@@ -31,7 +31,7 @@ STAGES: List[str] = ["scrape", "detail", "store"]
 
 
 def store(on_progress: Optional[Callable[[str], None]] = None) -> dict:
-    """Stage 5: insert the surviving postings into SQLite.
+    """Stage 3: insert the fetched postings into job_postings.
 
     Imported inside the function so the scraping stages stay usable without
     touching the database at all.
@@ -42,16 +42,14 @@ def store(on_progress: Optional[Callable[[str], None]] = None) -> dict:
     Returns:
         Dict with `inserted` and `skipped` counts.
     """
-    from db import db_connection
+    from db import jobs
+    from db.engine import engine
 
-    db_connection.create_tables()
-    inserted, skipped = db_connection.insert_jobs()
+    inserted, skipped = jobs.insert_jobs()
 
     if on_progress:
-        # db_connection.DB_ADDRESS, not paths.DB_PATH: they are the same value
-        # in production but only the former follows a caller that repointed it.
         on_progress(f"{inserted} inserted, {skipped} already known "
-                    f"-> {db_connection.DB_ADDRESS}")
+                    f"-> {engine.url.render_as_string(hide_password=True)}")
 
     return {"inserted": inserted, "skipped": skipped}
 

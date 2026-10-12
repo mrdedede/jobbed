@@ -1,7 +1,10 @@
-"""Scrape all boards from job_boards.csv into jobs.csv.
+"""Scrape all active boards (the job_boards table) into jobs.csv.
 
 Usage:
-    python job_scraper/main_scraper.py [--limit N] [--render]
+    python -m job_scraper.main_scraper [--limit N] [--render] [--input FILE]
+
+Boards come from the database; --input FILE reads a company,url CSV instead,
+for a run with no database at hand.
 
 Outputs jobs.csv with detected ATS and scraping strategy (via) for each row.
 This is stage one of the pipeline; `python main.py` runs it along with the
@@ -27,7 +30,6 @@ from job_scraper.detector import Renderer
 from job_scraper.fetching import new_client
 from job_scraper.models import Job
 
-INPUT_FILE = paths.BOARDS_CSV
 OUTPUT_FILE = paths.JOBS_CSV
 
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
@@ -64,7 +66,7 @@ async def scrape_one_board(entry: dict, client: httpx.AsyncClient,
     """Detect and scrape a single board entry.
 
     Args:
-        entry: One job_boards.csv row (company, url).
+        entry: One board: {"company": ..., "url": ...}.
         client: The run's shared AsyncClient.
         render: Optional async renderer for JS-built listings.
 
@@ -85,23 +87,43 @@ async def scrape_one_board(entry: dict, client: httpx.AsyncClient,
     return BoardResult(company, url, board, ats=ats, jobs=jobs, error=None)
 
 
+def load_boards(input_file: Optional[Path] = None) -> List[dict]:
+    """The boards to scrape.
+
+    Args:
+        input_file: A `company,url` CSV. Rows whose company starts with `#`
+            are skipped. When omitted, the active rows of the job_boards
+            table are used.
+
+    Returns:
+        List of {"company", "url"} dicts.
+    """
+    if input_file is None:
+        # Imported here: scraping from a CSV must work with no database.
+        from db import boards
+
+        return boards.select_active_boards()
+
+    with input_file.open(newline="", encoding="utf-8") as handle:
+        return [row for row in csv.DictReader(handle)
+                if not row["company"].lstrip().startswith("#")]
+
+
 async def scrape_boards(input_file: Optional[Path] = None,
                         output_file: Optional[Path] = None,
                         limit: int = 0,
                         render: Optional[Renderer] = None,
                         on_board: Optional[Callable[[str], None]] = None,
-                        workers: int = DEFAULT_WORKERS) -> dict:
-    """Scrape every board in the input CSV and write one row per posting.
+                        workers: int = DEFAULT_WORKERS,
+                        boards: Optional[List[dict]] = None) -> dict:
+    """Scrape every board and write one row per posting.
 
     A board that raises is reported and skipped rather than allowed to end the
     run -- with a hundred boards, one hostile site must not cost the other 99.
 
     Args:
-        input_file: CSV of company,url board rows. Defaults to
-            paths.BOARDS_CSV, resolved at call time rather than baked into the
-            signature -- a default argument is bound once at import, so a
-            caller that repoints `paths` would silently keep getting the
-            original file.
+        input_file: CSV of company,url board rows. Defaults to the active
+            rows of the job_boards table. Ignored when `boards` is given.
         output_file: Where to write the scraped postings.
         limit: Only scrape the first N boards; 0 means all of them.
         render: Optional async renderer for JS-built listings.
@@ -109,6 +131,8 @@ async def scrape_boards(input_file: Optional[Path] = None,
             the caller so this function stays usable from something that is
             not a terminal.
         workers: Boards scraped concurrently, all through one shared client.
+        boards: The boards themselves, as {"company", "url"} dicts -- for a
+            caller that already holds them. Overrides `input_file`.
 
     Returns:
         Dict with `boards`, `jobs` and `failed` counts, the `output` path, the
@@ -116,12 +140,10 @@ async def scrape_boards(input_file: Optional[Path] = None,
         nothing, and `per_board` mapping each board URL to how many postings it
         produced.
     """
-    input_file = input_file or paths.BOARDS_CSV
     output_file = output_file or paths.JOBS_CSV
 
-    with input_file.open(newline="", encoding="utf-8") as handle:
-        boards = [row for row in csv.DictReader(handle)
-                  if not row["company"].lstrip().startswith("#")]
+    if boards is None:
+        boards = await asyncio.to_thread(load_boards, input_file)
 
     if limit:
         boards = boards[:limit]
@@ -249,7 +271,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=0,
                         help="only scrape the first N boards")
-    parser.add_argument("--input", type=Path, default=INPUT_FILE)
+    parser.add_argument("--input", type=Path, default=None,
+                        help="read boards from this company,url CSV "
+                             "instead of the database")
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help="boards scraped concurrently")

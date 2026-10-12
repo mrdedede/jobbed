@@ -286,7 +286,7 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
     found = None
 
     if (row.get("ats") or "") == "workday":
-        found = _from_workday(url)
+        found = await _from_workday(url, client)
     elif (row.get("ats") or "") in ("wttj", "beetween"):
         # WTTJ posting pages sit behind a WAF wall and Beetween's are an empty
         # SPA shell; either way the board stage already pulled the full

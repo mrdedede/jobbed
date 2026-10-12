@@ -28,7 +28,7 @@ def _title(offer: dict) -> Optional[str]:
             or first_string(offer.get("Title")))
 
 
-def scrape_werecruit(board: "Board") -> List[Job]:
+async def scrape_werecruit(board: "Board") -> List[Job]:
     """Scrape a WeRecruit board out of its inline `window.allOffers` array.
 
     Args:

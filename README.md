@@ -366,14 +366,16 @@ jobbed/
 │   ├── main_scraper.py   # Board scraping orchestration
 │   ├── post_scraper.py   # Individual job fetching
 │   └── paths.py          # Filesystem paths
-├── ai/                   # AI integration (Claude)
-│   ├── call_model.py     # CLI wrapper for Claude
+├── ai/                   # AI integration (via the LLM gateway)
+│   ├── gateway.py        # async client for llm_gateway
 │   ├── analysis.py       # Job grading
 │   ├── cv_generation.py  # CV tailoring
 │   ├── grade-job.md      # Claude grading prompt
 │   └── generate-cv.md    # Claude CV generation prompt
-├── db/                   # Database management
-│   └── db_connection.py  # SQLite schema & queries
+├── db/                   # Postgres access (SQLAlchemy Core)
+│   ├── tables.py         # schema, migrated by alembic/
+│   ├── users.py, boards.py, jobs.py, analysis.py, generated_cv.py
+├── llm_gateway/          # FastAPI gateway: Claude + Ollama adapters
 ├── cv_generator/         # CV rendering to DOCX
 │   └── docx_gen.py       # DOCX generation
 ├── visualization/        # Streamlit dashboard

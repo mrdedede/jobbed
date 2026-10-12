@@ -28,12 +28,8 @@ render = ["playwright>=1.40.0"]
 cv = ["python-docx>=1.1.0"]
 dev = ["pytest>=8.3.0", "flake8>=7.1.0"]
 
-[project.scripts]
-joblister = "main:main"
-
 [tool.setuptools]
-packages = ["job_scraper", "job_scraper.strategies", "db", "ai", "cv_generator", "llm_gateway", "llm_gateway.routers", "llm_gateway.adapters"]
-py-modules = ["main"]
+packages = ["job_scraper", "job_scraper.strategies", "job_scraper.api_sources", "db", "ai", "cv_generator", "llm_gateway", "llm_gateway.routers", "llm_gateway.adapters"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

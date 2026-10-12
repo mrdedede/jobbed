@@ -41,7 +41,7 @@ def _description(job: dict) -> str:
     return "\n\n".join(part for part in parts if part)[:_MAX_DESCRIPTION]
 
 
-def scrape_beetween(board: "Board") -> List[Job]:
+async def scrape_beetween(board: "Board") -> List[Job]:
     """Scrape a Beetween board through its job-list API.
 
     Args:
@@ -55,7 +55,7 @@ def scrape_beetween(board: "Board") -> List[Job]:
     jobs: List[Job] = []
 
     for page in range(1, MAX_PAGES + 1):
-        data = fetch_json(
+        data = await fetch_json(
             board.session, api, method="post", json={"page": page},
             max_bytes=FEED_MAX_BYTES,
         )

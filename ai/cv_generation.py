@@ -1,29 +1,32 @@
 """Rewrite the candidate's CV for one already-graded posting.
 
-One `claude` CLI call per posting. The posting's own `depth_analysis` goes into
+One gateway call per posting. The posting's own `depth_analysis` goes into
 the prompt: it already says what the application should lead with, so the
 rewrite does not have to rediscover it.
 """
 
+import asyncio
 import json
+from typing import Optional
+from uuid import UUID
 
-from ai import call_model
-from db import db_connection
+import httpx
+
+from ai import gateway
+from db import generated_cv as db_generated_cv
+from db import users
 from job_scraper import paths
 
 with open(paths.GENERATE_CV_MD, "r") as f:
-    generate_cv = f.read()
+    generate_cv_prompt = f.read()
 
-with open(paths.CV_MD, "r") as f:
-    my_cv = f.read()
-
-# Enforced by the CLI, not by the prompt: the shape asked for in prose gets
+# Enforced by the model API, not by the prompt: the shape asked for in prose gets
 # ignored often enough to break parsing (same lesson as ai.analysis).
-# `languages` is deliberately absent -- it is copied verbatim from my_cv.md at
+# `languages` is deliberately absent -- it is copied verbatim from the CV at
 # render time, so there is nothing for the model to decide.
 _STRING_ARRAY = {"type": "array", "items": {"type": "string"}}
 
-CV_SCHEMA = json.dumps({
+CV_SCHEMA = {
     "type": "object",
     "properties": {
         "locale": {"type": "string", "enum": ["en", "es", "fr", "pt"]},
@@ -85,76 +88,66 @@ CV_SCHEMA = json.dumps({
         },
     },
     "required": ["locale", "cv"],
-})
-
-GENERATION_PROMPT = f"""{generate_cv}
---------
-# User CV
-{my_cv}
---------
-# ANALYSIS OF THIS POSTING
-
-"""
+}
 
 
-def _generate(job_id: int):
-    """Rewrite the CV for one graded posting.
+def _build_prompt(cv_md: str, depth_analysis: str, description: str) -> str:
+    return (f"{generate_cv_prompt}\n--------\n# User CV\n{cv_md}\n"
+            f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis}\n"
+            f"--------\n# JOB POST\n\n{description}")
+
+
+async def generate_cv(user_id: UUID, job_id: UUID,
+                      model: str = gateway.SONNET_MODEL,
+                      cv_md: Optional[str] = None,
+                      client: Optional[httpx.AsyncClient] = None) -> str:
+    """Generate and store the CV for one posting this user already graded.
 
     Args:
-        job_id: A posting that already has a row in ai_analysis. Ungraded
+        user_id: The user the CV is for.
+        job_id: A posting with a row in this user's ai_analysis. Ungraded
             postings have no analysis to tailor against, so they are refused
             rather than generated blind.
-
-    Returns:
-        Tuple of (ai_analysis_id, verdict dict), or None when the posting is
-        ungraded, the CLI failed, or its output would not parse.
-    """
-    row = db_connection.select_job_for_generation(job_id)
-    if row is None:
-        print(f"No analysis stored for job {job_id}")
-        return None
-
-    description, analysis_id, depth_analysis = row
-    final_prompt = (f"{GENERATION_PROMPT}{depth_analysis}\n"
-                    f"--------\n# JOB POST\n\n{description}")
-
-    # Sonnet, not the Haiku the grading runs on: this one writes prose the
-    # candidate sends to a recruiter.
-    result = call_model.call_claude(call_model.SONNET_MODEL, final_prompt, CV_SCHEMA)
-    if result is None:
-        return None
-
-    try:
-        return analysis_id, json.loads(result.stdout)
-    except json.JSONDecodeError:
-        print(f"Failed to parse JSON: {result.stdout}")
-        return None
-
-def generate_cv(job_id: int) -> str:
-    """Generate and store the CV for one graded posting.
-
-    Args:
-        job_id: A posting that already has a row in ai_analysis.
+        model: Which gateway model writes it -- Sonnet by default, not the
+            Haiku grading runs on: this writes prose a recruiter reads.
+        cv_md: The CV to rewrite. Defaults to the user's active CV.
+        client: Shared AsyncClient, optional.
 
     Returns:
         The locale the model wrote the CV in.
 
     Raises:
-        RuntimeError: If the posting is ungraded or the model call failed.
-            `_generate` reports both by returning None, and unpacking that
-            raised a bare TypeError that said nothing about either.
+        RuntimeError: Ungraded posting, or no CV to start from.
+        gateway.GatewayError: The model call failed.
+        ValueError: The answer was not JSON of the expected shape.
     """
-    result = _generate(job_id)
-    if result is None:
-        raise RuntimeError(f"no CV generated for job {job_id} -- ungraded "
-                           f"posting, or the model call failed")
+    row = await asyncio.to_thread(
+        db_generated_cv.select_job_for_generation, user_id, job_id)
 
-    analysis_id, model_answer = result
-    db_connection.insert_generated_cv(
-        model_answer["locale"],
-        model_answer["cv"],
-        job_id,
-        analysis_id
-    )
+    if row is None:
+        raise RuntimeError(f"no analysis stored for job {job_id}")
 
-    return model_answer["locale"]
+    if cv_md is None:
+        active = await asyncio.to_thread(users.select_active_user_cv, user_id)
+
+        if active is None:
+            raise RuntimeError(f"user {user_id} has no active CV")
+
+        cv_md = active[1]
+
+    description, analysis_id, depth_analysis = row
+    raw = await gateway.chat(
+        model, _build_prompt(cv_md, depth_analysis, description),
+        CV_SCHEMA, client)
+
+    try:
+        answer = json.loads(raw)
+        locale, cv = answer["locale"], answer["cv"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"unusable model answer: {raw[:200]!r}") from exc
+
+    await asyncio.to_thread(
+        db_generated_cv.insert_generated_cv,
+        user_id, locale, cv, job_id, analysis_id)
+
+    return locale

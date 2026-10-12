@@ -6,6 +6,7 @@ import anthropic
 import httpx
 from fastapi import APIRouter, HTTPException
 
+from llm_gateway.adapters.base import BackendUnavailable
 from llm_gateway.adapters.claude import ClaudeAdapter
 from llm_gateway.adapters.ollama import OllamaAdapter
 from llm_gateway.metrics import llm_requests_total
@@ -46,6 +47,8 @@ async def chat_completions(request: ChatCompletionRequest) -> ChatCompletionResp
 
     try:
         text = await adapter.complete(request.model, prompt, schema)
+    except BackendUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (anthropic.APIError, httpx.HTTPError, ValueError, KeyError) as exc:
         # The gateway worked; its upstream did not. 502 tells callers to
         # retry or fall back, where a bare 500 would look like a gateway bug.

@@ -7,6 +7,7 @@ import os
 
 from anthropic import AsyncAnthropic
 
+from llm_gateway.adapters.base import BackendUnavailable
 from llm_gateway.config import settings
 
 #: Short names callers send. Each can be overridden without a redeploy of
@@ -24,6 +25,9 @@ class ClaudeAdapter:
     async def complete(
         self, model: str, prompt: str, response_schema: dict | None
     ) -> str:
+        if not settings.anthropic_api_key:
+            raise BackendUnavailable("ANTHROPIC_API_KEY is not set")
+
         model_id = _ALIASES.get(model, model)
         kwargs = {}
         if response_schema is not None:

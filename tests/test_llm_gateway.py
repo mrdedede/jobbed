@@ -141,6 +141,7 @@ class _Reply:
 
 
 async def test_claude_adapter_resolves_alias_and_passes_schema(monkeypatch):
+    monkeypatch.setattr(claude_module.settings, "anthropic_api_key", "k")
     seen = {}
 
     async def create(**kwargs):
@@ -159,7 +160,30 @@ async def test_claude_adapter_resolves_alias_and_passes_schema(monkeypatch):
         "format": {"type": "json_schema", "schema": schema}}
 
 
+async def test_claude_adapter_without_a_key_is_unavailable(monkeypatch):
+    from llm_gateway.adapters.base import BackendUnavailable
+
+    monkeypatch.setattr(claude_module.settings, "anthropic_api_key", "")
+
+    with pytest.raises(BackendUnavailable, match="ANTHROPIC_API_KEY"):
+        await ClaudeAdapter().complete("haiku", "prompt", None)
+
+
+def test_unavailable_backend_is_a_503(adapters, client):
+    from llm_gateway.adapters.base import BackendUnavailable
+
+    claude, _ = adapters
+    claude.error = BackendUnavailable("ANTHROPIC_API_KEY is not set")
+
+    response = client.post("/v1/chat/completions", json={"model": "haiku", **BODY})
+
+    assert response.status_code == 503
+    assert "ANTHROPIC_API_KEY" in response.json()["detail"]
+
+
 async def test_claude_adapter_with_no_text_raises(monkeypatch):
+    monkeypatch.setattr(claude_module.settings, "anthropic_api_key", "k")
+
     async def create(**kwargs):
         return _Reply([])
 

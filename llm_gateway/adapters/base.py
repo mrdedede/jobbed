@@ -5,6 +5,10 @@ either without knowing which one it got.
 from typing import Protocol
 
 
+class BackendUnavailable(RuntimeError):
+    """The backend cannot be used as configured (e.g. no API key set)."""
+
+
 class ModelAdapter(Protocol):
     async def complete(
         self, model: str, prompt: str, response_schema: dict | None

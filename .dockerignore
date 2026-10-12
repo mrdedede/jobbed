@@ -1,0 +1,10 @@
+.git
+.claude
+.vscode
+.pytest_cache
+**/__pycache__
+*.egg-info
+tests
+temp
+user_info
+db/joblister.db

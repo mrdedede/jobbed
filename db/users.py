@@ -1,8 +1,8 @@
 """Postgres connection management for user accounts and per-user lists.
 
 Covers users, user_keywords, user_blacklist, user_cvs -- the account and
-personalization tables, as opposed to db.db_connection's job/analysis/CV
-tables. Same approach as db.db_connection: SQLAlchemy Core only, no ORM
+personalization tables, as opposed to db.jobs / db.analysis /
+db.generated_cv. Same approach as those: SQLAlchemy Core only, no ORM
 Session, no mapped objects.
 
 Password hashing itself (bcrypt) happens in the API/auth layer, not here --
@@ -22,11 +22,18 @@ from db.tables import user_blacklist, user_cvs, user_keywords, users
 
 # USERS
 
+def _normalize_email(email: str) -> str:
+    """The one spelling an email is stored and looked up under."""
+    return email.strip().lower()
+
+
 def insert_user(email: str, hashed_password: str) -> UUID:
     """Register a new user.
 
     Args:
-        email: The user's email, unique across all accounts.
+        email: The user's email, unique across all accounts. Stored
+            lowercased and stripped, so "A@x.com" and "a@x.com" are one
+            account.
         hashed_password: The bcrypt hash of their password -- never the
             plaintext, which this function never sees.
 
@@ -41,7 +48,8 @@ def insert_user(email: str, hashed_password: str) -> UUID:
     #      VALUES (?, ?) RETURNING id
     stmt = (
         users.insert()
-        .values(email=email, hashed_password=hashed_password)
+        .values(email=_normalize_email(email),
+                hashed_password=hashed_password)
         .returning(users.c.id)
     )
     try:
@@ -65,7 +73,7 @@ def select_user_by_email(
     """
     # SQL: SELECT id, email, hashed_password FROM users WHERE email = ?
     stmt = select(users.c.id, users.c.email, users.c.hashed_password).where(
-        users.c.email == email)
+        users.c.email == _normalize_email(email))
     with engine.connect() as conn:
         return conn.execute(stmt).first()
 

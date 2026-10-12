@@ -31,7 +31,8 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
         analysis_id: The ai_analysis row the generation was tailored against.
 
     Raises:
-        RuntimeError: If the database rejects the insertion.
+        RuntimeError: If the analysis is not this user's grade of this
+            posting, or the database rejects the insertion.
     """
     # SQL: INSERT INTO generated_cv (user_id, locale, cv, job_id,
     #      ai_analysis_id) VALUES (?, ?, ?, ?, ?)
@@ -42,8 +43,18 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
         job_id=job_id,
         ai_analysis_id=analysis_id,
     )
+    # SQL: SELECT 1 FROM ai_analysis WHERE id = ? AND user_id = ? AND job_id = ?
+    owned = select(ai_analysis.c.id).where(
+        ai_analysis.c.id == analysis_id,
+        ai_analysis.c.user_id == user_id,
+        ai_analysis.c.job_id == job_id,
+    )
     try:
         with engine.begin() as conn:
+            if conn.execute(owned).first() is None:
+                raise ValueError(
+                    f"analysis {analysis_id} is not user {user_id}'s "
+                    f"grade of job {job_id}")
             conn.execute(stmt)
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
@@ -52,25 +63,28 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
 # SELECTIONS
 
 def select_job_for_generation(
-        job_id: UUID) -> Optional[Tuple[str, UUID, str]]:
-    """The posting text and its stored analysis, for the CV generation prompt.
+        user_id: UUID, job_id: UUID) -> Optional[Tuple[str, UUID, str]]:
+    """The posting text and this user's analysis of it, for the CV prompt.
 
     Args:
+        user_id: The user the CV is for. Scopes the analysis: postings are
+            shared, but a grade and its depth_analysis are one user's.
         job_id: The posting to generate a CV for.
 
     Returns:
         Tuple of (description, ai_analysis id, depth_analysis), or None when
-        the posting does not exist or has not been graded yet.
+        the posting does not exist or this user has not graded it yet.
     """
     # SQL: SELECT job_postings.description, ai_analysis.id,
     #      ai_analysis.depth_analysis FROM job_postings
     #      JOIN ai_analysis ON ai_analysis.job_id = job_postings.id
-    #      WHERE job_postings.id = ?
+    #      WHERE job_postings.id = ? AND ai_analysis.user_id = ?
     stmt = (
         select(job_postings.c.description, ai_analysis.c.id,
                ai_analysis.c.depth_analysis)
         .join(ai_analysis, ai_analysis.c.job_id == job_postings.c.id)
         .where(job_postings.c.id == job_id)
+        .where(ai_analysis.c.user_id == user_id)
     )
     with engine.connect() as conn:
         return conn.execute(stmt).first()

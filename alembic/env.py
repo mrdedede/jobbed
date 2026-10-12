@@ -15,10 +15,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# DATABASE_URL overrides whatever's in alembic.ini, so dev/CI/prod each
-# point at their own DB without editing a checked-in file.
-if os.environ.get("DATABASE_URL"):
-    config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+# db.engine reads DATABASE_URL (with the dev default), so dev/CI/prod each
+# point at their own DB without editing a checked-in file, and migrations
+# always target the database the app does.
+from db.engine import DATABASE_URL  # same default the app uses
+
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

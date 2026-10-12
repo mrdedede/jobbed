@@ -10,6 +10,7 @@ from typing import List, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db._sql_utils import text_interval
 from db.engine import engine
@@ -19,7 +20,10 @@ from db.tables import ai_analysis, job_postings
 # INSERTIONS
 
 def insert_analysis(analysis: Sequence) -> None:
-    """Insert one analysis into the ai_analysis table.
+    """Store one analysis, replacing this user's earlier grade of the posting.
+
+    Re-analysis updates the row in place, so its id -- and any generated_cv
+    that points at it -- survives.
 
     Args:
         analysis: (user_id, adequation_grade, depth_analysis, ai_model,
@@ -32,12 +36,19 @@ def insert_analysis(analysis: Sequence) -> None:
     user_id, adequation_grade, depth_analysis, ai_model, job_id = analysis
     # SQL: INSERT INTO ai_analysis (user_id, job_id, adequation_grade,
     #      depth_analysis, ai_model) VALUES (?, ?, ?, ?, ?)
-    stmt = ai_analysis.insert().values(
-        user_id=user_id,
-        job_id=job_id,
+    #      ON CONFLICT (user_id, job_id) DO UPDATE SET adequation_grade = ...,
+    #      depth_analysis = ..., ai_model = ..., created_at = now()
+    values = dict(
         adequation_grade=adequation_grade,
         depth_analysis=depth_analysis,
         ai_model=ai_model,
+    )
+    stmt = pg_insert(ai_analysis).values(
+        user_id=user_id, job_id=job_id, **values
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[ai_analysis.c.user_id, ai_analysis.c.job_id],
+        set_={**values, "created_at": func.now()},
     )
     try:
         with engine.begin() as conn:
@@ -77,10 +88,11 @@ def select_jobs_to_analyse(
         .where(job_postings.c.scraped_at >= func.now() + text_interval(window))
         .order_by(job_postings.c.id)
     )
-    with engine.connect() as conn:
-        jobs = conn.execute(stmt).all()
+    if limit:
+        stmt = stmt.limit(limit)
 
-    return jobs[:limit] if limit else jobs
+    with engine.connect() as conn:
+        return conn.execute(stmt).all()
 
 
 def count_jobs_to_analyse(user_id: UUID, window: str = "-24 hours") -> int:

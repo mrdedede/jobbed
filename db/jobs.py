@@ -10,13 +10,13 @@ import csv
 from typing import List, Optional, Tuple
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from db.engine import engine
 from db.tables import job_postings
 from job_scraper import paths
 
-FILTERED_DETAILED_JOBS = paths.FILTERED_DETAILED_CSV
+DETAILED_JOBS = paths.DETAILED_CSV
 
 
 # INSERTIONS
@@ -25,8 +25,8 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
     """Insert the postings into job_postings, skipping known URLs.
 
     Args:
-        rows: Rows to insert, as (company, title, description, url, place).
-            Defaults to whatever the refilter stage left in the filtered
+        rows: Rows to insert, as (company, title, description, url, place,
+            via, ats). Defaults to whatever the detail stage left in the
             detailed CSV, which is what the pipeline wants.
 
     Returns:
@@ -44,16 +44,16 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
 
     payload = [
         {"company": company, "title": title, "description": description,
-         "url": url, "place": place}
-        for company, title, description, url, place in rows
+         "url": url, "place": place, "via": via, "ats": ats}
+        for company, title, description, url, place, via, ats in rows
     ]
 
-    # SQL: INSERT INTO job_postings (company, title, description, url, place)
-    #      VALUES (...), (...), ... ON CONFLICT (url) DO NOTHING
+    # SQL: INSERT INTO job_postings (company, title, description, url, place,
+    #      via, ats) VALUES (...), (...), ... ON CONFLICT (md5(url)) DO NOTHING
     stmt = (
         pg_insert(job_postings)
         .values(payload)
-        .on_conflict_do_nothing(index_elements=[job_postings.c.url])
+        .on_conflict_do_nothing(index_elements=[func.md5(job_postings.c.url)])
         # rowcount is -1 for a batched multi-row INSERT; count RETURNING rows.
         .returning(job_postings.c.id)
     )
@@ -82,15 +82,16 @@ def select_job_urls() -> set:
 
 # UTILS
 
-def _read_jobs_csv() -> List[Tuple[str, str, str, str, str]]:
-    """Returns the rows available at the filtered detailed job csv.
+def _read_jobs_csv() -> List[Tuple[str, str, str, str, str, str, str]]:
+    """Returns the rows available at the detailed job csv.
 
     Returns:
         List of tuples referring to the job's information.
     """
-    with FILTERED_DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
+    with DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
         return [
             (row.get("company"), row.get("title"), row.get("description"),
-             row.get("url"), row.get("place"))
+             row.get("url"), row.get("place"), row.get("via"),
+             row.get("ats") or None)
             for row in csv.DictReader(handle)
         ]

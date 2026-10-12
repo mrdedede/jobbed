@@ -24,8 +24,8 @@ def other_user(db):
 def two_jobs(db):
     """Two stored postings to grade."""
     jobs.insert_jobs([
-        ("Acme", "Go Dev", "write go", "http://x/1", "Paris"),
-        ("Globex", "Py Dev", "write python", "http://x/2", "Lyon"),
+        ("Acme", "Go Dev", "write go", "http://x/1", "Paris", None, None),
+        ("Globex", "Py Dev", "write python", "http://x/2", "Lyon", None, None),
     ])
     return sorted(jobs.select_job_urls())
 
@@ -84,17 +84,18 @@ def test_count_jobs_to_analyse_matches_select(user, two_jobs):
     assert analysis.count_jobs_to_analyse(user) == 1
 
 
-def test_insert_analysis_rejects_a_second_grade_for_the_same_user_and_job(
+def test_insert_analysis_regrade_replaces_the_previous_verdict(
         user, two_jobs):
-    """ai_analysis has a unique constraint on (user_id, job_id) -- one grade
-    per user per job."""
-    from sqlalchemy.exc import IntegrityError
-
+    """Re-analysis upserts on (user_id, job_id): one row, the newest grade."""
     job_id = _job_id_for_url("http://x/1")
     analysis.insert_analysis((user, 50, "first", "claude-haiku", job_id))
+    analysis.insert_analysis((user, 90, "second", "claude-sonnet", job_id))
 
-    with pytest.raises((RuntimeError, IntegrityError)):
-        analysis.insert_analysis((user, 90, "second", "claude-haiku", job_id))
+    rows = analysis.select_analyses(user)
+
+    assert len(rows) == 1
+    assert (rows[0][1], rows[0][6], rows[0][7]) == (
+        90, "claude-sonnet", "second")
 
 
 def test_select_analyses_returns_this_users_graded_postings_best_fit_first(

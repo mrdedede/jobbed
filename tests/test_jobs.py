@@ -9,7 +9,7 @@ from db import jobs
 def filtered_csv(tmp_path, monkeypatch):
     """Point insert_jobs at a CSV this test writes."""
     path = tmp_path / "filtered_detailed_jobs.csv"
-    monkeypatch.setattr(jobs, "FILTERED_DETAILED_JOBS", path)
+    monkeypatch.setattr(jobs, "DETAILED_JOBS", path)
 
     def write(*urls):
         header = "company,title,description,url,place,via,ats,keyword_hits\n"

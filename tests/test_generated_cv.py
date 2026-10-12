@@ -32,7 +32,7 @@ def _job_id_for_url(url):
 def graded_job(db, user):
     """One stored, graded posting -- the minimum generated_cv's FKs need."""
     jobs.insert_jobs([
-        ("Acme", "Go Developer", "A description", "http://x/1", "Paris"),
+        ("Acme", "Go Developer", "A description", "http://x/1", "Paris", None, None),
     ])
     job_id = _job_id_for_url("http://x/1")
     analysis.insert_analysis((user, 80, "the write-up", "haiku", job_id))
@@ -59,21 +59,46 @@ def test_generated_cv_round_trip(user, graded_job):
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
     description, returned_analysis_id, depth = \
-        generated_cv.select_job_for_generation(job_id)
+        generated_cv.select_job_for_generation(user, job_id)
 
     assert (returned_analysis_id, depth) == (analysis_id, "the write-up")
     assert description == "A description"
+
+
+def test_select_job_for_generation_is_per_user(user, other_user, graded_job):
+    """Postings are shared but a grade is one user's: another user's own
+    analysis must never feed this user's CV prompt."""
+    job_id, analysis_id = graded_job
+    analysis.insert_analysis((other_user, 10, "someone else's", "haiku",
+                              job_id))
+
+    _, mine, depth = generated_cv.select_job_for_generation(user, job_id)
+    _, theirs, their_depth = generated_cv.select_job_for_generation(
+        other_user, job_id)
+
+    assert (mine, depth) == (analysis_id, "the write-up")
+    assert their_depth == "someone else's"
+    assert theirs != analysis_id
+
+
+def test_insert_generated_cv_refuses_another_users_analysis(
+        user, other_user, graded_job):
+    job_id, analysis_id = graded_job
+
+    with pytest.raises(RuntimeError):
+        generated_cv.insert_generated_cv(
+            other_user, "en", {"profile_text": "x"}, job_id, analysis_id)
 
 
 def test_select_job_for_generation_without_analysis(db, user):
     """An ungraded posting has nothing to tailor against; cv_generation
     refuses on the None rather than generating blind."""
     jobs.insert_jobs([
-        ("Acme", "Go Developer", "A description", "http://x/1", "Paris"),
+        ("Acme", "Go Developer", "A description", "http://x/1", "Paris", None, None),
     ])
     job_id = _job_id_for_url("http://x/1")
 
-    assert generated_cv.select_job_for_generation(job_id) is None
+    assert generated_cv.select_job_for_generation(user, job_id) is None
 
 
 def test_cv_queue_honours_the_grade_floor_and_drops_what_is_written(

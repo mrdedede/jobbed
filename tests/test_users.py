@@ -242,3 +242,29 @@ def _blacklist_ids(user_id):
         return [row[0] for row in conn.execute(
             select(user_blacklist.c.id)
             .where(user_blacklist.c.user_id == user_id))]
+
+
+def test_email_is_case_insensitive(db):
+    from sqlalchemy.exc import IntegrityError
+
+    user_id = users.insert_user("  A@Example.com ", "hashed-pw")
+
+    assert users.select_user_by_email("a@EXAMPLE.com")[0] == user_id
+    assert users.select_user_by_id(user_id)[1] == "a@example.com"
+
+    with pytest.raises((RuntimeError, IntegrityError)):
+        users.insert_user("a@example.com", "other")
+
+
+def test_only_one_cv_can_be_active_per_user(db):
+    from sqlalchemy.exc import IntegrityError
+    from db.engine import engine
+    from db.tables import user_cvs
+
+    user_id = users.insert_user("a@example.com", "hashed-pw")
+    users.insert_user_cv(user_id, "one")
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.execute(user_cvs.insert().values(
+                user_id=user_id, content_md="two", is_active=True))

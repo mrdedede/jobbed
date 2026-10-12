@@ -58,7 +58,7 @@ from job_scraper.fetching import (
 )
 from job_scraper.models import Job
 
-FILTERED_JOBS = paths.FIRST_FILTERED_CSV
+FILTERED_JOBS = paths.JOBS_CSV
 DETAILED_JOBS = paths.DETAILED_CSV
 
 FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats"]
@@ -389,8 +389,8 @@ async def scrape_details(input_file: Optional[Path] = None,
     """Fetch each filtered posting's own page and write the detail CSV.
 
     Args:
-        input_file: The first filter's output. Defaults to
-            paths.FIRST_FILTERED_CSV, resolved at call time so a caller that
+        input_file: The scraped rows to fetch. Defaults to
+            paths.JOBS_CSV, resolved at call time so a caller that
             repoints `paths` is actually followed. Ignored when `rows` is given.
         output_file: Where to write postings with descriptions.
         limit: Only fetch the first N postings; 0 means all of them.
@@ -407,7 +407,7 @@ async def scrape_details(input_file: Optional[Path] = None,
         Dict with `pending`, `skipped` and per-extractor `counts`, plus the
         `output` path.
     """
-    input_file = input_file or paths.FIRST_FILTERED_CSV
+    input_file = input_file or paths.JOBS_CSV
     output_file = output_file or paths.DETAILED_CSV
 
     if rows is None:

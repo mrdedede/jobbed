@@ -1,12 +1,15 @@
-"""The four scraping stages, joined up and callable as one run.
+"""The scraping stages, joined up and callable as one run.
 
 Until now nothing joined them: `main.py` was empty, the stages disagreed on
-filenames, and both filter calls sat commented out. Running the project meant
-knowing the right four commands in the right order.
+filenames. Running the project meant knowing the right commands in the right
+order.
+
+There is no filter stage: filtering is per user (see job_scraper.filters) and
+happens on demand, so this shared run scrapes and stores everything.
 
 Every stage here is a plain function returning a stats dict and printing
-nothing. That is deliberate and it is the whole design: a CLI, a Streamlit
-page, an HTTP handler and a nightly cron job all want the same four calls and
+nothing. That is deliberate and it is the whole design: a CLI, an HTTP
+handler and a nightly cron job all want the same calls and
 disagree only about what to do with the numbers. `main.py` supplies `print`;
 something else can supply a progress bar or a log line.
 
@@ -19,49 +22,12 @@ fact.
 import asyncio
 from typing import Callable, Dict, List, Optional
 
-from job_scraper import filters, paths
+from job_scraper import paths
 from job_scraper.main_scraper import scrape_boards
 from job_scraper.post_scraper import DEFAULT_WORKERS, scrape_details
 
 #: Stage names in run order. The CLI's --from/--to index into this.
-STAGES: List[str] = ["scrape", "filter", "detail", "refilter", "store"]
-
-
-def filter_first(on_progress: Optional[Callable[[str], None]] = None) -> dict:
-    """Stage 2: filter scraped rows on title and URL, before fetching pages.
-
-    Args:
-        on_progress: Optional callback given one summary line.
-
-    Returns:
-        Dict with `kept` count and the `output` path.
-    """
-    frame = filters.first_filter()
-    frame.to_csv(paths.FIRST_FILTERED_CSV, index=False)
-
-    if on_progress:
-        on_progress(f"{len(frame)} rows kept -> {paths.FIRST_FILTERED_CSV}")
-
-    return {"kept": len(frame), "output": paths.FIRST_FILTERED_CSV}
-
-
-def filter_second(on_progress: Optional[Callable[[str], None]] = None) -> dict:
-    """Stage 4: filter detailed rows on their descriptions.
-
-    Args:
-        on_progress: Optional callback given one summary line.
-
-    Returns:
-        Dict with `kept` count and the `output` path.
-    """
-    frame = filters.second_filter()
-    frame.to_csv(paths.FILTERED_DETAILED_CSV, index=False)
-
-    if on_progress:
-        on_progress(f"{len(frame)} rows kept -> "
-                    f"{paths.FILTERED_DETAILED_CSV}")
-
-    return {"kept": len(frame), "output": paths.FILTERED_DETAILED_CSV}
+STAGES: List[str] = ["scrape", "detail", "store"]
 
 
 def store(on_progress: Optional[Callable[[str], None]] = None) -> dict:
@@ -135,15 +101,11 @@ def run(from_stage: str = STAGES[0], to_stage: str = STAGES[-1],
             results[name] = asyncio.run(scrape_boards(
                 limit=limit, render=render, on_board=on_progress
             ))
-        elif name == "filter":
-            results[name] = filter_first(on_progress)
         elif name == "detail":
             results[name] = asyncio.run(scrape_details(
                 limit=limit, workers=workers, resume=resume,
                 on_progress=on_progress,
             ))
-        elif name == "refilter":
-            results[name] = filter_second(on_progress)
         elif name == "store":
             results[name] = store(on_progress)
 

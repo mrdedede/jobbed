@@ -14,11 +14,8 @@ and it lives with the code now; `user_info/` holds only what the user writes.
 
 import re
 from typing import List
-from uuid import UUID
 
 import pandas as pd
-
-from db import users
 
 from job_scraper import paths
 from job_scraper.urls import title_from_url
@@ -65,30 +62,6 @@ MAX_UNJUDGEABLE_PER_COMPANY = 300
 #: stable -- taking the head would mean the same postings on a large board are
 #: looked at every single run, and the rest never are.
 EXEMPTION_SEED = 0
-
-
-def get_keywords(user_id: UUID) -> List[str]:
-    """This user's keywords, already normalized at storage time.
-
-    Args:
-        user_id: The user whose keywords to fetch.
-
-    Returns:
-        List of keyword strings.
-    """
-    return users.select_user_keywords(user_id)
-
-
-def get_blacklist(user_id: UUID) -> List[str]:
-    """This user's blacklist, already normalized at storage time.
-
-    Args:
-        user_id: The user whose blacklist to fetch.
-
-    Returns:
-        List of blacklisted terms.
-    """
-    return users.select_user_blacklist(user_id)
 
 
 def _build_word_pattern(words: List[str]) -> str:
@@ -225,7 +198,8 @@ def _cap_per_company(exempt: pd.Series, companies: pd.Series) -> pd.Series:
     return kept
 
 
-def first_filter(user_id: UUID) -> pd.DataFrame:
+def first_filter(keywords: List[str],
+                 blacklist: List[str]) -> pd.DataFrame:
     """Filter scraped rows on title and URL, before any posting is fetched.
 
     Keeps a row if it is not blacklisted, and either matches enough keywords
@@ -246,11 +220,14 @@ def first_filter(user_id: UUID) -> pd.DataFrame:
     case-insensitive and anchored to word boundaries so that e.g. the keyword
     'Go' won't match inside 'Google'.
 
+    Args:
+        keywords: Terms to match, case-insensitive. Where they come from
+            (a user's DB rows, a fixed list) is the caller's business.
+        blacklist: Terms that drop a row outright.
+
     Returns:
         Filtered DataFrame with jobs meeting the criteria, in original order.
     """
-    keywords = get_keywords(user_id)
-    blacklist = get_blacklist(user_id)
     jobs = pd.read_csv(paths.JOBS_CSV)
 
     if jobs.empty:
@@ -281,7 +258,8 @@ def first_filter(user_id: UUID) -> pd.DataFrame:
     return jobs_filtered[keep].reset_index(drop=True)
 
 
-def second_filter(user_id: UUID) -> pd.DataFrame:
+def second_filter(keywords: List[str],
+                  blacklist: List[str]) -> pd.DataFrame:
     """Filter detailed jobs on title, URL and description, with annotation.
 
     Keeps a job if it is not blacklisted in any of the three fields and its
@@ -293,12 +271,14 @@ def second_filter(user_id: UUID) -> pd.DataFrame:
     relevant across its entire body is a genuine miss rather than a blind spot.
     Jobs with missing or blank descriptions are dropped entirely.
 
+    Args:
+        keywords: Terms to match, case-insensitive.
+        blacklist: Terms that drop a job outright.
+
     Returns:
         Filtered DataFrame with jobs meeting criteria, plus a `keyword_hits`
         column showing the total keyword match count (for inspection/tuning).
     """
-    keywords = get_keywords(user_id)
-    blacklist = get_blacklist(user_id)
     jobs = pd.read_csv(paths.DETAILED_CSV)
 
     if jobs.empty:

@@ -20,7 +20,6 @@ from typing import List, Optional, Tuple
 
 from job_scraper import paths
 from job_scraper.fetching import fetch_json
-from job_scraper.filters import get_keywords
 from job_scraper.models import Job
 
 TOKEN_URL = (
@@ -37,6 +36,11 @@ PAGE_SIZE = 150
 #: of France, not one company's board, so an unbounded pull is a different
 #: kind of run than everything else in the pipeline.
 MAX_RESULTS = 1500
+
+#: The fixed search terms for the nightly pull -- global, not per user. Joined
+#: into one `motsCles` query; empty means no keyword restriction (still capped
+#: by MAX_RESULTS).
+SEARCH_KEYWORDS: List[str] = []
 
 #: Cached token, module-level: every call in a run shares one process, and a
 #: fresh token per call would be one extra round trip per page for no reason.
@@ -108,7 +112,7 @@ def _job_from_offer(offer: dict) -> Optional[Job]:
 
 
 async def fetch_jobs(session) -> List[Job]:
-    """Search France Travail's nationwide offer index for the user's keywords.
+    """Search France Travail's nationwide offer index for SEARCH_KEYWORDS.
 
     Args:
         session: httpx.AsyncClient (reused for both the token and search
@@ -129,7 +133,7 @@ async def fetch_jobs(session) -> List[Job]:
     if not token:
         return []
 
-    keywords = get_keywords()
+    keywords = SEARCH_KEYWORDS
     headers = {"Authorization": f"Bearer {token}"}
     jobs: List[Job] = []
     seen_urls = set()

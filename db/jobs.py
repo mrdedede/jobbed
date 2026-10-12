@@ -38,6 +38,10 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
     if not rows:
         rows = _read_jobs_csv()
 
+    # An empty .values([]) compiles to INSERT ... DEFAULT VALUES: one blank row.
+    if not rows:
+        return 0, 0
+
     payload = [
         {"company": company, "title": title, "description": description,
          "url": url, "place": place}
@@ -50,12 +54,13 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
         pg_insert(job_postings)
         .values(payload)
         .on_conflict_do_nothing(index_elements=[job_postings.c.url])
+        # rowcount is -1 for a batched multi-row INSERT; count RETURNING rows.
+        .returning(job_postings.c.id)
     )
 
     try:
         with engine.begin() as conn:
-            result = conn.execute(stmt)
-            inserted = result.rowcount
+            inserted = len(conn.execute(stmt).all())
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 

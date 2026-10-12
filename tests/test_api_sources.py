@@ -94,7 +94,7 @@ async def test_no_credentials_file_returns_empty(tmp_path, monkeypatch):
 
 
 async def test_fetches_and_maps_jobs(credentials_file, monkeypatch):
-    monkeypatch.setattr(france_travail, "get_keywords", lambda: ["python"])
+    monkeypatch.setattr(france_travail, "SEARCH_KEYWORDS", ["python"])
     session = FakeSession(
         token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
         search_pages=[json.dumps({"resultats": [_offer()]})],
@@ -121,7 +121,6 @@ async def test_fetches_and_maps_jobs(credentials_file, monkeypatch):
 
 
 async def test_paginates_until_short_page(credentials_file, monkeypatch):
-    monkeypatch.setattr(france_travail, "get_keywords", lambda: [])
     monkeypatch.setattr(france_travail, "PAGE_SIZE", 1)
     session = FakeSession(
         token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
@@ -138,7 +137,6 @@ async def test_paginates_until_short_page(credentials_file, monkeypatch):
 
 
 async def test_token_is_cached_across_calls(credentials_file, monkeypatch):
-    monkeypatch.setattr(france_travail, "get_keywords", lambda: [])
     session = FakeSession(
         token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
         search_pages=[

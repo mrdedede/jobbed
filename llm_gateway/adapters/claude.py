@@ -1,17 +1,20 @@
 """Claude backend: the anthropic SDK, not the claude CLI -- no subprocess,
 no CLI binary in the image, no dependency on an interactively-authenticated
-session. See the plan's context section for why this replaced
-ai/call_model.py's subprocess approach.
+session.
 """
+
+import os
 
 from anthropic import AsyncAnthropic
 
 from llm_gateway.config import settings
 
+#: Short names callers send. Each can be overridden without a redeploy of
+#: callers: CLAUDE_MODEL_HAIKU / _SONNET / _OPUS.
 _ALIASES = {
-    "haiku": "claude-haiku-4-5",
-    "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-4-1",
+    "haiku": os.environ.get("CLAUDE_MODEL_HAIKU", "claude-haiku-4-5"),
+    "sonnet": os.environ.get("CLAUDE_MODEL_SONNET", "claude-sonnet-5-5"),
+    "opus": os.environ.get("CLAUDE_MODEL_OPUS", "claude-opus-5-5"),
 }
 
 _client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -24,7 +27,7 @@ class ClaudeAdapter:
         model_id = _ALIASES.get(model, model)
         kwargs = {}
         if response_schema is not None:
-            # Verified against the installed anthropic SDK (0.121.0):
+            # Verified against the installed anthropic SDK (0.121.0).
             kwargs["output_config"] = {
                 "format": {"type": "json_schema", "schema": response_schema},
             }
@@ -35,4 +38,11 @@ class ClaudeAdapter:
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
-        return response.content[0].text
+        text = "".join(
+            block.text for block in response.content if block.type == "text")
+
+        if not text:
+            raise ValueError(
+                f"model returned no text (stop_reason={response.stop_reason})")
+
+        return text

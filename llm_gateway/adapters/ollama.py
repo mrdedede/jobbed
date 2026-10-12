@@ -29,7 +29,7 @@ class OllamaAdapter:
             payload["format"] = response_schema
 
         async with httpx.AsyncClient(
-            base_url=settings.ollama_base_url, timeout=60
+            base_url=settings.ollama_base_url, timeout=settings.ollama_timeout
         ) as client:
             resp = await client.post("/api/chat", json=payload)
             resp.raise_for_status()

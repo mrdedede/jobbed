@@ -58,9 +58,6 @@ from job_scraper.fetching import (
 )
 from job_scraper.models import Job
 
-FILTERED_JOBS = paths.JOBS_CSV
-DETAILED_JOBS = paths.DETAILED_CSV
-
 FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats"]
 
 # Phenom's JSON-LD description came back 296k characters -- that is the whole
@@ -409,6 +406,7 @@ async def scrape_details(input_file: Optional[Path] = None,
     """
     input_file = input_file or paths.JOBS_CSV
     output_file = output_file or paths.DETAILED_CSV
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     if rows is None:
         with input_file.open(newline="", encoding="utf-8") as handle:
@@ -500,8 +498,8 @@ def main() -> int:
                         help="only scrape the first N postings")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help="postings fetched concurrently")
-    parser.add_argument("--input", type=Path, default=FILTERED_JOBS)
-    parser.add_argument("--output", type=Path, default=DETAILED_JOBS)
+    parser.add_argument("--input", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--no-resume", action="store_true",
                         help="rewrite the output instead of skipping URLs it "
                              "already holds")

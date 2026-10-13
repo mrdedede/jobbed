@@ -5,28 +5,36 @@ One module owns these so the stages cannot disagree about a filename. They did:
 ``temp/first_filtered_file.csv``, a path that never existed on disk, which
 silently broke the hand-off between the two.
 
-The ``temp`` directory is created on import, so a stage may open its output
-without checking first.
+Deployment locations come from the environment (``JOBLISTER_DATA_DIR`` for the
+hand-off directory, ``JOBLISTER_BOARDS_CSV`` and
+``FRANCE_TRAVAIL_CREDENTIALS_FILE`` for inputs), defaulting to the repo layout.
+Nothing is created on import: the stages that write create their own parent
+directory, so a missing volume mount fails loudly instead of landing on the
+container's disk.
 """
 
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-#: Scratch directory for the CSV passed between pipeline stages. These are not
-#: throwaway: post_scraper resumes from its own output, and every measurement
-#: in REFACTORING.md was taken from these files after the fact.
-TEMP = ROOT / "temp"
+#: Directory for the CSV passed between pipeline stages (the PVC mount in
+#: Kubernetes). These are not throwaway: post_scraper resumes from its own
+#: output, and every measurement in REFACTORING.md was taken from these files.
+TEMP = Path(os.environ.get("JOBLISTER_DATA_DIR", ROOT / "temp"))
 
 USER_INFO = ROOT / "user_info"
 
 # Inputs the user supplies (all gitignored; each has an *_example sibling).
-BOARDS_CSV = USER_INFO / "job_boards.csv"
+BOARDS_CSV = Path(os.environ.get("JOBLISTER_BOARDS_CSV",
+                                 USER_INFO / "job_boards.csv"))
 KEYWORDS_TXT = USER_INFO / "keywords.txt"
 BLACKLIST_TXT = USER_INFO / "blacklist.txt"
 CV_MD = USER_INFO / "my_cv.md"
 CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
-FRANCE_TRAVAIL_CREDENTIALS = USER_INFO / "france_travail_credentials.json"
+FRANCE_TRAVAIL_CREDENTIALS = Path(os.environ.get(
+    "FRANCE_TRAVAIL_CREDENTIALS_FILE",
+    USER_INFO / "france_travail_credentials.json"))
 
 # Stage outputs, in pipeline order.
 JOBS_CSV = TEMP / "jobs.csv"
@@ -50,5 +58,3 @@ GENERATE_CV_MD = AI / "generate-cv.md"
 #: Section titles and language names, one file per supported locale. The docx
 #: renderer reads these; nothing else does.
 L10N = ROOT / "cv_generator" / "l10n"
-
-TEMP.mkdir(exist_ok=True)

@@ -16,8 +16,6 @@ from db.engine import engine
 from db.tables import job_postings
 from job_scraper import paths
 
-DETAILED_JOBS = paths.DETAILED_CSV
-
 
 # INSERTIONS
 
@@ -88,7 +86,7 @@ def _read_jobs_csv() -> List[Tuple[str, str, str, str, str, str, str]]:
     Returns:
         List of tuples referring to the job's information.
     """
-    with DETAILED_JOBS.open(newline="", encoding="utf-8") as handle:
+    with paths.DETAILED_CSV.open(newline="", encoding="utf-8") as handle:
         return [
             (row.get("company"), row.get("title"), row.get("description"),
              row.get("url"), row.get("place"), row.get("via"),

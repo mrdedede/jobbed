@@ -30,8 +30,6 @@ from job_scraper.detector import Renderer
 from job_scraper.fetching import new_client
 from job_scraper.models import Job
 
-OUTPUT_FILE = paths.JOBS_CSV
-
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
 MISS_FIELDNAMES = ["company", "url", "reason"]
 
@@ -141,6 +139,8 @@ async def scrape_boards(input_file: Optional[Path] = None,
         produced.
     """
     output_file = output_file or paths.JOBS_CSV
+    paths.TEMP.mkdir(parents=True, exist_ok=True)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
 
     if boards is None:
         boards = await asyncio.to_thread(load_boards, input_file)
@@ -274,7 +274,7 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=None,
                         help="read boards from this company,url CSV "
                              "instead of the database")
-    parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                         help="boards scraped concurrently")
     parser.add_argument(

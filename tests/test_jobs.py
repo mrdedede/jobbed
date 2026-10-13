@@ -3,13 +3,14 @@
 import pytest
 
 from db import jobs
+from job_scraper import paths
 
 
 @pytest.fixture
 def filtered_csv(tmp_path, monkeypatch):
     """Point insert_jobs at a CSV this test writes."""
     path = tmp_path / "filtered_detailed_jobs.csv"
-    monkeypatch.setattr(jobs, "DETAILED_JOBS", path)
+    monkeypatch.setattr(paths, "DETAILED_CSV", path)
 
     def write(*urls):
         header = "company,title,description,url,place,via,ats,keyword_hits\n"

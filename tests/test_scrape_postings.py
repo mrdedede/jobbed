@@ -387,3 +387,114 @@ async def test_a_parsed_page_has_no_error(fake):
     fake.pages[row()["url"]] = jsonld(title="Dev", description="<p>x</p>")
 
     assert (await fetch_job(row(), fake)).error is None
+
+
+# ======================================================================
+# ingest
+# ======================================================================
+
+
+@pytest.fixture
+def ingest_env(tmp_path, monkeypatch):
+    """jobs.csv with five rows, a fake DB layer and a fake fetch_job."""
+    from db import jobs as db_jobs
+    from job_scraper import paths
+
+    for name in ("JOBS_CSV", "DETAILED_CSV", "FAILED_POSTINGS_CSV"):
+        monkeypatch.setattr(paths, name, tmp_path / f"{name}.csv")
+
+    rows = ["http://a/1", "http://a/2", "http://a/2", "http://a/3",
+            "http://a/dead"]
+    paths.JOBS_CSV.write_text(
+        "company,title,url,place,via,ats,description\n" + "".join(
+            f"acme,t,{u},,links,x,\n" for u in rows), encoding="utf-8")
+
+    fetched, stored = [], []
+
+    async def fake_fetch_job(row, client):
+        from job_scraper.models import Job
+
+        fetched.append(row["url"])
+
+        if row["url"].endswith("dead"):
+            return Job("acme", "t", row["url"], via="none",
+                       error="status:404")
+
+        return Job("acme", "t", row["url"], via="jsonld",
+                   description="text")
+
+    def fake_insert(rows=None):
+        import csv
+
+        with paths.DETAILED_CSV.open(encoding="utf-8") as handle:
+            stored.extend(r["url"] for r in csv.DictReader(handle)
+                          if r["description"] and r["via"] != "none")
+
+        return len(stored), 0
+
+    monkeypatch.setattr(db_jobs, "select_job_urls", lambda: {"http://a/1"})
+    monkeypatch.setattr(db_jobs, "insert_jobs", fake_insert)
+    monkeypatch.setattr(scrape_postings, "fetch_job", fake_fetch_job)
+    monkeypatch.setattr(scrape_postings, "new_client", lambda: FakeSession({}))
+
+    return type("Env", (), {"paths": paths, "fetched": fetched,
+                            "stored": stored, "db_jobs": db_jobs})
+
+
+async def test_ingest_skips_known_and_duplicate_urls(ingest_env):
+    stats = await scrape_postings.ingest()
+
+    assert sorted(ingest_env.fetched) == [
+        "http://a/2", "http://a/3", "http://a/dead"]
+    assert stats["known"] == 1 and stats["new"] == 3
+
+
+async def test_ingest_records_failures_and_cleans_up(ingest_env):
+    stats = await scrape_postings.ingest()
+
+    failed = ingest_env.paths.FAILED_POSTINGS_CSV.read_text(encoding="utf-8")
+
+    assert "http://a/dead,acme,x,status:404" in failed
+    assert stats["failures"] == {"status:404": 1}
+    assert sorted(ingest_env.stored) == ["http://a/2", "http://a/3"]
+    assert not ingest_env.paths.DETAILED_CSV.exists()
+
+
+async def test_ingest_leaves_the_detail_file_when_the_store_fails(
+        ingest_env, monkeypatch):
+    def boom(rows=None):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ingest_env.db_jobs, "insert_jobs", boom)
+
+    with pytest.raises(RuntimeError):
+        await scrape_postings.ingest()
+
+    assert ingest_env.paths.DETAILED_CSV.exists()
+
+
+async def test_ingest_resumes_without_refetching(ingest_env, monkeypatch):
+    ingest_env.paths.DETAILED_CSV.write_text(
+        "company,title,description,url,place,via,ats,error\n"
+        "acme,t,text,http://a/2,,jsonld,x,\n", encoding="utf-8")
+
+    await scrape_postings.ingest()
+
+    assert "http://a/2" not in ingest_env.fetched
+    assert "http://a/2" in ingest_env.stored
+
+
+async def test_deadline_cancels_unfinished_fetches(fake, monkeypatch, tmp_path):
+    import time
+
+    async def slow(row, client):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(scrape_postings, "fetch_job", slow)
+
+    stats = await scrape_postings.scrape_details(
+        rows=[row(url=f"https://acme.fr/{n}") for n in range(3)],
+        output_file=tmp_path / "out.csv", workers=3,
+        deadline=time.monotonic() + 0.1)
+
+    assert stats["unfinished"] == 3

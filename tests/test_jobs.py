@@ -65,3 +65,12 @@ def test_select_job_urls_returns_every_stored_url(db, filtered_csv):
 
 def test_select_job_urls_empty_when_nothing_stored(db):
     assert jobs.select_job_urls() == set()
+
+
+def test_insert_jobs_leaves_out_dead_pages(db):
+    """A row with no description would mark its URL known forever."""
+    rows = [("a", "t", "text", "http://x/1", "", "jsonld", None),
+            ("a", "t", "", "http://x/2", "", "none", None)]
+
+    assert jobs.insert_jobs(rows) == (1, 1)
+    assert jobs.select_job_urls() == {"http://x/1"}

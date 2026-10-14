@@ -46,6 +46,10 @@ FILTERED_DETAILED_CSV = TEMP / "filtered_detailed_jobs.csv"
 #: written for a human to read.
 NO_JOBS_CSV = TEMP / "no_jobs.csv"
 
+#: One row per posting the ingest could not store (url, company, ats, reason).
+#: RenderPostings reads the `parse-miss` ones.
+FAILED_POSTINGS_CSV = TEMP / "failed_postings.csv"
+
 # Databases
 DB = ROOT / "db"
 DB_PATH = DB / "joblister.db"

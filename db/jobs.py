@@ -27,8 +27,13 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
             via, ats). Defaults to whatever the detail stage left in the
             detailed CSV, which is what the pipeline wants.
 
+    Rows with no description or via "none" are a dead page, not a posting.
+    Storing one would mark its URL known and it would never be retried, so
+    they are left out and counted with the skipped.
+
     Returns:
-        Tuple of (number of new jobs inserted, number of duplicates skipped).
+        Tuple of (number of new jobs inserted, number of rows skipped:
+        duplicates and dead pages).
 
     Raises:
         RuntimeError: If the database rejects the batch.
@@ -36,9 +41,12 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
     if not rows:
         rows = _read_jobs_csv()
 
+    total = len(rows)
+    rows = [row for row in rows if row[2] and row[5] != "none"]
+
     # An empty .values([]) compiles to INSERT ... DEFAULT VALUES: one blank row.
     if not rows:
-        return 0, 0
+        return 0, total
 
     payload = [
         {"company": company, "title": title, "description": description,
@@ -62,7 +70,7 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
-    return inserted, len(rows) - inserted
+    return inserted, total - inserted
 
 
 # SELECTIONS

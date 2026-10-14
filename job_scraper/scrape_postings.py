@@ -18,6 +18,10 @@ nothing on any of these boards and are deliberately absent.
 Usage:
     python job_scraper/scrape_postings.py [--limit N] [--workers N] [--no-resume]
     python -m job_scraper.scrape_postings [--limit N] [--workers N] [--no-resume]
+    python -m job_scraper.scrape_postings --ingest [--max-minutes N]
+
+`--ingest` is the nightly run (see `ingest`): new postings only, stored in the
+database, failures listed in failed_postings.csv.
 
 Both work, and the file is named scrape_postings rather than job_scraper for the
 first one's sake: running a file puts its own directory on sys.path, so a
@@ -31,8 +35,11 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import random
 import re
 import sys
+import time
+from datetime import date
 from collections import deque
 from dataclasses import asdict
 from html import unescape
@@ -58,7 +65,8 @@ from job_scraper.fetching import (
 )
 from job_scraper.models import Job
 
-FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats"]
+FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats",
+              "error"]
 
 # Phenom's JSON-LD description came back 296k characters -- that is the whole
 # page's furniture, not a posting. Everything genuine measured under 16k.
@@ -387,7 +395,8 @@ async def scrape_details(input_file: Optional[Path] = None,
                          workers: int = DEFAULT_WORKERS,
                          resume: bool = True,
                          on_progress: Optional[Callable[[str], None]] = None,
-                         rows: Optional[List[Dict[str, str]]] = None) -> dict:
+                         rows: Optional[List[Dict[str, str]]] = None,
+                         deadline: Optional[float] = None) -> dict:
     """Fetch each filtered posting's own page and write the detail CSV.
 
     Args:
@@ -404,10 +413,14 @@ async def scrape_details(input_file: Optional[Path] = None,
         rows: Postings to fetch, as the dicts the input CSV would have held.
             Lets a caller that already filtered in memory -- the Streamlit
             pages -- skip writing first_filtered_file.csv just to read it back.
+        deadline: `time.monotonic()` value after which no more results are
+            waited for. Fetches still running are cancelled, rows already
+            fetched are still written, and the rest stay pending for the next
+            run (the output file is the resume point).
 
     Returns:
-        Dict with `pending`, `skipped` and per-extractor `counts`, plus the
-        `output` path.
+        Dict with `pending`, `skipped`, `unfinished` (cancelled at the
+        deadline) and per-extractor `counts`, plus the `output` path.
     """
     input_file = input_file or paths.JOBS_CSV
     output_file = output_file or paths.DETAILED_CSV
@@ -428,6 +441,7 @@ async def scrape_details(input_file: Optional[Path] = None,
                     f"({len(rows) - len(pending)} already done)")
 
     counts: Dict[str, int] = {}
+    unfinished = 0
     fresh = not resume or not output_file.exists()
 
     with output_file.open(
@@ -461,7 +475,16 @@ async def scrape_details(input_file: Optional[Path] = None,
                 for index, (row, task) in enumerate(
                     zip(pending, tasks), start=1
                 ):
-                    job = await task
+                    try:
+                        # wait_for cancels the fetch on timeout; a task that
+                        # already finished is still returned at timeout <= 0.
+                        job = await asyncio.wait_for(
+                            task, None if deadline is None
+                            else deadline - time.monotonic())
+                    except asyncio.TimeoutError:
+                        unfinished += 1
+                        continue
+
                     writer.writerow(
                         {**asdict(job), "ats": row.get("ats", "")}
                     )
@@ -485,8 +508,98 @@ async def scrape_details(input_file: Optional[Path] = None,
     return {
         "pending": len(pending),
         "skipped": len(rows) - len(pending),
+        "unfinished": unfinished,
         "counts": counts,
         "output": output_file,
+    }
+
+
+async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
+                 max_minutes: float = 0,
+                 on_progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The nightly detail stage: new postings only, within a time budget.
+
+    Reads jobs.csv, drops URLs already in job_postings and duplicates, fetches
+    the rest in a per-night shuffled order (so no board starves when the
+    budget runs out), stores what has a description, and records the rest in
+    failed_postings.csv. detailed_jobs.csv is deleted only after the store
+    succeeded, so its presence means "unfinished run, resume".
+
+    Args:
+        limit: Only fetch the first N new postings; 0 means all.
+        workers: Postings fetched concurrently.
+        max_minutes: Stop waiting for fetches after this long; 0 means no
+            budget. What was not fetched is simply pending tomorrow.
+        on_progress: Optional callback given progress lines.
+
+    Returns:
+        Stats: `new`, `known`, `fetched`, `unfinished`, `inserted`,
+        `not_stored`, and `failures` (reason -> count).
+
+    Raises:
+        RuntimeError: If the database rejects the insert. The detail file is
+            left in place for the next run.
+    """
+    from db import jobs
+
+    def say(message: str) -> None:
+        if on_progress:
+            on_progress(message)
+
+    with paths.JOBS_CSV.open(newline="", encoding="utf-8") as handle:
+        scraped = list(csv.DictReader(handle))
+
+    seen = jobs.select_job_urls()
+    known = len(seen)
+    fresh = []
+
+    for row in scraped:
+        url = row.get("url")
+
+        if url and url not in seen:
+            seen.add(url)
+            fresh.append(row)
+
+    # Seeded per night: a resumed run keeps its order, tomorrow gets another.
+    random.Random(date.today().isoformat()).shuffle(fresh)
+    say(f"{len(scraped)} scraped, {len(fresh)} new, {known} already stored")
+
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes else None
+    stats = await scrape_details(
+        output_file=paths.DETAILED_CSV, limit=limit, workers=workers,
+        on_progress=on_progress, rows=fresh, deadline=deadline)
+
+    with paths.DETAILED_CSV.open(newline="", encoding="utf-8") as handle:
+        fetched = list(csv.DictReader(handle))
+
+    failures: Dict[str, int] = {}
+    paths.FAILED_POSTINGS_CSV.parent.mkdir(parents=True, exist_ok=True)
+
+    with paths.FAILED_POSTINGS_CSV.open(
+            "w", newline="", encoding="utf-8") as handle:
+        out = csv.writer(handle)
+        out.writerow(["url", "company", "ats", "reason"])
+
+        for row in fetched:
+            if row.get("description") and row.get("via") != "none":
+                continue
+
+            reason = row.get("error") or "empty-description"
+            failures[reason] = failures.get(reason, 0) + 1
+            out.writerow([row["url"], row.get("company", ""),
+                          row.get("ats", ""), reason])
+
+    inserted, _ = jobs.insert_jobs()
+    paths.DETAILED_CSV.unlink()
+
+    return {
+        "new": len(fresh),
+        "known": known,
+        "fetched": len(fetched),
+        "unfinished": stats["unfinished"],
+        "inserted": inserted,
+        "not_stored": sum(failures.values()),
+        "failures": failures,
     }
 
 
@@ -494,7 +607,8 @@ def main() -> int:
     """Scrape every filtered posting's page into the detail CSV.
 
     Returns:
-        0 on success.
+        0 on success (including a run cut short by --max-minutes); 1 if the
+        --ingest store failed.
     """
     import argparse
 
@@ -508,8 +622,35 @@ def main() -> int:
     parser.add_argument("--no-resume", action="store_true",
                         help="rewrite the output instead of skipping URLs it "
                              "already holds")
+    parser.add_argument("--ingest", action="store_true",
+                        help="the nightly run: skip URLs already in "
+                             "job_postings, fetch the rest, store them and "
+                             "write failed_postings.csv")
+    parser.add_argument("--max-minutes", type=float, default=0,
+                        help="stop waiting for fetches after this long "
+                             "(0 = no budget); the rest is pending next run")
     args = parser.parse_args()
 
+    if args.ingest:
+        try:
+            stats = asyncio.run(ingest(
+                limit=args.limit, workers=args.workers,
+                max_minutes=args.max_minutes, on_progress=print))
+        except RuntimeError as err:
+            print(f"FAILED: {err}", file=sys.stderr)
+
+            return 1
+
+        reasons = "  ".join(f"{reason}={n}"
+                            for reason, n in sorted(stats["failures"].items()))
+        print(f"\n{stats['inserted']} stored, {stats['not_stored']} not "
+              f"stored ({reasons or 'none'}), {stats['unfinished']} left "
+              f"for next run -> {paths.FAILED_POSTINGS_CSV}")
+
+        return 0
+
+    deadline = (time.monotonic() + args.max_minutes * 60
+                if args.max_minutes else None)
     stats = asyncio.run(scrape_details(
         input_file=args.input,
         output_file=args.output,
@@ -517,6 +658,7 @@ def main() -> int:
         workers=args.workers,
         resume=not args.no_resume,
         on_progress=print,
+        deadline=deadline,
     ))
 
     print(f"\n-> {stats['output']}")

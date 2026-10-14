@@ -343,7 +343,7 @@ If you want to run stages manually outside the UI:
 
 ```bash
 # Scrape boards only
-python -m job_scraper.main_scraper
+python -m job_scraper.scrape_boards
 
 # Analyze jobs with Claude
 python -m ai.main_analysis
@@ -363,8 +363,10 @@ jobbed/
 ├── job_scraper/          # Board scraping & job fetching
 │   ├── strategies/       # Detection strategies (JSON-LD, links, API, etc.)
 │   ├── detector.py       # ATS detection
-│   ├── main_scraper.py   # Board scraping orchestration
-│   ├── post_scraper.py   # Individual job fetching
+│   ├── board.py          # One board: detection + strategy dispatch
+│   ├── scrape_boards.py  # Stage 1: scrape every board
+│   ├── scrape_postings.py # Stage 2: fetch every posting's page
+│   ├── debug_board.py    # Debug CLI: scrape one board and print it
 │   └── paths.py          # Filesystem paths
 ├── ai/                   # AI integration (via the LLM gateway)
 │   ├── gateway.py        # async client for llm_gateway

@@ -17,8 +17,8 @@ prometheus-fastapi-instrumentator==8.1.0
 # vectorised str.count/str.contains over the whole frame plus a seeded
 # groupby().sample() for the per-company exemption cap, which is a real loop
 # and a real reservoir sample in plain Python. (The claim this comment used to
-# make -- "main_scraper.py only, to write one CSV that csv.DictWriter would
-# also write" -- was already false: main_scraper does not import pandas.
+# make -- "scrape_boards.py only, to write one CSV that csv.DictWriter would
+# also write" -- was already false: scrape_boards does not import pandas.
 # db/db_connection.py did, to reimplement a UNIQUE constraint with iterrows();
 # that is now INSERT OR IGNORE over csv.DictReader.)
 pandas==2.2.3
@@ -40,7 +40,7 @@ pytest==8.3.4
 flake8==7.1.1
 
 # A JS renderer stays deliberately unpinned and uninstalled, and
-# main_scraper.py must keep running on a machine with no browser. The seam is
+# scrape_boards.py must keep running on a machine with no browser. The seam is
 # now wired -- job_scraper/render.py, reached only via --render, which imports
 # playwright inside the flag branch -- but it stays an opt-in extra, never a
 # hard requirement. The generic and API-discovery strategies were measured

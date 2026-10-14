@@ -6,15 +6,21 @@ The search response already carries the full posting text, so -- like WTTJ --
 scrape_postings.py carries the description straight through instead of
 re-fetching a page.
 
-Credentials: user_info/france_travail_credentials.json, gitignored, holding
-{"client_id": "...", "client_secret": "..."}. Missing or unreadable file means
-the source is not configured; fetch_jobs then returns [] rather than raising,
+Credentials: FRANCE_TRAVAIL_CLIENT_ID and FRANCE_TRAVAIL_CLIENT_SECRET in the
+environment (a mounted Secret in Kubernetes), else the JSON file at
+paths.FRANCE_TRAVAIL_CREDENTIALS, gitignored, holding
+{"client_id": "...", "client_secret": "..."}. Neither means the source is not
+configured; fetch_jobs then returns [] and says so once, rather than raising,
 same as any board that gives nothing.
+
+The source is off until SEARCH_KEYWORDS is filled in: see the note there.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import time
 from typing import List, Optional, Tuple
 
@@ -38,9 +44,23 @@ PAGE_SIZE = 150
 MAX_RESULTS = 1500
 
 #: The fixed search terms for the nightly pull -- global, not per user. Joined
-#: into one `motsCles` query; empty means no keyword restriction (still capped
-#: by MAX_RESULTS).
+#: into one `motsCles` query.
+#:
+#: Empty on purpose, for now: the terms will come from an analysis of what
+#: users actually search for. **An empty list turns the source off** -- it
+#: returns [] and makes no request, instead of pulling an unrestricted
+#: nationwide set. Filling this list is what switches the source on.
 SEARCH_KEYWORDS: List[str] = []
+
+_logger = logging.getLogger(__name__)
+_warned: set = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Say why the source is idle, once per process rather than per run."""
+    if key not in _warned:
+        _warned.add(key)
+        _logger.warning(message)
 
 #: Cached token, module-level: every call in a run shares one process, and a
 #: fresh token per call would be one extra round trip per page for no reason.
@@ -51,6 +71,12 @@ _token: Optional[Tuple[str, float]] = None
 
 
 def _load_credentials() -> Optional[dict]:
+    client_id = os.environ.get("FRANCE_TRAVAIL_CLIENT_ID")
+    client_secret = os.environ.get("FRANCE_TRAVAIL_CLIENT_SECRET")
+
+    if client_id and client_secret:
+        return {"client_id": client_id, "client_secret": client_secret}
+
     if not paths.FRANCE_TRAVAIL_CREDENTIALS.exists():
         return None
 
@@ -119,13 +145,25 @@ async def fetch_jobs(session) -> List[Job]:
             calls, same as every other source).
 
     Returns:
-        Matching jobs, or [] if no credentials are configured or the API call
-        fails -- never raises, so a misconfigured or down source cannot stop
+        Matching jobs, or [] if no credentials or keywords are configured or
+        the API call fails -- never raises, so a misconfigured or down source cannot stop
         the rest of the run.
     """
     credentials = _load_credentials()
 
     if not credentials:
+        _warn_once("credentials", "france_travail: no credentials "
+                   "(FRANCE_TRAVAIL_CLIENT_ID/SECRET or the credentials "
+                   "file); source skipped")
+
+        return []
+
+    keywords = SEARCH_KEYWORDS
+
+    if not keywords:
+        _warn_once("keywords", "france_travail: SEARCH_KEYWORDS is empty; "
+                   "source skipped (fill it in to turn the source on)")
+
         return []
 
     token = await _get_token(session, credentials)
@@ -133,7 +171,6 @@ async def fetch_jobs(session) -> List[Job]:
     if not token:
         return []
 
-    keywords = SEARCH_KEYWORDS
     headers = {"Authorization": f"Bearer {token}"}
     jobs: List[Job] = []
     seen_urls = set()
@@ -145,7 +182,7 @@ async def fetch_jobs(session) -> List[Job]:
             session, SEARCH_URL, headers={
                 **headers, "Range": f"offres {start}-{end}"
             },
-            params={"motsCles": ",".join(keywords)} if keywords else {},
+            params={"motsCles": ",".join(keywords)},
         )
 
         if not isinstance(data, dict):

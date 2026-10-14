@@ -56,8 +56,12 @@ class FakeSession(httpx.AsyncClient):
 
 
 @pytest.fixture(autouse=True)
-def _reset_token_cache():
+def _reset_token_cache(monkeypatch):
     france_travail._token = None
+    france_travail._warned.clear()
+    # Tests run against a clean environment, whatever the developer exported.
+    monkeypatch.delenv("FRANCE_TRAVAIL_CLIENT_ID", raising=False)
+    monkeypatch.delenv("FRANCE_TRAVAIL_CLIENT_SECRET", raising=False)
     yield
     france_travail._token = None
 
@@ -69,6 +73,8 @@ def credentials_file(tmp_path, monkeypatch):
         "client_id": "id", "client_secret": "secret",
     }))
     monkeypatch.setattr(paths, "FRANCE_TRAVAIL_CREDENTIALS", path)
+    # The source is off with no keywords; most tests want it on.
+    monkeypatch.setattr(france_travail, "SEARCH_KEYWORDS", ["python"])
     return path
 
 
@@ -169,3 +175,52 @@ async def test_scrape_postings_shortcircuits_api_source_rows():
 
     assert job.description == "full posting text"
     assert job.via == "france_travail"
+
+
+async def test_no_credentials_logs_once(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(paths, "FRANCE_TRAVAIL_CREDENTIALS",
+                        tmp_path / "missing.json")
+    monkeypatch.setattr(france_travail, "SEARCH_KEYWORDS", ["python"])
+    session = FakeSession(token_body=None, search_pages=[])
+
+    with caplog.at_level("WARNING"):
+        await france_travail.fetch_jobs(session)
+        await france_travail.fetch_jobs(session)
+
+    assert [r.getMessage() for r in caplog.records
+            if "no credentials" in r.getMessage()].__len__() == 1
+    assert session.requests == []
+
+
+async def test_empty_keywords_make_no_request_and_log_once(
+        credentials_file, monkeypatch, caplog):
+    monkeypatch.setattr(france_travail, "SEARCH_KEYWORDS", [])
+    session = FakeSession(token_body=None, search_pages=[])
+
+    with caplog.at_level("WARNING"):
+        assert await france_travail.fetch_jobs(session) == []
+        assert await france_travail.fetch_jobs(session) == []
+
+    assert session.requests == []  # not even the token call
+    assert sum("SEARCH_KEYWORDS" in r.getMessage()
+               for r in caplog.records) == 1
+
+
+async def test_credentials_come_from_the_environment(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "FRANCE_TRAVAIL_CREDENTIALS",
+                        tmp_path / "missing.json")
+    monkeypatch.setattr(france_travail, "SEARCH_KEYWORDS", ["python"])
+    monkeypatch.setenv("FRANCE_TRAVAIL_CLIENT_ID", "env-id")
+    monkeypatch.setenv("FRANCE_TRAVAIL_CLIENT_SECRET", "env-secret")
+    session = FakeSession(
+        token_body=json.dumps({"access_token": "tok", "expires_in": 3600}),
+        search_pages=[json.dumps({"resultats": [_offer()]})],
+    )
+
+    jobs = await france_travail.fetch_jobs(session)
+
+    token_call = next(r for r in session.requests if r[0] == "post")
+    assert token_call[2]["client_id"] == "env-id"
+    assert token_call[2]["client_secret"] == "env-secret"
+    assert len(jobs) == 1

@@ -145,7 +145,7 @@ def _gate() -> _Gate:
 
 
 @contextlib.asynccontextmanager
-async def _polite(url: str):
+async def polite(url: str):
     """Hold a per-host slot and the global one, spacing hosts' requests out."""
     gate = _gate()
     host = gate.hosts.setdefault(urlparse(url).hostname or "", _Host())
@@ -204,7 +204,7 @@ async def request(client: httpx.AsyncClient, url: str,
         last = attempt == RETRY_TOTAL
 
         try:
-            async with _polite(url), client.stream(
+            async with polite(url), client.stream(
                 method.upper(), url, timeout=timeout, **kwargs
             ) as response:
                 if response.status_code not in RETRY_STATUSES or last:

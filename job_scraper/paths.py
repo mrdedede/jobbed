@@ -46,6 +46,12 @@ FILTERED_DETAILED_CSV = TEMP / "filtered_detailed_jobs.csv"
 #: written for a human to read.
 NO_JOBS_CSV = TEMP / "no_jobs.csv"
 
+#: RenderBoards' two outputs: postings found by a browser (merged into the
+#: next ingest) and the boards that still gave nothing. Separate from
+#: NO_JOBS_CSV, which is RenderBoards' own input.
+JOBS_RENDERED_CSV = TEMP / "jobs_rendered.csv"
+NO_JOBS_RENDERED_CSV = TEMP / "no_jobs_rendered.csv"
+
 #: One row per posting the ingest could not store (url, company, ats, reason).
 #: RenderPostings reads the `parse-miss` ones.
 FAILED_POSTINGS_CSV = TEMP / "failed_postings.csv"

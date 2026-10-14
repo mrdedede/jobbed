@@ -19,9 +19,11 @@ Usage:
     python job_scraper/scrape_postings.py [--limit N] [--workers N] [--no-resume]
     python -m job_scraper.scrape_postings [--limit N] [--workers N] [--no-resume]
     python -m job_scraper.scrape_postings --ingest [--max-minutes N]
+    python -m job_scraper.scrape_postings --render-failed [--max-minutes N]
 
 `--ingest` is the nightly run (see `ingest`): new postings only, stored in the
-database, failures listed in failed_postings.csv.
+database, failures listed in failed_postings.csv. `--render-failed` then
+retries the parse-miss ones in a browser.
 
 Both work, and the file is named scrape_postings rather than job_scraper for the
 first one's sake: running a file puts its own directory on sys.path, so a
@@ -63,6 +65,7 @@ from job_scraper.fetching import (
     walk_jobpostings,
     workday_endpoint,
 )
+from job_scraper.detector import Renderer
 from job_scraper.models import Job
 
 FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats",
@@ -276,12 +279,15 @@ def _from_html(html: str) -> Optional[dict]:
     return _from_main(soup, title) or _from_body(soup, title)
 
 
-async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
+async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
+                    render: Optional[Renderer] = None) -> Job:
     """Read one posting's page, falling back to the row when a field is absent.
 
     Args:
         row: A first_filtered_file.csv row -- company, title, url, place, ats.
         client: The run's shared AsyncClient.
+        render: Optional async browser renderer. When given, the page is
+            loaded through it instead of a plain GET (RenderPostings).
 
     Returns:
         A Job. Never raises: a dead page yields via="none" with an empty
@@ -312,7 +318,11 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
             "via": row.get("ats", ""),
         }
     else:
-        html, error = await fetch_result(client, url)
+        if render is not None:
+            html = await render(url)
+            error = None if html else "render-failed"
+        else:
+            html, error = await fetch_result(client, url)
 
         # "truncated" arrives with text, so it only counts if parsing fails.
         if html:
@@ -514,6 +524,33 @@ async def scrape_details(input_file: Optional[Path] = None,
     }
 
 
+def store(rows: List[Dict[str, str]]) -> int:
+    """Insert fetched postings into job_postings; the one store path.
+
+    Used by ingest and RenderPostings. Idempotent on the URL, so either can
+    be re-run, and `db.jobs.insert_jobs` leaves out dead pages.
+
+    Args:
+        rows: Dicts with company, title, description, url, place, via, ats.
+
+    Returns:
+        How many rows were new.
+
+    Raises:
+        RuntimeError: If the database rejects the batch.
+    """
+    from db import jobs
+
+    inserted, _ = jobs.insert_jobs([
+        (row.get("company"), row.get("title"), row.get("description"),
+         row.get("url"), row.get("place"), row.get("via"),
+         row.get("ats") or None)
+        for row in rows
+    ])
+
+    return inserted
+
+
 async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
                  max_minutes: float = 0,
                  on_progress: Optional[Callable[[str], None]] = None) -> dict:
@@ -548,6 +585,12 @@ async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
 
     with paths.JOBS_CSV.open(newline="", encoding="utf-8") as handle:
         scraped = list(csv.DictReader(handle))
+
+    # What RenderBoards found with a browser, if it has run. Same columns as
+    # jobs.csv; URLs already stored or listed twice drop out below.
+    if paths.JOBS_RENDERED_CSV.exists():
+        with paths.JOBS_RENDERED_CSV.open(newline="", encoding="utf-8") as h:
+            scraped += list(csv.DictReader(h))
 
     seen = jobs.select_job_urls()
     known = len(seen)
@@ -589,7 +632,7 @@ async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
             out.writerow([row["url"], row.get("company", ""),
                           row.get("ats", ""), reason])
 
-    inserted, _ = jobs.insert_jobs()
+    inserted = store(fetched)
     paths.DETAILED_CSV.unlink()
 
     return {
@@ -601,6 +644,83 @@ async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
         "not_stored": sum(failures.values()),
         "failures": failures,
     }
+
+
+async def render_postings(limit: int = 0, contexts: int = 4,
+                          max_minutes: float = 0,
+                          on_progress: Optional[Callable[[str], None]] = None,
+                          pool=None) -> dict:
+    """RenderPostings: retry, in a browser, what plain fetching could not read.
+
+    Reads failed_postings.csv, keeps the `parse-miss` rows (the page arrived
+    but held no posting, which is what a JS-built page looks like) and stores
+    whatever a render recovers. A row that is not recovered stays unstored and
+    is tried again by the next night's ingest.
+
+    Args:
+        limit: Only render the first N rows; 0 means all.
+        contexts: Pages rendered at once.
+        max_minutes: Stop starting renders after this long; 0 means no budget.
+        on_progress: Optional callback given progress lines.
+        pool: A RenderPool; one is created (and closed) when omitted.
+
+    Returns:
+        Stats: `candidates`, `rendered`, `recovered`, `stored`, `unstarted`.
+
+    Raises:
+        RuntimeError: If the database rejects the insert.
+    """
+    if not paths.FAILED_POSTINGS_CSV.exists():
+        return {"candidates": 0, "rendered": 0, "recovered": 0, "stored": 0,
+                "unstarted": 0}
+
+    with paths.FAILED_POSTINGS_CSV.open(newline="", encoding="utf-8") as h:
+        rows = [row for row in csv.DictReader(h)
+                if row.get("reason") == "parse-miss"]
+
+    if limit:
+        rows = rows[:limit]
+
+    if on_progress:
+        on_progress(f"{len(rows)} parse-miss postings to render")
+
+    own_pool = pool is None
+
+    if own_pool:
+        # Local import: Playwright is an opt-in extra.
+        from job_scraper.render import RenderPool
+        pool = RenderPool(contexts=contexts)
+
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes else None
+    unstarted = 0
+
+    # ponytail: the deadline is checked before a render starts, not enforced
+    # on one in flight; a render is bounded by the navigation timeout.
+    async def one(row: Dict[str, str], client) -> Optional[Job]:
+        nonlocal unstarted
+
+        if deadline is not None and time.monotonic() > deadline:
+            unstarted += 1
+
+            return None
+
+        return await fetch_job(row, client, render=pool.render)
+
+    try:
+        async with new_client() as client:
+            jobs = await asyncio.gather(*(one(r, client) for r in rows))
+    finally:
+        if own_pool:
+            await pool.aclose()
+
+    rendered = [job for job in jobs if job is not None]
+    recovered = [job for job in rendered
+                 if job.description and job.via != "none"]
+    stored = store([{**asdict(job)} for job in recovered])
+
+    return {"candidates": len(rows), "rendered": len(rendered),
+            "recovered": len(recovered), "stored": stored,
+            "unstarted": unstarted}
 
 
 def main() -> int:
@@ -626,10 +746,30 @@ def main() -> int:
                         help="the nightly run: skip URLs already in "
                              "job_postings, fetch the rest, store them and "
                              "write failed_postings.csv")
+    parser.add_argument("--render-failed", action="store_true",
+                        help="RenderPostings: render the parse-miss rows of "
+                             "failed_postings.csv in a browser and store "
+                             "what is recovered")
     parser.add_argument("--max-minutes", type=float, default=0,
                         help="stop waiting for fetches after this long "
                              "(0 = no budget); the rest is pending next run")
     args = parser.parse_args()
+
+    if args.render_failed:
+        try:
+            stats = asyncio.run(render_postings(
+                limit=args.limit, max_minutes=args.max_minutes,
+                on_progress=print))
+        except RuntimeError as err:
+            print(f"FAILED: {err}", file=sys.stderr)
+
+            return 1
+
+        print(f"\n{stats['recovered']} of {stats['candidates']} recovered, "
+              f"{stats['stored']} stored, {stats['unstarted']} left for next "
+              f"run")
+
+        return 0
 
     if args.ingest:
         try:

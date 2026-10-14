@@ -41,10 +41,6 @@ MISS_FIELDNAMES = ["company", "url", "reason"]
 #: network; politeness is enforced per host in fetching, not here.
 DEFAULT_WORKERS = 20
 
-#: A render pass launches a whole headless Chromium instance per board; this
-#: many at once is already a heavy concurrent load for one machine.
-MAX_RENDER_WORKERS = 3
-
 #: A run whose failed-board share exceeds this exits 1. Step 0's silent async
 #: bug turned whole vendors into "no jobs"; a share this high is a regression,
 #: not a bad night.
@@ -132,7 +128,8 @@ async def scrape_boards(input_file: Optional[Path] = None,
                         render: Optional[Renderer] = None,
                         on_board: Optional[Callable[[str], None]] = None,
                         workers: int = DEFAULT_WORKERS,
-                        boards: Optional[List[dict]] = None) -> dict:
+                        boards: Optional[List[dict]] = None,
+                        no_jobs_file: Optional[Path] = None) -> dict:
     """Scrape every board and write one row per posting.
 
     A board that raises is reported and skipped rather than allowed to end the
@@ -142,6 +139,9 @@ async def scrape_boards(input_file: Optional[Path] = None,
         input_file: CSV of company,url board rows. Defaults to the active
             rows of the job_boards table. Ignored when `boards` is given.
         output_file: Where to write the scraped postings.
+        no_jobs_file: Where to write the boards that gave nothing. Defaults
+            to paths.NO_JOBS_CSV; a run that reads that file as its input
+            (RenderBoards) must write somewhere else.
         limit: Only scrape the first N boards; 0 means all of them.
         render: Optional async renderer for JS-built listings.
         on_board: Optional callback given one progress line per board. Left to
@@ -159,6 +159,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
         produced.
     """
     output_file = output_file or paths.JOBS_CSV
+    no_jobs_file = no_jobs_file or paths.NO_JOBS_CSV
     paths.TEMP.mkdir(parents=True, exist_ok=True)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -195,8 +196,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
         # Written beside the target and renamed on success, so a run that
         # dies midway leaves the previous complete files in place for ingest.
         tmp_jobs = output_file.with_name(output_file.name + ".tmp")
-        tmp_misses = paths.NO_JOBS_CSV.with_name(
-            paths.NO_JOBS_CSV.name + ".tmp")
+        tmp_misses = no_jobs_file.with_name(no_jobs_file.name + ".tmp")
 
         try:
             with tmp_jobs.open("w", newline="", encoding="utf-8") as output, \
@@ -283,7 +283,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
                         on_board(f"{len(jobs):4} jobs  {source_name:24} api")
 
             os.replace(tmp_jobs, output_file)
-            os.replace(tmp_misses, paths.NO_JOBS_CSV)
+            os.replace(tmp_misses, no_jobs_file)
         finally:
             # An error or Ctrl-C must not leave scraping tasks running against
             # a client that is about to close.
@@ -296,9 +296,37 @@ async def scrape_boards(input_file: Optional[Path] = None,
         "failed": failed,
         "dropped": dropped,
         "output": output_file,
-        "no_jobs": paths.NO_JOBS_CSV,
+        "no_jobs": no_jobs_file,
         "per_board": per_board,
     }
+
+
+#: Reasons (the start of a diagnose.explain line) that a browser can fix: the
+#: listing is built in JS, or the page is an empty shell. The others -- 403s,
+#: "job-shaped links present", "no job-shaped links" -- are different problems
+#: and a browser would only burn minutes on them.
+JS_SHELL_REASONS = ("likely javascript-rendered", "no links on the page")
+
+
+def render_candidates(path: Optional[Path] = None) -> List[dict]:
+    """The no_jobs rows worth a browser pass.
+
+    Args:
+        path: A no_jobs.csv; defaults to paths.NO_JOBS_CSV.
+
+    Returns:
+        {"company", "url"} dicts for the rows whose reason is a JS shell.
+        Empty if the file does not exist yet.
+    """
+    path = path or paths.NO_JOBS_CSV
+
+    if not path.exists():
+        return []
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [{"company": row["company"], "url": row["url"]}
+                for row in csv.DictReader(handle)
+                if (row.get("reason") or "").startswith(JS_SHELL_REASONS)]
 
 
 def main() -> int:
@@ -324,35 +352,60 @@ def main() -> int:
              "in JS. Costs seconds per board. Needs: pip install playwright "
              "&& playwright install chromium",
     )
+    parser.add_argument(
+        "--render-missed", action="store_true",
+        help="RenderBoards: re-scrape, with a browser, the JS-shell boards "
+             "listed in no_jobs.csv; writes jobs_rendered.csv (merged by the "
+             "next ingest) and no_jobs_rendered.csv",
+    )
     args = parser.parse_args()
 
-    renderer = None
-    workers = args.workers
+    if args.render_missed:
+        args.render = True
 
-    if args.render:
-        # Imported here, not at module scope: Playwright is an opt-in extra
-        # and this script has to keep running on a machine with no browser.
-        from job_scraper.render import arender as renderer
-        # Each render is a full headless Chromium launch -- capped separately
-        # from --workers so a general "run with more workers" bump doesn't
-        # also mean "launch more browsers at once".
-        workers = min(workers, MAX_RENDER_WORKERS)
+    async def run() -> dict:
+        pool = None
+
+        if args.render:
+            # Imported here, not at module scope: Playwright is an opt-in
+            # extra and this script has to keep running with no browser.
+            # The pool caps concurrent pages itself, so --workers needs no
+            # separate render limit.
+            from job_scraper.render import RenderPool
+            pool = RenderPool()
+
+        try:
+            extra = {}
+
+            if args.render_missed:
+                extra = dict(boards=render_candidates(args.input),
+                             output_file=args.output or paths.JOBS_RENDERED_CSV,
+                             no_jobs_file=paths.NO_JOBS_RENDERED_CSV)
+                print(f"{len(extra['boards'])} JS-shell boards to render")
+
+            return await scrape_boards(
+                **{"input_file": args.input, "output_file": args.output,
+                   "limit": args.limit,
+                   "render": pool.render if pool else None,
+                   "on_board": print, "workers": args.workers, **extra}
+            )
+        finally:
+            if pool:
+                await pool.aclose()
 
     started = time.monotonic()
-    stats = asyncio.run(scrape_boards(
-        input_file=args.input,
-        output_file=args.output,
-        limit=args.limit,
-        render=renderer,
-        on_board=print,
-        workers=workers,
-    ))
+    stats = asyncio.run(run())
 
     minutes = (time.monotonic() - started) / 60
     print(f"\n{stats['jobs']} postings from {stats['boards']} boards "
           f"({stats['failed']} failed, {stats['dropped']} junk links dropped) "
           f"in {minutes:.1f} min -> {stats['output']}")
     print(f"boards that gave nothing -> {stats['no_jobs']}")
+
+    if args.render_missed:
+        # A browser pass recovers little by nature (see PHASE4_PLAN.md M5);
+        # zero found is a quiet night, not a failed run.
+        return 0
 
     if not stats["boards"] or not stats["jobs"]:
         print("FAILED: no boards or no postings", file=sys.stderr)

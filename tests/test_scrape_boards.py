@@ -160,3 +160,36 @@ def test_exit_code_reflects_run_health(stats, code, monkeypatch):
     monkeypatch.setattr("sys.argv", ["scrape_boards"])
 
     assert scrape_boards.main() == code
+
+
+def test_render_candidates_keeps_only_js_shell_reasons(tmp_path):
+    path = tmp_path / "no_jobs.csv"
+    path.write_text(
+        "company,url,reason\n"
+        "a,http://a,likely javascript-rendered (3 anchors, 20 scripts)\n"
+        "b,http://b,no links on the page (0 anchors)\n"
+        "c,http://c,http 403\n"
+        "d,http://d,job-shaped links present but no strategy read them\n"
+        "e,http://e,no job-shaped links (40 anchors)\n", encoding="utf-8")
+
+    assert [b["company"] for b in scrape_boards.render_candidates(path)] == [
+        "a", "b"]
+
+
+def test_render_candidates_without_a_file_is_empty(tmp_path):
+    assert scrape_boards.render_candidates(tmp_path / "missing.csv") == []
+
+
+async def test_a_separate_no_jobs_file_leaves_the_input_untouched(
+        scraped, tmp_path):
+    original = paths.NO_JOBS_CSV
+    original.write_text("company,url,reason\nx,http://x,old\n",
+                        encoding="utf-8")
+    other = tmp_path / "no_jobs_rendered.csv"
+
+    await scrape_boards.scrape_boards(
+        boards=[{"company": "a", "url": "http://a/jobs"}],
+        output_file=tmp_path / "jobs_rendered.csv", no_jobs_file=other)
+
+    assert "old" in original.read_text(encoding="utf-8")
+    assert other.exists()

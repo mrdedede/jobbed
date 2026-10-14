@@ -64,13 +64,17 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    renderer = None
+    async def main_async() -> None:
+        if not args.render:
+            return await run(args, None)
 
-    if args.render:
         # Imported here, not at module scope: Playwright is an opt-in extra.
-        from job_scraper.render import arender as renderer
+        from job_scraper.render import RenderPool
 
-    asyncio.run(run(args, renderer))
+        async with RenderPool() as pool:
+            await run(args, pool.render)
+
+    asyncio.run(main_async())
 
     return 0
 

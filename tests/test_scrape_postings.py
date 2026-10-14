@@ -400,7 +400,8 @@ def ingest_env(tmp_path, monkeypatch):
     from db import jobs as db_jobs
     from job_scraper import paths
 
-    for name in ("JOBS_CSV", "DETAILED_CSV", "FAILED_POSTINGS_CSV"):
+    for name in ("JOBS_CSV", "DETAILED_CSV", "FAILED_POSTINGS_CSV",
+                 "JOBS_RENDERED_CSV"):
         monkeypatch.setattr(paths, name, tmp_path / f"{name}.csv")
 
     rows = ["http://a/1", "http://a/2", "http://a/2", "http://a/3",
@@ -411,7 +412,7 @@ def ingest_env(tmp_path, monkeypatch):
 
     fetched, stored = [], []
 
-    async def fake_fetch_job(row, client):
+    async def fake_fetch_job(row, client, render=None):
         from job_scraper.models import Job
 
         fetched.append(row["url"])
@@ -424,11 +425,8 @@ def ingest_env(tmp_path, monkeypatch):
                    description="text")
 
     def fake_insert(rows=None):
-        import csv
-
-        with paths.DETAILED_CSV.open(encoding="utf-8") as handle:
-            stored.extend(r["url"] for r in csv.DictReader(handle)
-                          if r["description"] and r["via"] != "none")
+        # Like the real one: dead pages are left out.
+        stored.extend(r[3] for r in rows if r[2] and r[5] != "none")
 
         return len(stored), 0
 
@@ -498,3 +496,72 @@ async def test_deadline_cancels_unfinished_fetches(fake, monkeypatch, tmp_path):
         deadline=time.monotonic() + 0.1)
 
     assert stats["unfinished"] == 3
+
+
+async def test_ingest_merges_the_rendered_boards_file(ingest_env):
+    ingest_env.paths.JOBS_RENDERED_CSV.write_text(
+        "company,title,url,place,via,ats,description\n"
+        "acme,t,http://a/rendered,,rendered,x,\n"
+        "acme,t,http://a/3,,rendered,x,\n", encoding="utf-8")
+
+    await scrape_postings.ingest()
+
+    assert "http://a/rendered" in ingest_env.fetched
+    assert ingest_env.fetched.count("http://a/3") == 1
+
+
+# ======================================================================
+# RenderPostings
+# ======================================================================
+
+
+class FakePool:
+    def __init__(self, pages):
+        self.pages = pages
+        self.rendered = []
+
+    async def render(self, url):
+        self.rendered.append(url)
+
+        return self.pages.get(url)
+
+
+async def test_fetch_job_uses_the_renderer_when_given(fake):
+    pool = FakePool({row()["url"]: jsonld(title="Dev", description="<p>x</p>")})
+
+    job = await fetch_job(row(), fake, render=pool.render)
+
+    assert (job.via, job.error) == ("jsonld", None)
+    assert fake.requested == []  # nothing went over plain HTTP
+
+
+async def test_a_page_the_browser_cannot_load_is_render_failed(fake):
+    job = await fetch_job(row(), fake, render=FakePool({}).render)
+
+    assert job.error == "render-failed"
+
+
+async def test_render_postings_stores_only_what_the_browser_recovers(
+        ingest_env, monkeypatch):
+    # The env fixture fakes fetch_job; this test wants the real one.
+    monkeypatch.setattr(scrape_postings, "fetch_job", fetch_job)
+    ingest_env.paths.FAILED_POSTINGS_CSV.write_text(
+        "url,company,ats,reason\n"
+        "http://a/spa,acme,x,parse-miss\n"
+        "http://a/still,acme,x,parse-miss\n"
+        "http://a/404,acme,x,status:404\n", encoding="utf-8")
+    pool = FakePool({"http://a/spa": jsonld(title="Dev",
+                                            description="<p>hello</p>"),
+                     "http://a/still": "<html></html>"})
+
+    stats = await scrape_postings.render_postings(pool=pool)
+
+    assert pool.rendered == ["http://a/spa", "http://a/still"]  # no 404 row
+    assert ingest_env.stored == ["http://a/spa"]
+    assert (stats["candidates"], stats["recovered"], stats["stored"]) == (
+        2, 1, 1)
+
+
+async def test_render_postings_without_a_failed_file_does_nothing(ingest_env):
+    assert (await scrape_postings.render_postings(pool=FakePool({})))[
+        "candidates"] == 0

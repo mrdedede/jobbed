@@ -1,7 +1,7 @@
 """Job-page scraper tests using mocked HTTP.
 
 Tests verify the extractor ladder, field precedence, description cleaning and
-resume bookkeeping. Same test-double style as test_board_scraper.py.
+resume bookkeeping. Same test-double style as test_board.py.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from job_scraper import post_scraper
-from job_scraper.post_scraper import (
+from job_scraper import scrape_postings
+from job_scraper.scrape_postings import (
     MAX_DESCRIPTION,
     _clean,
     _workday_api,
@@ -21,7 +21,7 @@ from job_scraper.post_scraper import (
     fetch_job,
 )
 from job_scraper.models import Job
-from tests.test_board_scraper import FakeSession, page
+from tests.test_board import FakeSession, page
 
 
 pytestmark = pytest.mark.anyio
@@ -32,7 +32,7 @@ def fake(monkeypatch):
     """One FakeSession the test can inspect, also handed to scrape_details."""
     made = FakeSession({})
 
-    monkeypatch.setattr(post_scraper, "new_client", lambda: made)
+    monkeypatch.setattr(scrape_postings, "new_client", lambda: made)
 
     return made
 
@@ -274,7 +274,7 @@ def test_already_done_reads_written_urls(tmp_path):
     assert already_done(target) == set()
 
     with target.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=post_scraper.FIELDNAMES)
+        writer = csv.DictWriter(handle, fieldnames=scrape_postings.FIELDNAMES)
         writer.writeheader()
         writer.writerow({"url": "https://acme.fr/jobs/1", "title": "Dev"})
 
@@ -316,9 +316,9 @@ async def test_rows_are_written_in_input_order_whatever_finishes_first(
         return Job(company="acme", title="t", description="",
                    url=row["url"], via="none")
 
-    monkeypatch.setattr(post_scraper, "fetch_job", slow_first)
+    monkeypatch.setattr(scrape_postings, "fetch_job", slow_first)
 
-    await post_scraper.scrape_details(
+    await scrape_postings.scrape_details(
         input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
         workers=6,
     )
@@ -334,18 +334,18 @@ async def test_resume_skips_urls_already_written(tmp_path, fake, monkeypatch):
 
         return made
 
-    monkeypatch.setattr(post_scraper, "new_client", fresh)
+    monkeypatch.setattr(scrape_postings, "new_client", fresh)
     first, second = "https://acme.fr/jobs/1", "https://acme.fr/jobs/2"
     _write_input(tmp_path / "in.csv", [first, second])
     fake.pages[first] = jsonld(title="One", description="a")
     fake.pages[second] = jsonld(title="Two", description="b")
 
-    await post_scraper.scrape_details(
+    await scrape_postings.scrape_details(
         input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
         limit=1,
     )
     fake.requested.clear()
-    stats = await post_scraper.scrape_details(
+    stats = await scrape_postings.scrape_details(
         input_file=tmp_path / "in.csv", output_file=tmp_path / "out.csv",
     )
 
@@ -360,8 +360,8 @@ def test_start_order_spreads_hosts_and_keeps_each_hosts_own_order():
         "https://b.fr/1", "https://c.fr/1", "https://b.fr/2",
     )]
 
-    assert post_scraper.start_order(rows) == [0, 3, 4, 1, 5, 2]
-    assert post_scraper.start_order([]) == []
+    assert scrape_postings.start_order(rows) == [0, 3, 4, 1, 5, 2]
+    assert scrape_postings.start_order([]) == []
 
 
 # ======================================================================

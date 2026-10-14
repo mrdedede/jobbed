@@ -16,10 +16,10 @@ honest answer. Class/id heuristics ("job-description", "posting", ...) matched
 nothing on any of these boards and are deliberately absent.
 
 Usage:
-    python job_scraper/post_scraper.py [--limit N] [--workers N] [--no-resume]
-    python -m job_scraper.post_scraper [--limit N] [--workers N] [--no-resume]
+    python job_scraper/scrape_postings.py [--limit N] [--workers N] [--no-resume]
+    python -m job_scraper.scrape_postings [--limit N] [--workers N] [--no-resume]
 
-Both work, and the file is named post_scraper rather than job_scraper for the
+Both work, and the file is named scrape_postings rather than job_scraper for the
 first one's sake: running a file puts its own directory on sys.path, so a
 module sharing its package's name shadows that package and the absolute
 imports below resolve back to this very file. By-path running also needs the

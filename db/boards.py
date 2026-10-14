@@ -58,7 +58,7 @@ def select_active_boards() -> List[dict]:
     """Every board the nightly scrape should visit.
 
     Returns:
-        List of {"company", "url"} dicts, the shape main_scraper's
+        List of {"company", "url"} dicts, the shape scrape_boards's
         scrape_one_board takes.
     """
     # SQL: SELECT company, url FROM job_boards WHERE active ORDER BY company, url

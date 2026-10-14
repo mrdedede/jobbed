@@ -5,7 +5,7 @@ every individual posting page -- but WTTJ's frontend is backed by a public,
 non-secret Algolia "search-only" key that answers with full job data
 (including the posting body) in one call, on a completely different origin
 the WAF never touches. That means both the listing and the detail belong to
-this one strategy; post_scraper.py carries the description straight through
+this one strategy; scrape_postings.py carries the description straight through
 instead of re-fetching a page it cannot reach.
 """
 
@@ -34,7 +34,7 @@ ORG_API = "https://api.welcometothejungle.com/api/v1/organizations/{slug}"
 #: Board URLs look like /fr/companies-v1/<slug>/jobs or /fr/companies/<slug>.
 _SLUG_RE = re.compile(r"/companies(?:-v1)?/([^/?#]+)")
 
-#: 20_000, matching post_scraper.MAX_DESCRIPTION -- kept local so this module
+#: 20_000, matching scrape_postings.MAX_DESCRIPTION -- kept local so this module
 #: does not import a private constant from a stage that runs after it.
 _MAX_DESCRIPTION = 20_000
 

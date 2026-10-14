@@ -4,7 +4,7 @@ request, or a list handed in."""
 import pytest
 
 from db import boards as db_boards
-from job_scraper import main_scraper, paths
+from job_scraper import scrape_boards, paths
 
 pytestmark = pytest.mark.anyio
 
@@ -18,16 +18,16 @@ def scraped(tmp_path, monkeypatch):
         seen.append(entry["url"])
         board = type("B", (), {})()
 
-        return main_scraper.BoardResult(
+        return scrape_boards.BoardResult(
             entry["company"], entry["url"], board, ats="x", jobs=[],
             error=None)
 
     async def fake_explain(board, exc=None):
         return "stub"
 
-    monkeypatch.setattr(main_scraper, "scrape_one_board", fake_scrape_one)
-    monkeypatch.setattr(main_scraper.diagnose, "explain", fake_explain)
-    monkeypatch.setattr(main_scraper, "API_SOURCES", {})
+    monkeypatch.setattr(scrape_boards, "scrape_one_board", fake_scrape_one)
+    monkeypatch.setattr(scrape_boards.diagnose, "explain", fake_explain)
+    monkeypatch.setattr(scrape_boards, "API_SOURCES", {})
     monkeypatch.setattr(paths, "NO_JOBS_CSV", tmp_path / "no_jobs.csv")
 
     return seen
@@ -37,7 +37,7 @@ async def test_boards_default_to_the_active_rows_in_the_database(
         db, scraped, tmp_path):
     db_boards.upsert_boards([("a", "http://a/jobs"), ("b", "http://b/jobs")])
 
-    stats = await main_scraper.scrape_boards(output_file=tmp_path / "jobs.csv")
+    stats = await scrape_boards.scrape_boards(output_file=tmp_path / "jobs.csv")
 
     assert sorted(scraped) == ["http://a/jobs", "http://b/jobs"]
     assert stats["boards"] == 2
@@ -53,7 +53,7 @@ async def test_inactive_boards_are_skipped(db, scraped, tmp_path):
                      .where(job_boards.c.url == "http://b/jobs")
                      .values(active=False))
 
-    await main_scraper.scrape_boards(output_file=tmp_path / "jobs.csv")
+    await scrape_boards.scrape_boards(output_file=tmp_path / "jobs.csv")
 
     assert scraped == ["http://a/jobs"]
 
@@ -63,7 +63,7 @@ async def test_input_file_reads_a_csv_and_skips_comments(scraped, tmp_path):
     source.write_text("company,url\nacme,http://a/jobs\n#off,http://z/jobs\n",
                       encoding="utf-8")
 
-    await main_scraper.scrape_boards(
+    await scrape_boards.scrape_boards(
         input_file=source, output_file=tmp_path / "jobs.csv")
 
     assert scraped == ["http://a/jobs"]
@@ -74,7 +74,7 @@ async def test_boards_argument_wins_and_limit_still_applies(
     given = [{"company": "a", "url": "http://a/jobs"},
              {"company": "b", "url": "http://b/jobs"}]
 
-    stats = await main_scraper.scrape_boards(
+    stats = await scrape_boards.scrape_boards(
         boards=given, limit=1, output_file=tmp_path / "jobs.csv")
 
     assert scraped == ["http://a/jobs"]
@@ -90,10 +90,10 @@ async def test_a_failed_scrape_leaves_the_previous_files_untouched(
     async def boom(client):
         raise RuntimeError("source down")
 
-    monkeypatch.setattr(main_scraper, "API_SOURCES", {"x": boom})
+    monkeypatch.setattr(scrape_boards, "API_SOURCES", {"x": boom})
 
     with pytest.raises(RuntimeError):
-        await main_scraper.scrape_boards(
+        await scrape_boards.scrape_boards(
             boards=[{"company": "a", "url": "http://a/jobs"}],
             output_file=out)
 
@@ -106,8 +106,57 @@ async def test_a_good_scrape_replaces_the_files_and_leaves_no_tmp(
     out = tmp_path / "jobs.csv"
     out.write_text("old", encoding="utf-8")
 
-    await main_scraper.scrape_boards(
+    await scrape_boards.scrape_boards(
         boards=[{"company": "a", "url": "http://a/jobs"}], output_file=out)
 
     assert out.read_text(encoding="utf-8").startswith("company,")
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_junk_links_are_recognised():
+    junk = ["", "/relative/job", "http:///x"]
+    fine = ["https://acme.fr/jobs/1",
+            "https://www.google.com/about/careers/applications/jobs/results/1"]
+
+    assert all(scrape_boards.is_junk(u) for u in junk)
+    assert not any(scrape_boards.is_junk(u) for u in fine)
+
+
+async def test_junk_rows_are_dropped_from_the_output(tmp_path, monkeypatch):
+    from job_scraper.models import Job
+
+    async def fake_scrape_one(entry, client, render=None):
+        jobs = [Job("a", "ok", "https://a.fr/1", via="links"),
+                Job("a", "google", "https://www.google.com/about/careers/1",
+                    via="links"),
+                Job("a", "nohost", "/rel", via="links")]
+
+        return scrape_boards.BoardResult(
+            entry["company"], entry["url"], object(), ats="x", jobs=jobs,
+            error=None)
+
+    monkeypatch.setattr(scrape_boards, "scrape_one_board", fake_scrape_one)
+    monkeypatch.setattr(scrape_boards, "API_SOURCES", {})
+    monkeypatch.setattr(paths, "NO_JOBS_CSV", tmp_path / "no_jobs.csv")
+
+    stats = await scrape_boards.scrape_boards(
+        boards=[{"company": "a", "url": "http://a/jobs"}],
+        output_file=tmp_path / "jobs.csv")
+
+    assert (stats["jobs"], stats["dropped"]) == (2, 1)
+
+
+@pytest.mark.parametrize("stats,code", [
+    ({"boards": 10, "jobs": 5, "failed": 0}, 0),
+    ({"boards": 0, "jobs": 0, "failed": 0}, 1),
+    ({"boards": 10, "jobs": 0, "failed": 0}, 1),
+    ({"boards": 10, "jobs": 5, "failed": 3}, 1),
+])
+def test_exit_code_reflects_run_health(stats, code, monkeypatch):
+    async def fake(**kwargs):
+        return {**stats, "dropped": 0, "output": "o", "no_jobs": "n"}
+
+    monkeypatch.setattr(scrape_boards, "scrape_boards", fake)
+    monkeypatch.setattr("sys.argv", ["scrape_boards"])
+
+    assert scrape_boards.main() == code

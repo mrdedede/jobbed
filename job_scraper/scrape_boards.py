@@ -1,7 +1,7 @@
 """Scrape all active boards (the job_boards table) into jobs.csv.
 
 Usage:
-    python -m job_scraper.main_scraper [--limit N] [--render] [--input FILE]
+    python -m job_scraper.scrape_boards [--limit N] [--render] [--input FILE]
 
 Boards come from the database; --input FILE reads a company,url CSV instead,
 for a run with no database at hand.
@@ -18,8 +18,10 @@ import asyncio
 import csv
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Callable, List, Optional
 
 import httpx
@@ -42,6 +44,22 @@ DEFAULT_WORKERS = 20
 #: A render pass launches a whole headless Chromium instance per board; this
 #: many at once is already a heavy concurrent load for one machine.
 MAX_RENDER_WORKERS = 3
+
+#: A run whose failed-board share exceeds this exits 1. Step 0's silent async
+#: bug turned whole vendors into "no jobs"; a share this high is a regression,
+#: not a bad night.
+MAX_FAILED_SHARE = 0.25
+
+
+def is_junk(url: str) -> bool:
+    """Report whether a scraped link cannot be a posting.
+
+    Scrapers sometimes emit relative or empty links, which cannot be fetched.
+    Hosts are deliberately not filtered: google.com is itself a board
+    (www.google.com/about/careers/...), and its non-job pages are a
+    link-selection problem, not a junk host.
+    """
+    return not urlparse(url or "").hostname
 
 
 @dataclass
@@ -134,7 +152,8 @@ async def scrape_boards(input_file: Optional[Path] = None,
             caller that already holds them. Overrides `input_file`.
 
     Returns:
-        Dict with `boards`, `jobs` and `failed` counts, the `output` path, the
+        Dict with `boards`, `jobs`, `failed` and `dropped` (junk links
+        left out of the file) counts, the `output` path, the
         `no_jobs` path holding one diagnosed row per board that produced
         nothing, and `per_board` mapping each board URL to how many postings it
         produced.
@@ -151,6 +170,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
 
     total_jobs = 0
     failed = 0
+    dropped = 0
     # Keyed on URL, not company: company is not unique in this file (statera
     # appears four times at four different boards), so a per-company tally
     # silently merges boards and reports four as one.
@@ -241,6 +261,10 @@ async def scrape_boards(input_file: Optional[Path] = None,
                                  f"via {via}")
 
                     for job in jobs:
+                        if is_junk(job.url):
+                            dropped += 1
+                            continue
+
                         writer.writerow({**asdict(job), "ats": ats or ""})
                         total_jobs += 1
 
@@ -248,6 +272,10 @@ async def scrape_boards(input_file: Optional[Path] = None,
                     jobs = await source
 
                     for job in jobs:
+                        if is_junk(job.url):
+                            dropped += 1
+                            continue
+
                         writer.writerow({**asdict(job), "ats": source_name})
                         total_jobs += 1
 
@@ -266,6 +294,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
         "boards": len(boards),
         "jobs": total_jobs,
         "failed": failed,
+        "dropped": dropped,
         "output": output_file,
         "no_jobs": paths.NO_JOBS_CSV,
         "per_board": per_board,
@@ -276,7 +305,9 @@ def main() -> int:
     """Scrape all boards and write results to CSV.
 
     Returns:
-        0 on success.
+        0 on success; 1 if no boards were found, no jobs were produced, or
+        more than MAX_FAILED_SHARE of the boards raised -- so a bad run is
+        visible to whatever scheduled it.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=0,
@@ -307,6 +338,7 @@ def main() -> int:
         # also mean "launch more browsers at once".
         workers = min(workers, MAX_RENDER_WORKERS)
 
+    started = time.monotonic()
     stats = asyncio.run(scrape_boards(
         input_file=args.input,
         output_file=args.output,
@@ -316,9 +348,20 @@ def main() -> int:
         workers=workers,
     ))
 
+    minutes = (time.monotonic() - started) / 60
     print(f"\n{stats['jobs']} postings from {stats['boards']} boards "
-          f"-> {stats['output']}")
+          f"({stats['failed']} failed, {stats['dropped']} junk links dropped) "
+          f"in {minutes:.1f} min -> {stats['output']}")
     print(f"boards that gave nothing -> {stats['no_jobs']}")
+
+    if not stats["boards"] or not stats["jobs"]:
+        print("FAILED: no boards or no postings", file=sys.stderr)
+        return 1
+
+    if stats["failed"] / stats["boards"] > MAX_FAILED_SHARE:
+        print(f"FAILED: {stats['failed']} of {stats['boards']} boards raised",
+              file=sys.stderr)
+        return 1
 
     return 0
 

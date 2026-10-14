@@ -3,7 +3,7 @@
 Unlike a board, this is one nationwide search rather than one company's page,
 so it needs its own OAuth2 client-credentials token instead of a plain GET.
 The search response already carries the full posting text, so -- like WTTJ --
-post_scraper.py carries the description straight through instead of
+scrape_postings.py carries the description straight through instead of
 re-fetching a page.
 
 Credentials: user_info/france_travail_credentials.json, gitignored, holding

@@ -13,7 +13,7 @@ from job_scraper.models import Job
 from job_scraper.strategies import VENDOR_SCRAPERS
 from job_scraper.strategies.beetween import scrape_beetween
 from job_scraper.urls import ats_from_host
-from tests.test_board_scraper import board
+from tests.test_board import board
 
 pytestmark = pytest.mark.anyio
 

@@ -1,6 +1,6 @@
 """France Travail API source tests using mocked HTTP.
 
-FakeSession here differs from test_board_scraper.py's: it needs to see
+FakeSession here differs from test_board.py's: it needs to see
 `data=` (the token POST is form-encoded) and `params=` (the search GET's
 query string), which board scraping never sends.
 """
@@ -16,7 +16,7 @@ import pytest
 from job_scraper import paths
 from job_scraper.api_sources import france_travail
 from job_scraper.api_sources.france_travail import TOKEN_URL, SEARCH_URL
-from job_scraper.post_scraper import fetch_job
+from job_scraper.scrape_postings import fetch_job
 
 pytestmark = pytest.mark.anyio
 
@@ -157,7 +157,7 @@ async def test_bad_token_response_returns_empty(credentials_file):
     assert await france_travail.fetch_jobs(session) == []
 
 
-async def test_post_scraper_shortcircuits_api_source_rows():
+async def test_scrape_postings_shortcircuits_api_source_rows():
     row = {
         "url": "https://example.fr/offre/1",
         "title": "Dev",

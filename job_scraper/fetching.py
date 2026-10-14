@@ -1,6 +1,6 @@
 """Shared HTTP fetching and JSON-shape helpers.
 
-These lived in ``board_scraper`` behind underscore names, and ``post_scraper``
+These lived in ``board_scraper`` (now ``board``) behind underscore names, and ``scrape_postings``
 imported six of them anyway. A private name that two modules import is not
 private -- it is shared infrastructure that was never given a home. This is the
 home, and the names are public.
@@ -9,7 +9,7 @@ Everything here is best-effort by design: a fetch that fails returns ``None``
 rather than raising, so one dead board cannot take down a run of a hundred.
 
 Named ``fetching`` rather than the obvious ``http``: running a script by path
-(``python job_scraper/main_scraper.py``, which this project supports and
+(``python job_scraper/scrape_boards.py``, which this project supports and
 documents) puts ``job_scraper/`` on sys.path, and an ``http`` module there
 shadows the standard library package of that name. urllib3 does
 ``from http.client import ...`` at import, so requests stops importing and

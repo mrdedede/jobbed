@@ -5,12 +5,12 @@ this is only the command line around it. Reach for it when a board produces
 nothing and you need to see which strategy was tried and what it found.
 
 Usage:
-    python job_scraper/board_scraper.py <url> [--company NAME] [--show N]
+    python job_scraper/debug_board.py <url> [--company NAME] [--show N]
                                               [--render]
 
 The imports below are absolute, so by-path running needs the project
 installed: `pip install -e .`. Otherwise run it as `python -m
-job_scraper.board_scraper`.
+job_scraper.debug_board`.
 """
 
 import asyncio

@@ -1,7 +1,7 @@
 """Filesystem locations for every artifact the pipeline reads or writes.
 
 One module owns these so the stages cannot disagree about a filename. They did:
-``post_scraper`` read ``temp/filtered_file.csv`` while the filter wrote
+``scrape_postings`` read ``temp/filtered_file.csv`` while the filter wrote
 ``temp/first_filtered_file.csv``, a path that never existed on disk, which
 silently broke the hand-off between the two.
 
@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 #: Directory for the CSV passed between pipeline stages (the PVC mount in
-#: Kubernetes). These are not throwaway: post_scraper resumes from its own
+#: Kubernetes). These are not throwaway: scrape_postings resumes from its own
 #: output, and every measurement in REFACTORING.md was taken from these files.
 TEMP = Path(os.environ.get("JOBLISTER_DATA_DIR", ROOT / "temp"))
 

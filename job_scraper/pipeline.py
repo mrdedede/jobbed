@@ -23,8 +23,8 @@ import asyncio
 from typing import Callable, Dict, List, Optional
 
 from job_scraper import paths
-from job_scraper.main_scraper import scrape_boards
-from job_scraper.post_scraper import DEFAULT_WORKERS, scrape_details
+from job_scraper.scrape_boards import scrape_boards
+from job_scraper.scrape_postings import DEFAULT_WORKERS, scrape_details
 
 #: Stage names in run order. The CLI's --from/--to index into this.
 STAGES: List[str] = ["scrape", "detail", "store"]

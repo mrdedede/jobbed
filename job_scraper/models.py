@@ -35,6 +35,8 @@ class Job:
             instrumenting anything.
         description: Plain-text posting body. Empty until the detail stage
             fetches the posting's own page.
+        error: Why the detail stage got no description (a `fetch_result`
+            reason, `parse-miss`, or `workday-miss`). Not written to the CSVs.
     """
 
     company: str
@@ -43,6 +45,7 @@ class Job:
     place: Optional[str] = None
     via: str = ""
     description: str = ""
+    error: Optional[str] = None
 
 @dataclass
 class AI_Analysis:

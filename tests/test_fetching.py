@@ -156,3 +156,62 @@ async def test_a_declared_charset_is_still_honoured():
         headers={"Content-Type": "text/html; charset=latin-1"},
     )) as client:
         assert await fetch(client, "https://a.test/") == "Développeur"
+
+
+# ======================================================================
+# fetch_result: why a fetch failed
+# ======================================================================
+
+
+async def reason_of(handler, url="https://a.test/", **kwargs):
+    async with client_for(handler) as client:
+        return await fetching.fetch_result(client, url, **kwargs)
+
+
+async def test_reason_success_is_none():
+    assert await reason_of(lambda r: httpx.Response(200, text="ok")) == (
+        "ok", None)
+
+
+async def test_reason_status_code():
+    assert await reason_of(lambda r: httpx.Response(404)) == (
+        None, "status:404")
+
+
+async def test_reason_retries_exhausted():
+    assert await reason_of(lambda r: httpx.Response(503)) == (
+        None, "status:503-retries-exhausted")
+
+
+async def test_reason_timeout():
+    def handler(request):
+        raise httpx.ReadTimeout("slow")
+
+    assert await reason_of(handler) == (None, "timeout")
+
+
+async def test_reason_connect():
+    def handler(request):
+        raise httpx.ConnectError("boom")
+
+    assert await reason_of(handler) == (None, "connect")
+
+
+async def test_reason_non_text():
+    assert await reason_of(lambda r: httpx.Response(
+        200, content=b"%PDF", headers={"Content-Type": "application/pdf"}
+    )) == (None, "non-text:application/pdf")
+
+
+async def test_reason_invalid_url():
+    def handler(request):
+        raise httpx.UnsupportedProtocol("no scheme")
+
+    assert await reason_of(handler) == (None, "invalid-url")
+
+
+async def test_reason_truncated_comes_with_text():
+    text, reason = await reason_of(
+        lambda r: httpx.Response(200, text="x" * 1000), max_bytes=10)
+
+    assert (len(text), reason) == (10, "truncated")

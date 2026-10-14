@@ -79,3 +79,35 @@ async def test_boards_argument_wins_and_limit_still_applies(
 
     assert scraped == ["http://a/jobs"]
     assert stats["boards"] == 1
+
+
+async def test_a_failed_scrape_leaves_the_previous_files_untouched(
+        scraped, tmp_path, monkeypatch):
+    out = tmp_path / "jobs.csv"
+    out.write_text("old", encoding="utf-8")
+    (tmp_path / "no_jobs.csv").write_text("old", encoding="utf-8")
+
+    async def boom(client):
+        raise RuntimeError("source down")
+
+    monkeypatch.setattr(main_scraper, "API_SOURCES", {"x": boom})
+
+    with pytest.raises(RuntimeError):
+        await main_scraper.scrape_boards(
+            boards=[{"company": "a", "url": "http://a/jobs"}],
+            output_file=out)
+
+    assert out.read_text(encoding="utf-8") == "old"
+    assert (tmp_path / "no_jobs.csv").read_text(encoding="utf-8") == "old"
+
+
+async def test_a_good_scrape_replaces_the_files_and_leaves_no_tmp(
+        scraped, tmp_path):
+    out = tmp_path / "jobs.csv"
+    out.write_text("old", encoding="utf-8")
+
+    await main_scraper.scrape_boards(
+        boards=[{"company": "a", "url": "http://a/jobs"}], output_file=out)
+
+    assert out.read_text(encoding="utf-8").startswith("company,")
+    assert not list(tmp_path.glob("*.tmp"))

@@ -280,10 +280,17 @@ def decode_response(response, raw: bytes) -> str:
     return raw.decode(encoding or "utf-8", errors="replace")
 
 
-async def fetch(session, url: str, timeout: int = DEFAULT_TIMEOUT,
-                method: str = "get", max_bytes: int = MAX_FETCH_BYTES,
-                **kwargs) -> Optional[str]:
-    """Best-effort HTTP request returning text or None.
+async def fetch_result(session, url: str, timeout: int = DEFAULT_TIMEOUT,
+                       method: str = "get", max_bytes: int = MAX_FETCH_BYTES,
+                       **kwargs) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort HTTP request returning (text, reason).
+
+    `reason` says why there is no text, so a failure can be counted by cause:
+    `status:<code>`, `status:<code>-retries-exhausted` (a retryable status
+    still failing after the budget), `timeout`, `connect`,
+    `non-text:<content-type>`, `invalid-url`, or `error:<ExceptionName>`.
+    `truncated` is the one reason that comes with text: the body hit
+    `max_bytes` and was cut.
 
     Args:
         session: Shared httpx.AsyncClient.
@@ -294,23 +301,47 @@ async def fetch(session, url: str, timeout: int = DEFAULT_TIMEOUT,
         **kwargs: Additional arguments to pass to the request.
 
     Returns:
-        Response body as text, or None on any error, a non-200 status, or a
-        body that is not textual.
+        (text, None) on success, (text, "truncated") for a cut body, and
+        (None, reason) on any error, a non-200 status, or a non-textual body.
     """
-    async def read(response: httpx.Response) -> Optional[str]:
-        if response.status_code != 200:
-            return None
+    async def read(response: httpx.Response):
+        status = response.status_code
 
-        if not is_textual(response.headers.get("Content-Type", "")):
-            return None
+        if status != 200:
+            suffix = "-retries-exhausted" if status in RETRY_STATUSES else ""
 
-        return decode_response(response, await read_body(response, max_bytes))
+            return None, f"status:{status}{suffix}"
+
+        content_type = response.headers.get("Content-Type", "")
+
+        if not is_textual(content_type):
+            return None, f"non-text:{content_type.split(';')[0].strip()}"
+
+        raw = await read_body(response, max_bytes)
+        reason = "truncated" if len(raw) >= max_bytes else None
+
+        return decode_response(response, raw), reason
 
     try:
         return await request(session, url, read, method=method,
                              timeout=timeout, **kwargs)
-    except (httpx.HTTPError, httpx.InvalidURL):
-        return None
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol):
+        return None, "invalid-url"
+    except httpx.TimeoutException:
+        return None, "timeout"
+    except httpx.ConnectError:
+        return None, "connect"
+    except httpx.HTTPError as err:
+        return None, f"error:{type(err).__name__}"
+
+
+async def fetch(session, url: str, **kwargs) -> Optional[str]:
+    """Best-effort HTTP request returning text or None.
+
+    A thin wrapper over `fetch_result` for callers that do not care why.
+    Arguments are those of `fetch_result`.
+    """
+    return (await fetch_result(session, url, **kwargs))[0]
 
 
 async def fetch_json(session, url: str, **kwargs) -> Optional[object]:

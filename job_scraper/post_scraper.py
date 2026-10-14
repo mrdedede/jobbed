@@ -47,7 +47,7 @@ from job_scraper import paths
 from job_scraper.api_sources import API_SOURCES
 from job_scraper.fetching import (
     dig,
-    fetch,
+    fetch_result,
     fetch_json,
     first_string,
     jobposting_place,
@@ -281,9 +281,11 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
     """
     url = row["url"]
     found = None
+    error = None
 
     if (row.get("ats") or "") == "workday":
         found = await _from_workday(url, client)
+        error = None if found else "workday-miss"
     elif (row.get("ats") or "") in ("wttj", "beetween"):
         # WTTJ posting pages sit behind a WAF wall and Beetween's are an empty
         # SPA shell; either way the board stage already pulled the full
@@ -302,10 +304,12 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
             "via": row.get("ats", ""),
         }
     else:
-        html = await fetch(client, url)
+        html, error = await fetch_result(client, url)
 
+        # "truncated" arrives with text, so it only counts if parsing fails.
         if html:
             found = await asyncio.to_thread(_from_html, html)
+            error = None if found else "parse-miss"
 
     found = found or {}
 
@@ -326,6 +330,7 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient) -> Job:
         url=url,
         place=pick("place") or None,
         via=found.get("via", "none"),
+        error=error,
     )
 
 

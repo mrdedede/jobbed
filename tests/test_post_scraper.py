@@ -362,3 +362,28 @@ def test_start_order_spreads_hosts_and_keeps_each_hosts_own_order():
 
     assert post_scraper.start_order(rows) == [0, 3, 4, 1, 5, 2]
     assert post_scraper.start_order([]) == []
+
+
+# ======================================================================
+# error reasons
+# ======================================================================
+
+
+async def test_a_dead_page_carries_its_fetch_reason(fake):
+    job = await fetch_job(row(), fake)  # no page registered -> 404
+
+    assert (job.via, job.error) == ("none", "status:404")
+
+
+async def test_html_with_no_extractor_match_is_a_parse_miss(fake):
+    fake.pages[row()["url"]] = "<html></html>"
+
+    job = await fetch_job(row(), fake)
+
+    assert job.error == "parse-miss"
+
+
+async def test_a_parsed_page_has_no_error(fake):
+    fake.pages[row()["url"]] = jsonld(title="Dev", description="<p>x</p>")
+
+    assert (await fetch_job(row(), fake)).error is None

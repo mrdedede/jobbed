@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -171,10 +172,16 @@ async def scrape_boards(input_file: Optional[Path] = None,
             for name, fetch_jobs in API_SOURCES.items()
         }
 
+        # Written beside the target and renamed on success, so a run that
+        # dies midway leaves the previous complete files in place for ingest.
+        tmp_jobs = output_file.with_name(output_file.name + ".tmp")
+        tmp_misses = paths.NO_JOBS_CSV.with_name(
+            paths.NO_JOBS_CSV.name + ".tmp")
+
         try:
-            with output_file.open("w", newline="", encoding="utf-8") as output, \
-                    paths.NO_JOBS_CSV.open("w", newline="",
-                                           encoding="utf-8") as empties:
+            with tmp_jobs.open("w", newline="", encoding="utf-8") as output, \
+                    tmp_misses.open("w", newline="",
+                                    encoding="utf-8") as empties:
                 # extrasaction: most strategies leave `description` blank --
                 # WTTJ is the one exception, since its posting pages are as
                 # WAF-walled as its board page and everything it has comes
@@ -246,6 +253,9 @@ async def scrape_boards(input_file: Optional[Path] = None,
 
                     if on_board:
                         on_board(f"{len(jobs):4} jobs  {source_name:24} api")
+
+            os.replace(tmp_jobs, output_file)
+            os.replace(tmp_misses, paths.NO_JOBS_CSV)
         finally:
             # An error or Ctrl-C must not leave scraping tasks running against
             # a client that is about to close.

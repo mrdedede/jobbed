@@ -143,7 +143,7 @@ def delete_user(user_id: UUID) -> None:
 
 # USER KEYWORDS
 
-def insert_user_keyword(user_id: UUID, term: str) -> None:
+def insert_user_keyword(user_id: UUID, term: str) -> UUID:
     """Add one keyword to a user's list, no-op if it's already there.
 
     Args:
@@ -151,25 +151,37 @@ def insert_user_keyword(user_id: UUID, term: str) -> None:
         term: The keyword, stored as given -- callers normalize case/
             whitespace before calling, same as job_scraper.filters expects.
 
+    Returns:
+        The keyword's id -- the existing row's when it was already there.
+
     Raises:
         RuntimeError: If the database rejects the insertion.
     """
     # SQL: INSERT INTO user_keywords (user_id, term)
-    #      VALUES (?, ?) ON CONFLICT (user_id, term) DO NOTHING
+    #      VALUES (?, ?) ON CONFLICT (user_id, term) DO NOTHING RETURNING id
     stmt = (
         pg_insert(user_keywords)
         .values(user_id=user_id, term=term)
         .on_conflict_do_nothing(
             index_elements=[user_keywords.c.user_id, user_keywords.c.term])
+        .returning(user_keywords.c.id)
     )
+    # SQL: SELECT id FROM user_keywords WHERE user_id = ? AND term = ?
+    existing = select(user_keywords.c.id).where(
+        user_keywords.c.user_id == user_id, user_keywords.c.term == term)
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            found = conn.execute(stmt).scalar_one_or_none()
+
+            if found is None:
+                found = conn.execute(existing).scalar_one()
+
+            return found
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
 
-def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> None:
+def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> bool:
     """Change the text of one of a user's keywords.
 
     Args:
@@ -177,6 +189,9 @@ def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> None:
             can't edit another's row by guessing an id.
         keyword_id: The keyword row to change.
         term: The new text.
+
+    Returns:
+        Whether a row matched (False: no such keyword for this user).
 
     Raises:
         RuntimeError: If the database rejects the update.
@@ -191,18 +206,21 @@ def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> None:
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
 
-def delete_user_keyword(user_id: UUID, keyword_id: UUID) -> None:
+def delete_user_keyword(user_id: UUID, keyword_id: UUID) -> bool:
     """Remove one keyword from a user's list.
 
     Args:
         user_id: The owner of the keyword -- scopes the delete so one user
             can't delete another's row by guessing an id.
         keyword_id: The keyword row to remove.
+
+    Returns:
+        Whether a row matched (False: no such keyword for this user).
 
     Raises:
         RuntimeError: If the database rejects the deletion.
@@ -215,62 +233,80 @@ def delete_user_keyword(user_id: UUID, keyword_id: UUID) -> None:
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database delete failed: {exc}") from exc
 
 
-def select_user_keywords(user_id: UUID) -> List[str]:
-    """A user's keyword list, for job_scraper.filters.first_filter/second_filter.
+def select_user_keywords(user_id: UUID) -> List[Tuple[UUID, str]]:
+    """A user's keyword list.
+
+    The ids are what update/delete address; the filters want only the
+    terms: `[term for _, term in select_user_keywords(user_id)]`.
 
     Args:
         user_id: The user whose keywords to fetch.
 
     Returns:
-        List of keyword terms.
+        List of (id, term).
     """
-    # SQL: SELECT term FROM user_keywords WHERE user_id = ?
-    stmt = select(user_keywords.c.term).where(
+    # SQL: SELECT id, term FROM user_keywords WHERE user_id = ?
+    stmt = select(user_keywords.c.id, user_keywords.c.term).where(
         user_keywords.c.user_id == user_id)
     with engine.connect() as conn:
-        return [term for (term,) in conn.execute(stmt)]
+        return conn.execute(stmt).all()
 
 
 # USER BLACKLIST
 
-def insert_user_blacklist_term(user_id: UUID, term: str) -> None:
+def insert_user_blacklist_term(user_id: UUID, term: str) -> UUID:
     """Add one term to a user's blacklist, no-op if it's already there.
 
     Args:
         user_id: The user this term belongs to.
         term: The blacklisted term, stored as given.
 
+    Returns:
+        The term's id -- the existing row's when it was already there.
+
     Raises:
         RuntimeError: If the database rejects the insertion.
     """
     # SQL: INSERT INTO user_blacklist (user_id, term)
-    #      VALUES (?, ?) ON CONFLICT (user_id, term) DO NOTHING
+    #      VALUES (?, ?) ON CONFLICT (user_id, term) DO NOTHING RETURNING id
     stmt = (
         pg_insert(user_blacklist)
         .values(user_id=user_id, term=term)
         .on_conflict_do_nothing(
             index_elements=[user_blacklist.c.user_id, user_blacklist.c.term])
+        .returning(user_blacklist.c.id)
     )
+    # SQL: SELECT id FROM user_blacklist WHERE user_id = ? AND term = ?
+    existing = select(user_blacklist.c.id).where(
+        user_blacklist.c.user_id == user_id, user_blacklist.c.term == term)
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            found = conn.execute(stmt).scalar_one_or_none()
+
+            if found is None:
+                found = conn.execute(existing).scalar_one()
+
+            return found
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
 
 def update_user_blacklist_term(
-        user_id: UUID, blacklist_id: UUID, term: str) -> None:
+        user_id: UUID, blacklist_id: UUID, term: str) -> bool:
     """Change the text of one of a user's blacklisted terms.
 
     Args:
         user_id: The owner of the term -- scopes the update.
         blacklist_id: The blacklist row to change.
         term: The new text.
+
+    Returns:
+        Whether a row matched (False: no such term for this user).
 
     Raises:
         RuntimeError: If the database rejects the update.
@@ -285,17 +321,20 @@ def update_user_blacklist_term(
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
 
-def delete_user_blacklist_term(user_id: UUID, blacklist_id: UUID) -> None:
+def delete_user_blacklist_term(user_id: UUID, blacklist_id: UUID) -> bool:
     """Remove one term from a user's blacklist.
 
     Args:
         user_id: The owner of the term -- scopes the delete.
         blacklist_id: The blacklist row to remove.
+
+    Returns:
+        Whether a row matched (False: no such term for this user).
 
     Raises:
         RuntimeError: If the database rejects the deletion.
@@ -308,25 +347,28 @@ def delete_user_blacklist_term(user_id: UUID, blacklist_id: UUID) -> None:
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database delete failed: {exc}") from exc
 
 
-def select_user_blacklist(user_id: UUID) -> List[str]:
-    """A user's blacklist, for job_scraper.filters.first_filter/second_filter.
+def select_user_blacklist(user_id: UUID) -> List[Tuple[UUID, str]]:
+    """A user's blacklist.
+
+    The ids are what update/delete address; the filters want only the
+    terms: `[term for _, term in select_user_blacklist(user_id)]`.
 
     Args:
         user_id: The user whose blacklist to fetch.
 
     Returns:
-        List of blacklisted terms.
+        List of (id, term).
     """
-    # SQL: SELECT term FROM user_blacklist WHERE user_id = ?
-    stmt = select(user_blacklist.c.term).where(
+    # SQL: SELECT id, term FROM user_blacklist WHERE user_id = ?
+    stmt = select(user_blacklist.c.id, user_blacklist.c.term).where(
         user_blacklist.c.user_id == user_id)
     with engine.connect() as conn:
-        return [term for (term,) in conn.execute(stmt)]
+        return conn.execute(stmt).all()
 
 
 # USER CVS
@@ -372,13 +414,16 @@ def insert_user_cv(user_id: UUID, content_md: str,
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
 
-def update_user_cv(user_id: UUID, cv_id: UUID, content_md: str) -> None:
+def update_user_cv(user_id: UUID, cv_id: UUID, content_md: str) -> bool:
     """Change the text of one of a user's stored CVs.
 
     Args:
         user_id: The owner of the CV -- scopes the update.
         cv_id: The CV row to change.
         content_md: The new CV body, as Markdown.
+
+    Returns:
+        Whether a row matched (False: no such CV for this user).
 
     Raises:
         RuntimeError: If the database rejects the update.
@@ -393,17 +438,26 @@ def update_user_cv(user_id: UUID, cv_id: UUID, content_md: str) -> None:
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
 
-def set_active_user_cv(user_id: UUID, cv_id: UUID) -> None:
+class _NoSuchCv(Exception):
+    """Raised inside set_active_user_cv's transaction to roll it back."""
+
+
+def set_active_user_cv(user_id: UUID, cv_id: UUID) -> bool:
     """Make one of a user's existing CVs the active one, deactivating the rest.
 
     Args:
         user_id: The owner of the CV -- scopes both updates.
         cv_id: The CV to activate.
+
+    Returns:
+        Whether the CV was found. When it was not, nothing changes: the
+        deactivation is rolled back rather than leaving the user with no
+        active CV.
 
     Raises:
         RuntimeError: If the database rejects either update.
@@ -418,22 +472,32 @@ def set_active_user_cv(user_id: UUID, cv_id: UUID) -> None:
             )
             # SQL: UPDATE user_cvs SET is_active = true
             #      WHERE id = ? AND user_id = ?
-            conn.execute(
+            matched = conn.execute(
                 user_cvs.update()
                 .where(user_cvs.c.id == cv_id)
                 .where(user_cvs.c.user_id == user_id)
                 .values(is_active=True)
-            )
+            ).rowcount
+
+            if not matched:
+                raise _NoSuchCv
+
+            return True
+    except _NoSuchCv:
+        return False
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
 
-def delete_user_cv(user_id: UUID, cv_id: UUID) -> None:
+def delete_user_cv(user_id: UUID, cv_id: UUID) -> bool:
     """Remove one of a user's stored CVs.
 
     Args:
         user_id: The owner of the CV -- scopes the delete.
         cv_id: The CV row to remove.
+
+    Returns:
+        Whether a row matched (False: no such CV for this user).
 
     Raises:
         RuntimeError: If the database rejects the deletion.
@@ -446,7 +510,7 @@ def delete_user_cv(user_id: UUID, cv_id: UUID) -> None:
     )
     try:
         with engine.begin() as conn:
-            conn.execute(stmt)
+            return conn.execute(stmt).rowcount > 0
     except Exception as exc:
         raise RuntimeError(f"Database delete failed: {exc}") from exc
 

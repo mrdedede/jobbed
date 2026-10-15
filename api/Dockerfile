@@ -1,0 +1,30 @@
+# The user-facing REST API. Build from the repo root:
+#
+#   docker build -f api/Dockerfile -t joblister-api .
+#
+# Talks to Postgres (DATABASE_URL) and to the LLM gateway over HTTP
+# (GATEWAY_URL) -- no anthropic SDK or API key in this image.
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY api/requirements.txt api/requirements.txt
+RUN pip install --no-cache-dir -r api/requirements.txt
+
+# What the handlers import: db/ for storage, ai/ for grading (it reads
+# ai/grade-job.md at import), and job_scraper/ because filters.py reaches
+# urls -> detector -> fetching.
+COPY api api
+COPY db db
+COPY ai ai
+COPY job_scraper job_scraper
+
+RUN useradd --uid 1000 --create-home app
+USER app
+
+EXPOSE 8080
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -66,8 +66,8 @@ def test_delete_user_cascades_to_every_per_user_table(db):
 
     users.delete_user(user_id)
 
-    assert users.select_user_keywords(user_id) == []
-    assert users.select_user_blacklist(user_id) == []
+    assert _terms(users.select_user_keywords(user_id)) == []
+    assert _terms(users.select_user_blacklist(user_id)) == []
     assert users.select_user_cvs(user_id) == []
 
 
@@ -79,7 +79,7 @@ def test_insert_user_keyword_is_idempotent(db):
     users.insert_user_keyword(user_id, "python")
     users.insert_user_keyword(user_id, "python")
 
-    assert users.select_user_keywords(user_id) == ["python"]
+    assert _terms(users.select_user_keywords(user_id)) == ["python"]
 
 
 def test_update_user_keyword_changes_the_term(db):
@@ -89,7 +89,7 @@ def test_update_user_keyword_changes_the_term(db):
 
     users.update_user_keyword(user_id, keyword_id, "golang")
 
-    assert users.select_user_keywords(user_id) == ["golang"]
+    assert _terms(users.select_user_keywords(user_id)) == ["golang"]
 
 
 def test_update_user_keyword_is_scoped_to_its_owner(db):
@@ -101,7 +101,7 @@ def test_update_user_keyword_is_scoped_to_its_owner(db):
 
     users.update_user_keyword(other, keyword_id, "golang")
 
-    assert users.select_user_keywords(owner) == ["python"]
+    assert _terms(users.select_user_keywords(owner)) == ["python"]
 
 
 def test_delete_user_keyword_removes_it(db):
@@ -111,7 +111,7 @@ def test_delete_user_keyword_removes_it(db):
 
     users.delete_user_keyword(user_id, keyword_id)
 
-    assert users.select_user_keywords(user_id) == []
+    assert _terms(users.select_user_keywords(user_id)) == []
 
 
 def test_select_user_keywords_is_per_user(db):
@@ -120,8 +120,8 @@ def test_select_user_keywords_is_per_user(db):
     users.insert_user_keyword(user_a, "python")
     users.insert_user_keyword(user_b, "golang")
 
-    assert users.select_user_keywords(user_a) == ["python"]
-    assert users.select_user_keywords(user_b) == ["golang"]
+    assert _terms(users.select_user_keywords(user_a)) == ["python"]
+    assert _terms(users.select_user_keywords(user_b)) == ["golang"]
 
 
 # USER BLACKLIST
@@ -132,7 +132,7 @@ def test_insert_user_blacklist_term_is_idempotent(db):
     users.insert_user_blacklist_term(user_id, "unpaid")
     users.insert_user_blacklist_term(user_id, "unpaid")
 
-    assert users.select_user_blacklist(user_id) == ["unpaid"]
+    assert _terms(users.select_user_blacklist(user_id)) == ["unpaid"]
 
 
 def test_update_user_blacklist_term_changes_the_term(db):
@@ -142,7 +142,7 @@ def test_update_user_blacklist_term_changes_the_term(db):
 
     users.update_user_blacklist_term(user_id, blacklist_id, "internship")
 
-    assert users.select_user_blacklist(user_id) == ["internship"]
+    assert _terms(users.select_user_blacklist(user_id)) == ["internship"]
 
 
 def test_delete_user_blacklist_term_removes_it(db):
@@ -152,7 +152,7 @@ def test_delete_user_blacklist_term_removes_it(db):
 
     users.delete_user_blacklist_term(user_id, blacklist_id)
 
-    assert users.select_user_blacklist(user_id) == []
+    assert _terms(users.select_user_blacklist(user_id)) == []
 
 
 # USER CVS
@@ -220,7 +220,57 @@ def test_select_active_user_cv_none_when_no_cv_stored(db):
     assert users.select_active_user_cv(user_id) is None
 
 
+# RETURN VALUES THE API RELIES ON
+
+def test_insert_user_keyword_returns_the_id_even_when_already_there(db):
+    user_id = users.insert_user("a@example.com", "hashed-pw")
+
+    first = users.insert_user_keyword(user_id, "python")
+    second = users.insert_user_keyword(user_id, "python")
+
+    assert first == second
+    assert users.select_user_keywords(user_id) == [(first, "python")]
+
+
+def test_insert_user_blacklist_term_returns_the_id_even_when_already_there(db):
+    user_id = users.insert_user("a@example.com", "hashed-pw")
+
+    first = users.insert_user_blacklist_term(user_id, "unpaid")
+    second = users.insert_user_blacklist_term(user_id, "unpaid")
+
+    assert first == second
+    assert users.select_user_blacklist(user_id) == [(first, "unpaid")]
+
+
+def test_update_and_delete_report_whether_a_row_matched(db):
+    owner = users.insert_user("owner@example.com", "hashed-pw")
+    other = users.insert_user("other@example.com", "hashed-pw")
+    keyword_id = users.insert_user_keyword(owner, "python")
+    cv_id = users.insert_user_cv(owner, "# CV")
+
+    assert users.update_user_keyword(other, keyword_id, "go") is False
+    assert users.delete_user_keyword(other, keyword_id) is False
+    assert users.update_user_cv(other, cv_id, "# x") is False
+    assert users.delete_user_cv(other, cv_id) is False
+    assert users.update_user_keyword(owner, keyword_id, "go") is True
+    assert users.delete_user_keyword(owner, keyword_id) is True
+
+
+def test_set_active_user_cv_unknown_id_keeps_the_current_active_cv(db):
+    user_id = users.insert_user("a@example.com", "hashed-pw")
+    other = users.insert_user("b@example.com", "hashed-pw")
+    current = users.insert_user_cv(user_id, "# Mine")
+    foreign = users.insert_user_cv(other, "# Theirs")
+
+    assert users.set_active_user_cv(user_id, foreign) is False
+    assert users.select_active_user_cv(user_id) == (current, "# Mine")
+
+
 # HELPERS
+
+def _terms(rows):
+    return [term for _, term in rows]
+
 
 def _keyword_ids(user_id):
     from sqlalchemy import select

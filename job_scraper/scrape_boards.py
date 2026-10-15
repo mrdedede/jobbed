@@ -180,9 +180,30 @@ async def scrape_boards(input_file: Optional[Path] = None,
     async with new_client() as client:
         gate = asyncio.Semaphore(workers)
 
+        done = 0
+
         async def bounded(entry: dict) -> BoardResult:
+            nonlocal done
+
             async with gate:
-                return await scrape_one_board(entry, client, render=render)
+                result = await scrape_one_board(entry, client, render=render)
+
+            # Logged on completion, not in file order, so one slow board
+            # can't hold back the progress of the ones behind it.
+            done += 1
+
+            if on_board:
+                if result.error is not None:
+                    on_board(f"[{done}/{len(boards)}] FAIL   "
+                             f"{result.company}: {result.error}")
+                else:
+                    jobs = result.jobs
+                    via = jobs[0].via if jobs else "none"
+                    on_board(f"[{done}/{len(boards)}] {len(jobs):4} jobs  "
+                             f"{result.company:24} "
+                             f"{result.ats or 'unknown':16} via {via}")
+
+            return result
 
         tasks = [asyncio.create_task(bounded(entry)) for entry in boards]
         # Not boards: one nationwide search per source rather than one call
@@ -232,7 +253,7 @@ async def scrape_boards(input_file: Optional[Path] = None,
                 # Awaited in input order, like pool.map was: every write below
                 # -- writer, misses, on_board -- stays in one task and in the
                 # same order as the sequential version, with no lock.
-                for index, task in enumerate(tasks, start=1):
+                for task in tasks:
                     result = await task
                     company, url, board = (result.company, result.url,
                                            result.board)
@@ -242,10 +263,6 @@ async def scrape_boards(input_file: Optional[Path] = None,
                         per_board[url] = None
                         await record_miss(board, company, url, result.error)
 
-                        if on_board:
-                            on_board(f"[{index}/{len(boards)}] FAIL   "
-                                     f"{company}: {result.error}")
-
                         continue
 
                     ats, jobs = result.ats, result.jobs
@@ -254,11 +271,6 @@ async def scrape_boards(input_file: Optional[Path] = None,
 
                     if not jobs:
                         await record_miss(board, company, url)
-
-                    if on_board:
-                        on_board(f"[{index}/{len(boards)}] {len(jobs):4} jobs  "
-                                 f"{company:24} {ats or 'unknown':16} "
-                                 f"via {via}")
 
                     for job in jobs:
                         if is_junk(job.url):

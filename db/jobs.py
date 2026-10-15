@@ -24,7 +24,7 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
 
     Args:
         rows: Rows to insert, as (company, title, description, url, place,
-            via, ats). Defaults to whatever the detail stage left in the
+            via, ats). None reads whatever the detail stage left in the
             detailed CSV, which is what the pipeline wants.
 
     Rows with no description or via "none" are a dead page, not a posting.
@@ -38,7 +38,9 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
     Raises:
         RuntimeError: If the database rejects the batch.
     """
-    if not rows:
+    # None means "whatever the detail stage left"; an explicit empty list is
+    # an explicit nothing (RenderPostings with no recovered rows).
+    if rows is None:
         rows = _read_jobs_csv()
 
     total = len(rows)

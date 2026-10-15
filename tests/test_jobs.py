@@ -74,3 +74,13 @@ def test_insert_jobs_leaves_out_dead_pages(db):
 
     assert jobs.insert_jobs(rows) == (1, 1)
     assert jobs.select_job_urls() == {"http://x/1"}
+
+
+def test_insert_jobs_with_an_explicit_empty_list_reads_no_file(
+        tmp_path, monkeypatch):
+    """[] is "nothing to store", not "go read the detail CSV"."""
+    from job_scraper import paths
+
+    monkeypatch.setattr(paths, "DETAILED_CSV", tmp_path / "missing.csv")
+
+    assert jobs.insert_jobs([]) == (0, 0)

@@ -1,3 +1,28 @@
+x-job-env: &job-env
+  DATABASE_URL: postgresql+psycopg://joblister:joblister@postgres:5432/joblister
+  JOBLISTER_DATA_DIR: /data
+  # Optional; the France Travail source stays off without them.
+  FRANCE_TRAVAIL_CLIENT_ID: ${FRANCE_TRAVAIL_CLIENT_ID:-}
+  FRANCE_TRAVAIL_CLIENT_SECRET: ${FRANCE_TRAVAIL_CLIENT_SECRET:-}
+
+x-scrape-build: &scrape-build
+  context: .
+  dockerfile: job_scraper/Dockerfile
+  target: scrape
+
+x-job: &job
+  build:
+    context: .
+    dockerfile: job_scraper/Dockerfile
+    target: ingest
+  image: joblister-ingest
+  environment: *job-env
+  volumes:
+    - jobs_data:/data
+  depends_on:
+    postgres:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -47,6 +72,59 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------
+  # Nightly jobs (PHASE4_PLAN.md). Not started by `docker compose up`; run
+  # one stage at a time, in order, as the CronJobs will:
+  #
+  #   docker compose --profile jobs run --rm migrate
+  #   docker compose --profile jobs run --rm scrape
+  #   docker compose --profile jobs run --rm ingest
+  #
+  # They hand files to each other through the jobs_data volume (the PVC in
+  # Kubernetes) and write to the same Postgres as the app.
+  # ---------------------------------------------------------------------
+
+  migrate:
+    <<: *job
+    profiles: ["jobs"]
+    # One-off at deploy time: schema, then the boards list.
+    command: ["sh", "-c", "alembic upgrade head && python -m db.boards"]
+    environment:
+      <<: *job-env
+      JOBLISTER_BOARDS_CSV: /config/job_boards.csv
+    volumes:
+      - jobs_data:/data
+      - ./user_info/job_boards.csv:/config/job_boards.csv:ro
+
+  scrape:
+    <<: *job
+    profiles: ["jobs"]
+    command: ["python", "-m", "job_scraper.scrape_boards"]
+
+  render-boards:
+    <<: *job
+    profiles: ["jobs"]
+    build: *scrape-build
+    image: joblister-scrape
+    command: ["python", "-m", "job_scraper.scrape_boards", "--render-missed"]
+    # Chromium's /dev/shm is 64 MB by default.
+    shm_size: "1gb"
+
+  ingest:
+    <<: *job
+    profiles: ["jobs"]
+    command: ["python", "-m", "job_scraper.scrape_postings", "--ingest",
+              "--max-minutes", "225"]
+
+  render-postings:
+    <<: *job
+    profiles: ["jobs"]
+    build: *scrape-build
+    image: joblister-scrape
+    command: ["python", "-m", "job_scraper.scrape_postings", "--render-failed"]
+    shm_size: "1gb"
+
 volumes:
   postgres_data:
   ollama_data:
+  jobs_data:

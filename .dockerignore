@@ -8,3 +8,12 @@ tests
 temp
 user_info
 db/joblister.db
+.git
+.claude
+.vscode
+.pytest_cache
+.venv
+venv
+k8s
+jobs
+*.pyc

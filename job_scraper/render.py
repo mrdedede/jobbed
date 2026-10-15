@@ -21,6 +21,7 @@ detector.Renderer -- Callable[[str], Awaitable[Optional[str]]].
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Awaitable, Callable, Optional
 
 from job_scraper.fetching import polite
@@ -53,6 +54,22 @@ _SIGNATURE_JS = ("document.body ? document.body.innerHTML.length + ':' + "
                  "document.querySelectorAll('a').length : ''")
 
 Launch = Callable[[], Awaitable[object]]
+
+
+def launch_args() -> list:
+    """Chromium flags for running in a container.
+
+    /dev/shm is 64 MB in a default container and Chromium crashes on heavy
+    pages; --disable-dev-shm-usage moves that to /tmp. The sandbox needs
+    kernel features a default container lacks, so it is switched off only
+    where the image says so (CHROMIUM_NO_SANDBOX, set in the scrape target).
+    """
+    args = ["--disable-dev-shm-usage"]
+
+    if os.environ.get("CHROMIUM_NO_SANDBOX") == "1":
+        args.append("--no-sandbox")
+
+    return args
 
 
 class RenderPool:
@@ -88,7 +105,7 @@ class RenderPool:
 
         self._playwright = await async_playwright().start()
 
-        return await self._playwright.chromium.launch()
+        return await self._playwright.chromium.launch(args=launch_args())
 
     async def _get_browser(self, stale=None):
         """The live browser, (re)launching it under the lock if needed.

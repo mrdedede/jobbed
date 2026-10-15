@@ -189,3 +189,11 @@ async def test_settle_stops_at_the_ceiling_when_the_dom_never_settles():
     await render._settle(Timed(FakeBrowser(), None))
 
     assert sum(waited) == render.SETTLE_MAX_MS
+
+
+def test_sandbox_is_only_disabled_when_the_image_asks(monkeypatch):
+    monkeypatch.delenv("CHROMIUM_NO_SANDBOX", raising=False)
+    assert render.launch_args() == ["--disable-dev-shm-usage"]
+
+    monkeypatch.setenv("CHROMIUM_NO_SANDBOX", "1")
+    assert "--no-sandbox" in render.launch_args()

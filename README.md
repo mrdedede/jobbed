@@ -337,6 +337,119 @@ With coverage:
 pytest tests/ --cov=.
 ```
 
+### Running the nightly jobs (Docker / Kubernetes)
+
+The scrape pipeline runs unattended as four stages, one after another. Every
+stage hands over through the data directory (`JOBLISTER_DATA_DIR`, `/data` in
+the images) and the job database (`DATABASE_URL`).
+
+| Stage | Command | Reads | Writes |
+|---|---|---|---|
+| ScrapeBoards | `python -m job_scraper.scrape_boards` | active `job_boards` rows | `jobs.csv`, `no_jobs.csv` |
+| RenderBoards | `python -m job_scraper.scrape_boards --render-missed` | `no_jobs.csv` | `jobs_rendered.csv`, `no_jobs_rendered.csv` |
+| IngestJobs | `python -m job_scraper.scrape_postings --ingest [--max-minutes N]` | `jobs.csv`, `jobs_rendered.csv` | `job_postings`, `failed_postings.csv` |
+| RenderPostings | `python -m job_scraper.scrape_postings --render-failed [--max-minutes N]` | `failed_postings.csv` | `job_postings` |
+
+Ingest is resumable: URLs already stored are never refetched, so a killed or
+time-boxed run (`--max-minutes`) picks up where it stopped. The two render
+stages need Chromium and use the `scrape` image; the others use `ingest`.
+
+**Images** (build from the repo root):
+
+```bash
+docker build -f job_scraper/Dockerfile --target ingest -t joblister-ingest .
+docker build -f job_scraper/Dockerfile --target scrape -t joblister-scrape .
+```
+
+**Docker Compose**, one stage at a time:
+
+```bash
+docker compose --profile jobs run --rm migrate
+docker compose --profile jobs run --rm scrape
+docker compose --profile jobs run --rm ingest
+```
+
+**Kubernetes** (manifests in `k8s/`, schedules in Europe/Paris: scrape 00:00,
+render-boards 00:45, ingest 01:00, render-postings 05:00):
+
+```bash
+kubectl apply -f k8s/pvc.yaml
+kubectl create secret generic joblister-secrets \
+  --from-literal=DATABASE_URL='postgresql+psycopg://...'   # see k8s/secret.example.yaml
+kubectl apply -f k8s/job-migrate.yaml
+kubectl apply -f k8s/cron-scrape_boards.yaml -f k8s/cron-ingest_jobs.yaml \
+              -f k8s/cron-render_boards.yaml -f k8s/cron-render_postings.yaml
+
+# Run a stage now instead of waiting for its schedule
+kubectl create job --from=cronjob/scrape-boards test-scrape
+kubectl logs -f jobs/test-scrape
+```
+
+Set `suspend: true` on a CronJob to switch that stage off.
+
+**Environment**: `DATABASE_URL`, `JOBLISTER_DATA_DIR`, `JOBLISTER_BOARDS_CSV`,
+`FRANCE_TRAVAIL_CLIENT_ID` / `FRANCE_TRAVAIL_CLIENT_SECRET` (optional; the
+France Travail source also needs `SEARCH_KEYWORDS` filled in), and
+`CHROMIUM_NO_SANDBOX=1` (set by the `scrape` image).
+
+#### Measurements (for tuning the schedule)
+
+Taken 2026-10-12 from a laptop against the live boards (plain HTTP for the
+scrape and fetch numbers, Chromium headless shell for the browser ones). The
+first cluster run on minikube (2026-10-14) agrees: 738 boards, 88,601
+postings, 5 boards failed, 11.7 min.
+
+| What | Result |
+|---|---|
+| Full board scrape | 634 boards, **13.1 min**, 81,190 postings, 10 boards raised |
+| Churn | about **3,000 new postings a night** (3.7%), about 3,100 gone |
+| Detail fetch rate | **21.5 postings/s** (1,291/min), 1.5% fail or come back empty |
+| First ingest (about 75,000 backlog) | about 1 h, 1.5 h with the slow-host tail |
+| Steady-state ingest | about 2.5 min |
+
+Per-host politeness caps a single host at about 5 req/s, so one big board
+(e.g. `careers.ey.com`) sets a floor on the tail of a run.
+
+Why 171 boards gave nothing in the scrape:
+
+| Count | Reason | Needs |
+|---|---|---|
+| 85 | Links present, none look like jobs | A better link strategy, not a browser |
+| 34 | Likely JS-rendered | RenderBoards |
+| 19 | No links on page (empty shell or bot challenge) | RenderBoards, maybe |
+| 17 | HTTP 403 | Blocked; rendering rarely helps |
+| 9 | `TypeError` | Fixed since |
+| 7 | HTTP 500/404, connect error, timeout, bad URL | Retry or drop |
+
+So RenderBoards' real input is about 53 boards, not 171.
+
+Browser cost (pool of one browser, N pages at once):
+
+| Pages at once | Pages/s | 99 pages | Peak memory |
+|---|---|---|---|
+| 2 | 0.33 | 298 s | 1,175 MB |
+| 4 (default) | 0.65 | 152 s | 1,321 MB |
+| 6 | 0.91 | 109 s | 1,670 MB |
+
+- Throughput scales about linearly, roughly 0.15 pages/s per page slot. A
+  pool at 4 is about 3.4x the launch-per-call path and uses less memory.
+- Most of the 6 s per page is the fixed settle sleeps (5.25 s); the load
+  itself is under a second, so a smarter wait is the biggest speed win left.
+- Only 13 of 53 candidate boards produced jobs (about 150 postings, 0.18% of
+  the total), and 3 stopped at exactly 25 jobs: the render reads the first
+  page only, with no pagination yet.
+- 40% of rendered boards' postings fail plain HTTP, so they need
+  RenderPostings as well.
+- Expected render load: RenderBoards about 80 s; RenderPostings about 30 min
+  the first night (about 1,100 failures plus rendered-board postings), about
+  1 min afterwards.
+
+Settings chosen from this: ingest `--max-minutes 225` in a 240 min slot,
+render pool of 4, render pods requesting 2 Gi with a 3 Gi limit,
+RenderBoards deadline 15 min and RenderPostings 120 min. Caveats: one laptop,
+99 URLs for the browser runs, no per-host politeness in the browser
+prototype.
+
 ### Running Individual Scripts
 
 If you want to run stages manually outside the UI:

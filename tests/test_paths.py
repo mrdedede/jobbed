@@ -17,3 +17,13 @@ def test_data_dir_from_env(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(paths)
+
+
+def test_credentials_file_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("FRANCE_TRAVAIL_CREDENTIALS_FILE", str(tmp_path / "c.json"))
+    try:
+        importlib.reload(paths)
+        assert paths.FRANCE_TRAVAIL_CREDENTIALS == tmp_path / "c.json"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(paths)

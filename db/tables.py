@@ -12,11 +12,13 @@ job_postings, ai_analysis, generated_cv.
 
 from sqlalchemy import (
     Boolean,
+    Date,
     Column,
     ForeignKey,
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Table,
     Text,
@@ -134,4 +136,15 @@ generated_cv = Table(
     Column("locale", String),
     Column("cv", JSONB, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+)
+
+# Per-user daily LLM spend, one counter per (day, kind). Days are UTC dates.
+llm_usage = Table(
+    "llm_usage",
+    metadata,
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("day", Date, nullable=False),
+    Column("kind", String, nullable=False),
+    Column("count", Integer, nullable=False, server_default=text("0")),
+    PrimaryKeyConstraint("user_id", "day", "kind"),
 )

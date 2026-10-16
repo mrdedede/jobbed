@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import List, Set
 from uuid import UUID
 
@@ -13,7 +15,7 @@ from api.schemas import (AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
                          TermOut, UserOut)
 from ai.main_analysis import NoActiveCv, count_due, run_analysis
 from db import analysis as db_analysis
-from db import users
+from db import usage, users
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +35,12 @@ DUPLICATE = {409: {"description": "The user already has this term"}}
 _in_flight: Set[UUID] = set()
 
 # Bound unbounded rows (100 kB x N CVs is the real concern). Check-then-insert
-# can overshoot by a few under concurrency; this is abuse control, not a quota.
+# can overshoot by a few under concurrency; the spend quota is db.usage.
 MAX_CVS = 10
 MAX_TERMS = 200
+
+#: Postings graded per user per UTC day (the LLM spend cap).
+DAILY_ANALYSIS_CAP = int(os.environ.get("DAILY_ANALYSIS_CAP", "10"))
 
 
 def _found(matched: bool) -> None:
@@ -218,8 +223,17 @@ def _analysis_out(row) -> AnalysisOut:
         analysed_at=row[8])
 
 
+def _seconds_to_utc_midnight() -> int:
+    now = datetime.now(timezone.utc)
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+
+    return int((tomorrow - now).total_seconds())
+
+
 @router.post("/analyze", response_model=AnalyzeOut,
-             responses={409: {"description": "No active CV, or a run is "
+             responses={429: {"description": "Daily analysis cap reached"},
+                        409: {"description": "No active CV, or a run is "
                                              "already in flight"},
                         502: {"description": "Every grading call failed"}},
              description="Grades the next `limit` matching postings, newest "
@@ -231,17 +245,40 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
 
     _in_flight.add(user_id)
     started = time.perf_counter()
+    granted = 0
 
     try:
+        granted = await asyncio.to_thread(
+            usage.reserve, user_id, usage.KIND_ANALYSIS, body.limit,
+            DAILY_ANALYSIS_CAP)
+
+        if granted == 0:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"daily limit of {DAILY_ANALYSIS_CAP} analyses reached",
+                headers={"Retry-After": str(_seconds_to_utc_midnight())})
+
         # The window is built from the validated int, never client text:
         # text_interval inlines it into SQL.
         stats = await run_analysis(
-            user_id, limit=body.limit, window=f"-{body.window_days} days",
+            user_id, limit=granted, window=f"-{body.window_days} days",
             model=body.model)
     except NoActiveCv:
+        await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
+                                granted)
         raise HTTPException(status.HTTP_409_CONFLICT, "no active CV")
+    except HTTPException:
+        raise
+    except BaseException:
+        await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
+                                granted)
+        raise
     finally:
         _in_flight.discard(user_id)
+
+    # Only stored verdicts count; failed gateway calls cost the user nothing.
+    await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
+                            granted - stats["analysed"])
 
     logger.info(
         "analyze user=%s limit=%s window_days=%s due=%s analysed=%s "

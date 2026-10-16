@@ -118,3 +118,84 @@ def test_select_job_state_reports_existence_and_this_users_grading(
     assert analysis.select_job_state(user, job_id) == (True, True)
     assert analysis.select_job_state(other_user, job_id) == (True, False)
     assert analysis.select_job_state(user, uuid.uuid4()) == (False, False)
+
+
+def test_select_candidates_matches_select_jobs_to_analyse_and_adds_url_place(
+        user, two_jobs):
+    candidates = analysis.select_candidates(user)
+
+    assert {r.id for r in candidates} == {
+        r[0] for r in analysis.select_jobs_to_analyse(user)}
+    assert {(r.url, r.place) for r in candidates} == {
+        ("http://x/1", "Paris"), ("http://x/2", "Lyon")}
+
+
+def test_select_candidates_drops_graded_and_honours_limit(user, two_jobs):
+    analysis.insert_analysis(
+        (user, 50, "fine", "claude-haiku", _job_id_for_url("http://x/1")))
+
+    assert [r.url for r in analysis.select_candidates(user)] == ["http://x/2"]
+    assert len(analysis.select_candidates(user, limit=1)) == 1
+
+
+def test_users_with_different_keywords_get_different_candidate_sets(
+        user, other_user, db):
+    import pandas as pd
+    from job_scraper.filters import filter_frame
+
+    jobs.insert_jobs([
+        ("Acme", "Go Dev", "go " * 6, "http://y/1", "Paris", None, None),
+        ("Globex", "Py Dev", "python " * 6, "http://y/2", "Lyon", None, None),
+    ])
+    cols = ["id", "company", "title", "url", "place", "description",
+            "scraped_at"]
+
+    def kept(uid, keywords):
+        frame = pd.DataFrame(analysis.select_candidates(uid), columns=cols)
+        return set(filter_frame(frame, keywords, []).url)
+
+    assert kept(user, ["go"]) == {"http://y/1"}
+    assert kept(other_user, ["python"]) == {"http://y/2"}
+
+
+def test_select_analysis_page_omits_description_orders_and_filters(
+        user, other_user, two_jobs):
+    low, high = _job_id_for_url("http://x/1"), _job_id_for_url("http://x/2")
+    analysis.insert_analysis((user, 40, "meh", "haiku", low))
+    analysis.insert_analysis((user, 90, "great", "haiku", high))
+    analysis.insert_analysis((other_user, 10, "no", "haiku", low))
+
+    page = analysis.select_analysis_page(user, limit=10)
+
+    assert [r[1] for r in page] == [90, 40]
+    assert len(page[0]) == 9  # no description column
+    assert len(analysis.select_analysis_page(user, limit=1)) == 1
+    assert [r[0] for r in analysis.select_analysis_page(
+        user, 10, min_grade=50)] == [high]
+    assert [r[0] for r in analysis.select_analysis_page(
+        user, 10, job_ids=[low])] == [low]
+
+
+def _age(url, days):
+    from datetime import timedelta
+
+    from sqlalchemy import update
+    from db.engine import engine
+    from db.tables import job_postings
+
+    with engine.begin() as conn:
+        conn.execute(
+            update(job_postings).where(job_postings.c.url == url).values(
+                scraped_at=job_postings.c.scraped_at - timedelta(days=days)))
+
+
+def test_the_window_excludes_older_postings_everywhere(user, two_jobs):
+    _age("http://x/1", 3)
+
+    assert {r.url for r in analysis.select_candidates(
+        user, window="-1 days")} == {"http://x/2"}
+    assert {r.url for r in analysis.select_candidates(
+        user, window="-7 days")} == {"http://x/1", "http://x/2"}
+    assert len(analysis.select_jobs_to_analyse(user, window="-1 days")) == 1
+    assert analysis.count_jobs_to_analyse(user, window="-1 days") == 1
+    assert analysis.count_jobs_to_analyse(user, window="-7 days") == 2

@@ -318,3 +318,17 @@ def test_only_one_cv_can_be_active_per_user(db):
         with engine.begin() as conn:
             conn.execute(user_cvs.insert().values(
                 user_id=user_id, content_md="two", is_active=True))
+
+
+@pytest.mark.parametrize("insert,update", [
+    (users.insert_user_keyword, users.update_user_keyword),
+    (users.insert_user_blacklist_term, users.update_user_blacklist_term),
+])
+def test_renaming_onto_an_existing_term_raises_duplicate_term(
+        db, insert, update):
+    user_id = users.insert_user("dup@example.com", "hashed")
+    insert(user_id, "python")
+    other = insert(user_id, "golang")
+
+    with pytest.raises(users.DuplicateTerm):
+        update(user_id, other, "python")

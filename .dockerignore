@@ -17,3 +17,4 @@ venv
 k8s
 jobs
 *.pyc
+cv_generator

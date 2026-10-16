@@ -359,6 +359,7 @@ stages need Chromium and use the `scrape` image; the others use `ingest`.
 ```bash
 docker build -f job_scraper/Dockerfile --target ingest -t joblister-ingest .
 docker build -f job_scraper/Dockerfile --target scrape -t joblister-scrape .
+docker build -f api/Dockerfile -t joblister-api .
 ```
 
 **Docker Compose**, one stage at a time:
@@ -368,6 +369,86 @@ docker compose --profile jobs run --rm migrate
 docker compose --profile jobs run --rm scrape
 docker compose --profile jobs run --rm ingest
 ```
+
+**Reaching the API** (needs the schema, so `migrate` first). Three ways to
+get a base URL; the curl sequence below is the same for all of them.
+
+```bash
+# 1. compose: Postgres and the LLM gateway start with it, Ollama does not
+export JWT_SECRET=$(openssl rand -hex 32)      # >= 32 chars or the API refuses to start
+docker compose up -d api
+API=http://localhost:8080
+
+# 2. minikube, port-forward (manifests from the Kubernetes section)
+kubectl port-forward svc/joblister-api 8080:8080 &
+API=http://localhost:8080
+
+# 3. minikube, NodePort. On macOS with the docker driver the node IP is not
+# routable from the host, so this is a tunnel you leave running:
+kubectl apply -f k8s/dev/api-nodeport.yaml
+API=$(minikube service joblister-api-nodeport --url)     # Linux/VM driver: http://$(minikube ip):30080
+```
+
+```bash
+H='content-type: application/json'
+curl $API/healthz                                         # docs at $API/docs
+
+# signup returns a token; login does too
+TOKEN=$(curl -s $API/v1/auth/signup -H "$H" \
+  -d '{"email":"me@example.com","password":"correct horse"}' | jq -r .access_token)
+TOKEN=$(curl -s $API/v1/auth/login -H "$H" \
+  -d '{"email":"me@example.com","password":"correct horse"}' | jq -r .access_token)
+A="Authorization: Bearer $TOKEN"
+
+curl -s -X POST $API/v1/me/keywords  -H "$H" -H "$A" -d '{"term":"python"}'
+curl -s -X POST $API/v1/me/blacklist -H "$H" -H "$A" -d '{"term":"senior"}'
+curl -s -X POST $API/v1/me/cvs       -H "$H" -H "$A" -d '{"content_md":"Backend engineer, Python, Postgres"}'
+
+curl -s "$API/v1/me/analyses/due?window_days=1" -H "$A"   # how many would be graded
+curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
+  -d '{"limit":5,"window_days":1,"model":"haiku"}'        # repeat while "remaining" > 0
+curl -s "$API/v1/me/analyses?limit=20&min_grade=60" -H "$A"
+```
+
+`model` must be in the API's `ANALYSIS_MODELS` (default `haiku,sonnet`); add
+e.g. `ollama-qwen2.5:0.5b` to grade locally. Every route except `/v1/auth/*`
+and `/healthz` acts on the token's user (`/v1/me/...`); there is no user id in
+any path.
+
+**Gateway access control.** The LLM gateway holds the Anthropic key and is
+callable by the API and by nothing else. Under compose it sits on a private
+`llm` network (shared only with `api` and `ollama`) and publishes no host
+port; poke it through `docker compose exec api python -c "..."`. In the
+cluster, `k8s/networkpolicy-llm-gateway.yaml` allows ingress only from pods
+labelled `app: joblister-api`; it takes effect only on a CNI that enforces
+NetworkPolicy, so run the probe in that file's header on any new cluster
+(verified on minikube's kindnet: an unlabelled pod times out once the policy
+has propagated, a few seconds after `kubectl apply`).
+This restricts *who* can call, not how much the API itself may spend.
+
+**End-to-end check** (`scripts/e2e_api.py`, stdlib only): signs up users,
+seeds tagged postings, and checks that `/v1/me/analyze` grades the same set the
+CLI does for identical inputs, that other keywords give another set, and that
+re-runs and paging behave. It uses a per-run random keyword token, so no real
+posting is graded, and removes everything it created.
+
+```bash
+# compose (Ollama as the grader; the model must be in ANALYSIS_MODELS)
+export JWT_SECRET=$(openssl rand -hex 32) ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+docker compose --profile jobs run --rm migrate
+docker compose up -d ollama api
+docker compose exec ollama ollama pull qwen2.5:0.5b      # once
+python scripts/e2e_api.py
+
+# minikube, grading through the compose Ollama (dev overrides, undo with `env VAR-`)
+kubectl set env deploy/llm-gateway OLLAMA_BASE_URL=http://host.minikube.internal:11434
+kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+E2E_TARGET=k8s python scripts/e2e_api.py
+```
+
+With a real `ANTHROPIC_API_KEY` set `E2E_MODEL=haiku` and skip the overrides.
+The CLI takes the same knobs: `python -m ai.main_analysis <user_id> --model
+… --limit … --window "-7 days"`.
 
 **Kubernetes** (manifests in `k8s/`, schedules in Europe/Paris: scrape 00:00,
 render-boards 00:45, ingest 01:00, render-postings 05:00):
@@ -379,6 +460,19 @@ kubectl create secret generic joblister-secrets \
 kubectl apply -f k8s/job-migrate.yaml
 kubectl apply -f k8s/cron-scrape_boards.yaml -f k8s/cron-ingest_jobs.yaml \
               -f k8s/cron-render_boards.yaml -f k8s/cron-render_postings.yaml
+
+# The API and its gateway (after migrate-jobs); secrets are separate, see
+# k8s/secret.example.yaml
+docker build -f api/Dockerfile -t joblister-api .
+docker build -f llm_gateway/Dockerfile -t joblister-llm-gateway .
+minikube image load joblister-api:latest joblister-llm-gateway:latest
+kubectl create secret generic joblister-api-secrets \
+  --from-literal=JWT_SECRET="$(openssl rand -hex 32)"
+kubectl create secret generic joblister-gateway-secrets \
+  --from-literal=ANTHROPIC_API_KEY='...'
+kubectl apply -f k8s/llm-gateway.yaml -f k8s/api.yaml \
+              -f k8s/networkpolicy-llm-gateway.yaml
+# reach it: see "Reaching the API" above (no Ingress yet)
 
 # Run a stage now instead of waiting for its schedule
 kubectl create job --from=cronjob/scrape-boards test-scrape

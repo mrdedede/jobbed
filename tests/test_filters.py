@@ -69,6 +69,30 @@ class TestBuildWordPattern:
         assert matches[0]
         assert not matches[1]
 
+    @pytest.mark.parametrize("term,text", [
+        ("c++", "We use C++ daily"),
+        ("c#", "C# developer"),
+        (".net", "Senior .NET developer"),
+        ("node.js", "Node.js and React"),
+    ])
+    def test_terms_with_symbol_edges_match(self, term, text):
+        """\\b needs a word character on both sides, so `c++`, `c#` and
+        `.net` never matched until the pattern used lookarounds."""
+        pattern = _build_word_pattern([term])
+
+        assert pd.Series([text]).str.contains(
+            pattern, case=False, regex=True).all()
+
+    @pytest.mark.parametrize("term,text", [
+        ("go", "Golang engineer"), ("java", "JavaScript developer"),
+        (".net", "ASP.NET developer"),
+    ])
+    def test_symbol_edges_do_not_widen_into_longer_words(self, term, text):
+        pattern = _build_word_pattern([term])
+
+        assert not pd.Series([text]).str.contains(
+            pattern, case=False, regex=True).any()
+
     def test_special_chars_escaped(self):
         """A keyword like C++ must not blow up the alternation."""
         pattern = _build_word_pattern(["c++", "rust"])
@@ -393,3 +417,53 @@ def test_empty_input_returns_empty_rather_than_raising(filter_files, stage):
     )
 
     assert len(getattr(filters, stage)(["python"], [])) == 0
+
+
+# ======================================================================
+# filter_frame
+# ======================================================================
+
+
+class TestFilterFrame:
+    """The pure core of second_filter, usable on rows that never touched a CSV."""
+
+    DESC = "python python python python python"
+
+    def test_matches_second_filter_on_same_rows(self, filter_files):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Cook", "bake bread", "http://a/2"))
+        filter_files(detailed=frame)
+
+        cols = ["title", "url", "keyword_hits"]
+        assert filters.filter_frame(frame, ["python"], [])[cols].equals(
+            filters.second_filter(["python"], [])[cols])
+
+    def test_extra_columns_pass_through(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"))
+        frame["id"] = ["job-1"]
+
+        assert list(filters.filter_frame(frame, ["python"], []).id) == ["job-1"]
+
+    def test_no_keywords_keeps_rows_with_a_description(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Blank", "", "http://a/2"))
+
+        assert len(filters.filter_frame(frame, [], [])) == 1
+
+    def test_empty_frame_does_not_raise(self):
+        assert filters.filter_frame(detailed(), ["python"], []).empty
+
+    def test_blacklist_applies_without_keywords(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Senior Dev", self.DESC, "http://a/2"))
+
+        result = filters.filter_frame(frame, [], ["senior"])
+
+        assert list(result.url) == ["http://a/1"]
+
+    def test_keywords_apply_without_blacklist(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Cook", "bake bread", "http://a/2"))
+
+        assert list(filters.filter_frame(frame, ["python"], []).url) == [
+            "http://a/1"]

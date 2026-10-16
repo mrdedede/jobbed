@@ -21,6 +21,7 @@ TEST_DATABASE_URL = os.environ.get(
 # Before anything imports db.engine: its `engine` is bound once, at import,
 # and db/* modules copy that name, so rebinding it later reaches none of them.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+os.environ.setdefault("JWT_SECRET", "test-secret-" + "x" * 32)
 
 
 @pytest.fixture(autouse=True)

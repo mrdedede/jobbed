@@ -42,6 +42,7 @@ services:
   
   ollama:
     image: ollama/ollama:latest
+    networks: [default, llm]
     ports:
       - "11434:11434"
     volumes:
@@ -61,16 +62,44 @@ services:
       # the gateway answers 502 instead of calling Claude.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OLLAMA_BASE_URL: http://ollama:11434
-    ports:
-      - "8000:8000"
-    depends_on:
-      ollama:
-        condition: service_healthy
+    # The gateway holds the Anthropic key, so it accepts calls from the API
+    # and nothing else: it is on the private `llm` network only (not the
+    # default one the database and the jobs are on) and publishes no host
+    # port. Debug through `docker compose exec api ...`.
+    networks: [llm]
+    # No depends_on ollama: Claude-only grading needs none, and the gateway
+    # reaches Ollama lazily over HTTP. `docker compose up ollama` when wanted.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # The user-facing REST API. Needs the schema first:
+  #   docker compose --profile jobs run --rm migrate
+  # then: JWT_SECRET=... docker compose up api
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: joblister-api
+    environment:
+      DATABASE_URL: postgresql+psycopg://joblister:joblister@postgres:5432/joblister
+      GATEWAY_URL: http://llm_gateway:8000
+      # Empty, not `:?`: interpolation is file-wide, so a required variable
+      # would break every other compose command. The app fails fast instead.
+      JWT_SECRET: ${JWT_SECRET:-}
+      # Models a client may request. Add e.g. ollama-qwen2.5:0.5b to grade
+      # locally (and `docker compose up ollama`).
+      ANALYSIS_MODELS: ${ANALYSIS_MODELS:-haiku,sonnet}
+    ports:
+      - "8080:8080"
+    networks: [default, llm]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llm_gateway:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------
   # Nightly jobs (PHASE4_PLAN.md). Not started by `docker compose up`; run
@@ -123,6 +152,11 @@ services:
     image: joblister-scrape
     command: ["python", "-m", "job_scraper.scrape_postings", "--render-failed"]
     shm_size: "1gb"
+
+networks:
+  # Gateway <-> API (and Ollama, which the gateway calls). A normal bridge,
+  # not `internal`: the gateway needs outbound access to Anthropic.
+  llm: {}
 
 volumes:
   postgres_data:

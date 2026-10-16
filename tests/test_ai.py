@@ -123,7 +123,9 @@ async def test_run_analysis_grades_and_stores_each_due_posting(
 
     stats = await main_analysis.run_analysis(user, model="haiku")
 
-    assert stats == {"analysed": 2, "failed": 0, "due": 2}
+    assert (stats["analysed"], stats["failed"], stats["due"],
+            stats["filtered_out"]) == (2, 0, 2, 0)
+    assert set(stats["job_ids"]) == {r[0] for r in db_analysis.select_analyses(user)}
     rows = db_analysis.select_analyses(user)
     assert [r[1] for r in rows] == [77, 77]
     assert {r[6] for r in rows} == {"haiku"}
@@ -137,7 +139,8 @@ async def test_run_analysis_counts_failures_and_keeps_going(user, fake_chat):
 
     stats = await main_analysis.run_analysis(user)
 
-    assert stats == {"analysed": 0, "failed": 2, "due": 2}
+    assert (stats["analysed"], stats["failed"], stats["due"]) == (0, 2, 2)
+    assert stats["job_ids"] == []
 
 
 async def test_run_analysis_without_a_cv_refuses(user, fake_chat):
@@ -166,3 +169,147 @@ async def test_generate_cv_refuses_an_ungraded_posting(user, fake_chat):
 
     with pytest.raises(RuntimeError, match="no analysis"):
         await cv_generation.generate_cv(user, job_id)
+
+
+# per-user filtering inside run_analysis
+
+def _posting(n, title, description):
+    return ("Acme", title, description, f"http://f/{n}", "Paris", None, None)
+
+
+def _graded_titles(user):
+    return {r[3] for r in db_analysis.select_analyses(user)}
+
+
+async def test_run_analysis_grades_only_keyword_matches(user, fake_chat):
+    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
+                      _posting(2, "Py Dev", "python " * 6)])
+    users.insert_user_cv(user, "my cv")
+    users.insert_user_keyword(user, "go")
+
+    stats = await main_analysis.run_analysis(user)
+
+    assert (stats["analysed"], stats["due"], stats["filtered_out"]) == (1, 1, 1)
+    assert _graded_titles(user) == {"Go Dev"}
+
+
+async def test_run_analysis_honours_the_blacklist(user, fake_chat):
+    jobs.insert_jobs([_posting(1, "Py Dev", "python " * 6),
+                      _posting(2, "Senior Py Dev", "python senior " * 6)])
+    users.insert_user_cv(user, "my cv")
+    users.insert_user_keyword(user, "python")
+    users.insert_user_blacklist_term(user, "senior")
+
+    await main_analysis.run_analysis(user)
+
+    assert _graded_titles(user) == {"Py Dev"}
+
+
+async def test_run_analysis_diverges_per_user(user, db, fake_chat):
+    other = users.insert_user(f"{uuid.uuid4()}@example.com", "hashed")
+    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
+                      _posting(2, "Py Dev", "python " * 6)])
+    for who, term in ((user, "go"), (other, "python")):
+        users.insert_user_cv(who, "my cv")
+        users.insert_user_keyword(who, term)
+
+    await main_analysis.run_analysis(user)
+    await main_analysis.run_analysis(other)
+
+    assert _graded_titles(user) == {"Go Dev"}
+    assert _graded_titles(other) == {"Py Dev"}
+
+
+async def test_run_analysis_limit_applies_after_filtering_ties_by_hits(
+        user, fake_chat):
+    jobs.insert_jobs([
+        _posting(1, "Noise A", "cooking " * 6),
+        _posting(2, "Weak", "go " * 5),
+        _posting(3, "Strong", "go " * 12),
+        _posting(4, "Noise B", "cooking " * 6),
+    ])
+    users.insert_user_cv(user, "my cv")
+    users.insert_user_keyword(user, "go")
+
+    stats = await main_analysis.run_analysis(user, limit=1)
+
+    assert (stats["analysed"], stats["filtered_out"]) == (1, 2)
+    assert _graded_titles(user) == {"Strong"}
+
+
+async def test_run_analysis_with_nothing_due_calls_no_model(user, fake_chat):
+    users.insert_user_cv(user, "my cv")
+
+    stats = await main_analysis.run_analysis(user)
+
+    assert stats == {"analysed": 0, "failed": 0, "due": 0,
+                     "filtered_out": 0, "remaining": 0, "job_ids": []}
+    assert fake_chat[0] == []
+
+
+async def test_run_analysis_takes_newest_first_then_pages(user, fake_chat):
+    users.insert_user_cv(user, "my cv")
+    users.insert_user_keyword(user, "go")
+    # Separate inserts => distinct scraped_at; the oldest has the most hits.
+    jobs.insert_jobs([_posting(1, "Oldest", "go " * 20)])
+    jobs.insert_jobs([_posting(2, "Middle", "go " * 6)])
+    jobs.insert_jobs([_posting(3, "Newest", "go " * 6)])
+
+    first = await main_analysis.run_analysis(user, limit=2)
+
+    assert _graded_titles(user) == {"Newest", "Middle"}
+    assert (first["due"], first["remaining"]) == (2, 1)
+
+    second = await main_analysis.run_analysis(user, limit=2)
+
+    assert _graded_titles(user) == {"Newest", "Middle", "Oldest"}
+    assert (second["due"], second["remaining"]) == (1, 0)
+
+
+async def test_count_due_applies_the_users_filter_and_matches_a_run(
+        user, fake_chat):
+    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
+                      _posting(2, "Py Dev", "python " * 6)])
+    users.insert_user_keyword(user, "go")
+
+    assert await main_analysis.count_due(user) == 1
+
+    users.insert_user_cv(user, "my cv")
+    await main_analysis.run_analysis(user)
+
+    assert await main_analysis.count_due(user) == 0
+
+
+def test_cli_passes_model_limit_and_window_to_run_analysis(monkeypatch):
+    seen = {}
+
+    async def fake(user_id, **kwargs):
+        seen.update(user_id=user_id, **kwargs)
+
+        return {"analysed": 0, "failed": 0, "filtered_out": 0,
+                "remaining": 0}
+
+    monkeypatch.setattr(main_analysis, "run_analysis", fake)
+    uid = uuid.uuid4()
+
+    assert main_analysis.main(
+        [str(uid), "--model", "ollama-x", "--limit", "3",
+         "--window", "-7 days"]) == 0
+    assert (seen["user_id"], seen["model"], seen["limit"],
+            seen["window"]) == (uid, "ollama-x", 3, "-7 days")
+
+    assert main_analysis.main([str(uid)]) == 0
+    assert (seen["model"], seen["limit"], seen["window"]) == (
+        "haiku", 20, "-24 hours")
+
+
+async def test_run_analysis_applies_the_blacklist_without_keywords(
+        user, fake_chat):
+    jobs.insert_jobs([_posting(1, "Py Dev", "python " * 6),
+                      _posting(2, "Senior Py Dev", "python senior " * 6)])
+    users.insert_user_cv(user, "my cv")
+    users.insert_user_blacklist_term(user, "senior")
+
+    await main_analysis.run_analysis(user)
+
+    assert _graded_titles(user) == {"Py Dev"}

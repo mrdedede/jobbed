@@ -5,24 +5,36 @@ stripped and lowercased (db.users expects callers to normalize), sizes are
 capped, and the model a client may ask for is a closed set.
 """
 
+import os
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import (AfterValidator, BaseModel, Field, StringConstraints,
+                      field_validator)
 
 Email = Annotated[str, StringConstraints(
     strip_whitespace=True, to_lower=True, max_length=254,
     pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
 
-# bcrypt silently truncates at 72 *bytes*; max_length counts characters, so
-# the auth layer still has to reject len(password.encode()) > 72.
-Password = Annotated[str, Field(min_length=8, max_length=72)]
+
+# bcrypt's limit is 72 *bytes*; max_length counts characters, so the
+# validator below rejects multi-byte passwords that would exceed it.
+def _fits_bcrypt(value: str) -> str:
+    if len(value.encode()) > 72:
+        raise ValueError("password is longer than 72 bytes")
+
+    return value
+
+
+Password = Annotated[str, Field(min_length=8, max_length=72),
+                     AfterValidator(_fits_bcrypt)]
 
 Term = Annotated[str, StringConstraints(
     strip_whitespace=True, to_lower=True, min_length=1, max_length=100)]
 
-CvMarkdown = Annotated[str, Field(min_length=1, max_length=100_000)]
+CvMarkdown = Annotated[str, StringConstraints(
+    strip_whitespace=True, min_length=1, max_length=100_000)]
 
 
 # INFRA
@@ -83,11 +95,29 @@ class CvOut(BaseModel):
 
 # ANALYSIS
 
+def allowed_models() -> List[str]:
+    """Models a client may ask for: the server's list, never the client's.
+
+    Defaults to the two Claude tiers. Set ANALYSIS_MODELS to e.g.
+    "haiku,sonnet,ollama-qwen2.5:0.5b" to let a dev stack grade locally.
+    """
+    raw = os.environ.get("ANALYSIS_MODELS", "haiku,sonnet")
+
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
 class AnalyzeRequest(BaseModel):
     limit: int = Field(20, ge=1, le=50)
     window_days: int = Field(1, ge=1, le=30)
-    # Closed set: a client never picks "opus" or an "ollama-*" backend.
-    model: Literal["haiku", "sonnet"] = "haiku"
+    model: str = "haiku"
+
+    @field_validator("model")
+    @classmethod
+    def _model_is_allowed(cls, value: str) -> str:
+        if value not in allowed_models():
+            raise ValueError(f"model must be one of {allowed_models()}")
+
+        return value
 
 
 class AnalysisOut(BaseModel):
@@ -108,4 +138,10 @@ class AnalyzeOut(BaseModel):
     failed: int
     due: int
     filtered_out: int
+    remaining: int
     results: List[AnalysisOut]
+
+
+class DueOut(BaseModel):
+    """Postings an analysis run could grade right now, filter applied."""
+    due: int

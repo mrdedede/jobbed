@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.engine import engine
@@ -21,6 +22,15 @@ from db.tables import user_blacklist, user_cvs, user_keywords, users
 
 
 # USERS
+
+class EmailTaken(RuntimeError):
+    """The email is already registered. A RuntimeError so callers that only
+    know the db layer's contract still see one."""
+
+
+class DuplicateTerm(Exception):
+    """A keyword or blacklist term was renamed onto one the user already has."""
+
 
 def _normalize_email(email: str) -> str:
     """The one spelling an email is stored and looked up under."""
@@ -41,8 +51,8 @@ def insert_user(email: str, hashed_password: str) -> UUID:
         The new user's id.
 
     Raises:
-        RuntimeError: If the email is already registered, or the database
-            rejects the insertion.
+        EmailTaken: The email is already registered.
+        RuntimeError: If the database rejects the insertion.
     """
     # SQL: INSERT INTO users (email, hashed_password)
     #      VALUES (?, ?) RETURNING id
@@ -55,6 +65,8 @@ def insert_user(email: str, hashed_password: str) -> UUID:
     try:
         with engine.begin() as conn:
             return conn.execute(stmt).scalar_one()
+    except IntegrityError as exc:
+        raise EmailTaken(email) from exc
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
@@ -194,6 +206,7 @@ def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> bool:
         Whether a row matched (False: no such keyword for this user).
 
     Raises:
+        DuplicateTerm: The user already has a row with this text.
         RuntimeError: If the database rejects the update.
     """
     # SQL: UPDATE user_keywords SET term = ?
@@ -207,6 +220,8 @@ def update_user_keyword(user_id: UUID, keyword_id: UUID, term: str) -> bool:
     try:
         with engine.begin() as conn:
             return conn.execute(stmt).rowcount > 0
+    except IntegrityError as exc:
+        raise DuplicateTerm(term) from exc
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
@@ -252,7 +267,8 @@ def select_user_keywords(user_id: UUID) -> List[Tuple[UUID, str]]:
     """
     # SQL: SELECT id, term FROM user_keywords WHERE user_id = ?
     stmt = select(user_keywords.c.id, user_keywords.c.term).where(
-        user_keywords.c.user_id == user_id)
+        user_keywords.c.user_id == user_id
+    ).order_by(user_keywords.c.added_at, user_keywords.c.id)
     with engine.connect() as conn:
         return conn.execute(stmt).all()
 
@@ -309,6 +325,7 @@ def update_user_blacklist_term(
         Whether a row matched (False: no such term for this user).
 
     Raises:
+        DuplicateTerm: The user already has a row with this text.
         RuntimeError: If the database rejects the update.
     """
     # SQL: UPDATE user_blacklist SET term = ?
@@ -322,6 +339,8 @@ def update_user_blacklist_term(
     try:
         with engine.begin() as conn:
             return conn.execute(stmt).rowcount > 0
+    except IntegrityError as exc:
+        raise DuplicateTerm(term) from exc
     except Exception as exc:
         raise RuntimeError(f"Database update failed: {exc}") from exc
 
@@ -366,7 +385,8 @@ def select_user_blacklist(user_id: UUID) -> List[Tuple[UUID, str]]:
     """
     # SQL: SELECT id, term FROM user_blacklist WHERE user_id = ?
     stmt = select(user_blacklist.c.id, user_blacklist.c.term).where(
-        user_blacklist.c.user_id == user_id)
+        user_blacklist.c.user_id == user_id
+    ).order_by(user_blacklist.c.added_at, user_blacklist.c.id)
     with engine.connect() as conn:
         return conn.execute(stmt).all()
 
@@ -548,6 +568,7 @@ def select_user_cvs(user_id: UUID) -> List[Tuple[UUID, str, bool]]:
     #      WHERE user_id = ?
     stmt = select(
         user_cvs.c.id, user_cvs.c.content_md, user_cvs.c.is_active
-    ).where(user_cvs.c.user_id == user_id)
+    ).where(user_cvs.c.user_id == user_id).order_by(
+        user_cvs.c.added_at, user_cvs.c.id)
     with engine.connect() as conn:
         return conn.execute(stmt).all()

@@ -1,0 +1,26 @@
+# The gateway holds the Anthropic key. Only the API may call it; no other pod
+# (scrapers, Postgres, anything someone runs in the namespace) can open a
+# connection. Egress is left open on purpose: the gateway must reach
+# Anthropic and DNS.
+#
+# A NetworkPolicy does nothing unless the CNI enforces it. Prove it on a new
+# cluster:
+#
+#   kubectl run probe --rm -it --restart=Never --image=busybox -- \
+#     wget -qO- -T3 http://llm-gateway:8000/healthz        # must time out
+#   kubectl run probe --rm -it --restart=Never --labels app=joblister-api \
+#     --image=busybox -- wget -qO- -T3 http://llm-gateway:8000/healthz   # ok
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-gateway-from-api-only
+spec:
+  podSelector:
+    matchLabels: {app: llm-gateway}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels: {app: joblister-api}
+    ports:
+    - {port: 8000, protocol: TCP}

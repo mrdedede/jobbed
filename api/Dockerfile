@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r api/requirements.txt
 
 # What the handlers import: db/ for storage, ai/ for grading (it reads
 # ai/grade-job.md at import), and job_scraper/ because filters.py reaches
-# urls -> detector -> fetching.
+# urls -> detector -> fetching, so it cannot be cut down to a few files.
 COPY api api
 COPY db db
 COPY ai ai
@@ -27,4 +27,11 @@ RUN useradd --uid 1000 --create-home app
 USER app
 
 EXPOSE 8080
+
+# stdlib, not curl: the slim image has none.
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 CMD python -c \
+    "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"
+
+# One worker on purpose: the per-user in-flight analysis lock lives in this
+# process, and a second worker would silently stop honouring it.
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]

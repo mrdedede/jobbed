@@ -92,6 +92,8 @@ services:
       # Models a client may request. Add e.g. ollama-qwen2.5:0.5b to grade
       # locally (and `docker compose up ollama`).
       ANALYSIS_MODELS: ${ANALYSIS_MODELS:-haiku,sonnet}
+      # Postings a user may have graded per UTC day.
+      DAILY_ANALYSIS_CAP: ${DAILY_ANALYSIS_CAP:-10}
     ports:
       - "8080:8080"
     networks: [default, llm]

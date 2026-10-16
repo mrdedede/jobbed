@@ -1,8 +1,7 @@
 """The scraping stages, joined up and callable as one run.
 
-Until now nothing joined them: `main.py` was empty, the stages disagreed on
-filenames. Running the project meant knowing the right commands in the right
-order.
+The stages used to disagree on filenames, and running the project meant
+knowing the right commands in the right order; this module joins them.
 
 There is no filter stage: filtering is per user (see job_scraper.filters) and
 happens on demand, so this shared run scrapes and stores everything.
@@ -10,7 +9,7 @@ happens on demand, so this shared run scrapes and stores everything.
 Every stage here is a plain function returning a stats dict and printing
 nothing. That is deliberate and it is the whole design: a CLI, an HTTP
 handler and a nightly cron job all want the same calls and
-disagree only about what to do with the numbers. `main.py` supplies `print`;
+disagree only about what to do with the numbers. A CLI supplies `print`;
 something else can supply a progress bar or a log line.
 
 Stages hand off through CSV files in `temp/` rather than in memory. Those

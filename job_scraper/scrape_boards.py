@@ -7,8 +7,7 @@ Boards come from the database; --input FILE reads a company,url CSV instead,
 for a run with no database at hand.
 
 Outputs jobs.csv with detected ATS and scraping strategy (via) for each row.
-This is stage one of the pipeline; `python main.py` runs it along with the
-rest.
+This is stage one of the nightly pipeline.
 """
 
 from __future__ import annotations

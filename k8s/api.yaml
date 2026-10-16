@@ -29,6 +29,7 @@ spec:
           valueFrom:
             secretKeyRef: {name: joblister-api-secrets, key: JWT_SECRET}
         - {name: GATEWAY_URL, value: "http://llm-gateway:8000"}
+        - {name: DAILY_ANALYSIS_CAP, value: "10"}
         readinessProbe:
           httpGet: {path: /healthz, port: 8080}
           periodSeconds: 5

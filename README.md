@@ -1,509 +1,435 @@
 # Jobbed
 
-A job scraping and AI-powered CV matching application that helps candidates find and apply to relevant job postings by automatically analyzing job descriptions and generating tailored CVs.
+A multi-user job-matching service. Every night it scrapes career boards into one
+shared Postgres table; each user then keeps their own keywords, blacklist and CV
+through a REST API and asks the API to grade the postings against that CV with
+Claude (or a local Ollama model).
 
-## Overview
-
-**Jobbed** is an intelligent job market tool that:
-
-1. **Scrapes job postings** from multiple career boards and job listing websites
-2. **Detects ATS systems** (Applicant Tracking Systems) used by employers
-3. **Analyzes job fit** using AI (Claude) to grade how well each posting matches your CV
-4. **Generates tailored CVs** using AI that rewrite your CV to emphasize skills relevant to each opportunity
-5. **Manages data** in a local SQLite database for tracking analyses and generated CVs
-6. **Visualizes results** through a Streamlit web interface for easy exploration and management
-
-## Application Workflow
-
-The application operates as a multi-stage pipeline, visualized in a Streamlit dashboard:
-
-### Stage 1: Board Scraping
-**Page:** `2_Scrape_boards.py`
-
-- Reads a list of job boards from `user_info/job_boards.csv`
-- Scrapes each board using multiple detection strategies (JSON-LD, link pagination, API discovery, optional JS rendering)
-- Detects which ATS system each posting uses
-- Outputs raw postings to `temp/jobs.csv`
-- Optional: Use Playwright to render JavaScript-heavy boards
-
-### Stage 2: Job Details & Filtering
-**Page:** `3_Scrape_jobs.py`
-
-- Reads postings from `temp/jobs.csv`
-- Fetches full job descriptions from posting URLs
-- Applies first-pass filtering using keywords and blacklist
-- Stores unfiltered jobs in SQLite `job_data` table
-- Outputs filtered postings to `temp/filtered_detailed_jobs.csv`
-
-### Stage 3: AI Analysis & Grading
-**Page:** `4_AI_analysis.py`
-
-- Reads unanalyzed jobs from the database
-- Sends each job description to Claude (Haiku model) with your CV
-- Claude grades the posting (0-100) and provides analysis of fit
-- Stores results in SQLite `ai_analysis` table
-- Identifies postings within the past 24 hours awaiting analysis
-
-### Stage 4: AI-Generated CV Production
-**Page:** `5_CV_generation.py`
-
-- Reads analyzed jobs from `ai_analysis` table
-- Sends job posting + analysis to Claude (Sonnet model) with your CV template
-- Generates a tailored CV emphasizing relevant skills
-- Stores generated CV as JSON in `generated_cv` table
-- Renders CV to DOCX format using your CV template
-
-### Dashboard Home Page
-**Page:** `Home.py`
-
-- Displays summary statistics from the last scrape
-- Shows database metrics (stored jobs, completed analyses, pending analysis queue)
-- Visualizes posting distribution by company and scraping strategy
-
----
-
-## Data Flow: Scraping & External AI
-
-### Scraped Data
-
-**Input:** Job board URLs from `user_info/job_boards.csv`
-- Columns: `company`, `url`
-
-**Output:** Raw job postings to `temp/jobs.csv`
-- Columns: `company`, `title`, `url`, `place`, `via` (scraping strategy), `ats` (detected system)
-
-**Scraped Fields:**
-- Company name
-- Job title
-- Posting URL
-- Location
-- Detection method (which strategy found it)
-- ATS system type
-
-### Data Sent to External AI (Claude)
-
-#### For Job Analysis (Haiku Model)
-1. **Your CV** (from `user_info/my_cv.md`)
-   - Full CV in Markdown format
-   - Included in every grade request for context
-
-2. **Grading Prompt** (from `ai/grade-job.md`)
-   - Instructions on how Claude should evaluate the fit
-   - Scoring criteria
-
-3. **Job Description**
-   - Full posting text from the scraped URL
-
-**Output:** JSON with two fields
-```json
-{
-  "adequation_grade": 75,
-  "depth_analysis": "This role emphasizes Python and Django, which aligns well with your backend experience..."
-}
+```
+career boards ──► nightly CronJobs ──► job_postings (shared, Postgres)
+                                              │
+ user ── REST API (JWT) ── keywords, blacklist, CVs ── ai_analysis (per user)
+                    │
+                    └──► LLM gateway ──► Anthropic API / Ollama
 ```
 
-#### For CV Generation (Sonnet Model)
-1. **Your CV** (from `user_info/my_cv.md`)
-   - Template to guide structure and content
+## How it works
 
-2. **Generation Prompt** (from `ai/generate-cv.md`)
-   - Instructions on how to tailor the CV
-   - Required sections and format
+**Nightly, for everyone** (four stages, see [Running with Docker / Kubernetes](#running-with-docker--kubernetes)):
 
-3. **Job Analysis**
-   - The `depth_analysis` from the grading stage (what Claude already identified as important)
+1. **ScrapeBoards** reads the active `job_boards` rows and finds postings with
+   several strategies (JSON-LD, link pagination, API discovery), detecting the ATS.
+2. **RenderBoards** retries empty boards in headless Chromium.
+3. **IngestJobs** fetches each posting's full description and stores it in
+   `job_postings` (deduplicated by URL).
+4. **RenderPostings** retries the pages that plain HTTP could not read.
 
-4. **Job Description**
-   - Full posting text
+**On demand, per user**, through the API (`/docs` lists every route):
 
-**Output:** JSON with locale and full CV structure
-```json
-{
-  "locale": "en",
-  "cv": {
-    "cv_introduction": "...",
-    "profile_text": "...",
-    "skills": [...],
-    "experiences": [...],
-    "education": [...]
-  }
-}
-```
+- `POST /v1/auth/signup` / `login` return a JWT; everything else is under `/v1/me`.
+- Manage **keywords**, **blacklist terms** and **CVs** (Markdown, one active).
+- `POST /v1/me/analyze` filters the recent postings by your keywords and
+  blacklist, sends each survivor with your active CV to the LLM gateway, and
+  stores a 0-100 grade plus a written analysis in `ai_analysis`.
+- `GET /v1/me/analyses` lists your grades; `GET /v1/me/analyses/due` says how
+  many postings are waiting.
+- **Daily quota:** at most `DAILY_ANALYSIS_CAP` (default 10) postings graded per
+  user per UTC day; past that the API answers `429` with `Retry-After`.
 
-### Privacy Note
-- All Claude API calls are made via the Claude CLI (`claude` command) with `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set, preventing context memory storage
-- Job descriptions and your CV are sent to Anthropic for analysis, not stored locally in a memory system
-- Generated CVs are stored locally in SQLite as JSON
+CV generation (rewriting your CV for one posting) exists as library code
+(`ai.cv_generation`, `cv_generator`) but has no endpoint yet; the plan is in
+[docs/cv-generation.md](docs/cv-generation.md).
 
----
+## Data flow and privacy
+
+- **Scraped:** company, title, URL, location, description, detected ATS, and
+  which strategy found it. Shared by all users.
+- **Sent to the model for one grade:** the grading prompt (`ai/grade-job.md`),
+  the user's active CV, and the posting text. The answer is JSON:
+  `{"adequation_grade": 75, "depth_analysis": "..."}`.
+- **Path:** API, then the LLM gateway, then the Anthropic API. Only the gateway
+  holds `ANTHROPIC_API_KEY`; it is reachable from the API and nothing else.
+- **Stored:** CVs, keywords, grades and generated CVs live in Postgres, scoped
+  to the user, and are deleted with the account (`DELETE /v1/me`). Passwords are
+  bcrypt hashes. CV text and postings are sent to Anthropic (or to your own
+  Ollama) for grading; nothing is kept by this service beyond the result.
 
 ## Configuration
 
-### Required Files
+### Files
 
-All configuration files are in `user_info/` directory. Examples are provided with `_example` suffix.
+Only these are still files; everything per-user is an API resource.
 
-#### 1. **Job Boards List** (`user_info/job_boards.csv`)
-List of career boards to scrape.
+| File | Purpose |
+|---|---|
+| `user_info/job_boards.csv` | `company,url` list of boards. Loaded into `job_boards` by the `migrate` step (`python -m db.boards`). Copy `job_boards_example.csv`. |
+| `user_info/france_travail_credentials.json` | Optional `client_id` / `client_secret` for the France Travail source (or `FRANCE_TRAVAIL_CLIENT_ID` / `_SECRET`). The source also needs `SEARCH_KEYWORDS` filled in `job_scraper/api_sources/france_travail.py`. |
+| `user_info/CV_placeholder.docx` | DOCX template for CV rendering (library code only for now). |
+| `user_info/{keywords,blacklist}_example.txt`, `my_cv_example.md` | Samples for the one-time [legacy import](#importing-the-old-sqlite-history). |
 
-**Format:**
-```csv
-company,url
-Company A,https://careers.companya.com
-Company B,https://careers.companyb.com
-LinkedIn,https://linkedin.com/jobs
-Indeed,https://indeed.com
-```
+### Environment variables
 
-**Required columns:**
-- `company`: Display name for the board
-- `url`: URL to scrape
+| Variable | Used by | Default / notes |
+|---|---|---|
+| `DATABASE_URL` | everything | `postgresql+psycopg://joblister:joblister@localhost:5432/joblister` |
+| `JWT_SECRET` | API | Required, at least 32 characters; the API refuses to start otherwise. |
+| `GATEWAY_URL` | API | `http://localhost:8000` |
+| `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. |
+| `DAILY_ANALYSIS_CAP` | API | `10` postings per user per UTC day. |
+| `ANTHROPIC_API_KEY` | gateway | Empty means Claude models answer 502. |
+| `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT` | gateway | `http://localhost:11434`, `180` s |
+| `CLAUDE_MODEL_HAIKU` / `_SONNET` / `_OPUS` | gateway | Override the model ids behind the short names. |
+| `JOBLISTER_DATA_DIR` | scraper jobs | CSV hand-off directory (`temp/`; `/data` in the images). |
+| `JOBLISTER_BOARDS_CSV` | `migrate` | Path to the boards CSV. |
+| `FRANCE_TRAVAIL_CLIENT_ID` / `_SECRET` | scraper jobs | Optional. |
+| `CHROMIUM_NO_SANDBOX` | render jobs | Set to `1` by the `scrape` image. |
 
-#### 2. **Your CV** (`user_info/my_cv.md`)
-Your CV in Markdown format. Used by Claude for grading jobs and as a template for generating tailored CVs.
+`.env.example` and `k8s/secret.example.yaml` show how to supply them.
 
-**Should include:**
-- Personal summary
-- Key skills (grouped by competence area)
-- Work experience (with dates, companies, locations, achievements)
-- Education
+## Getting started
 
-**Example structure:**
-```markdown
-# [Your Name]
-
-## Summary
-5 years of full-stack development experience...
-
-## Skills
-### Backend
-- Python, Django, PostgreSQL
-
-### Frontend
-- React, TypeScript, CSS
-
-## Experience
-### Senior Software Engineer
-**Company X** | Location | 2020-Present
-- Achievement 1
-- Achievement 2
-
-## Education
-### Bachelor's in Computer Science
-University Name | 2015-2019
-```
-
-#### 3. **CV Template** (`user_info/CV_placeholder.docx`)
-A DOCX template for rendering generated CVs.
-
-**Setup:**
-1. Download a template or create a new one in Microsoft Word
-2. Add placeholders like `[NAME]`, `[SUMMARY]`, `[EXPERIENCE]` in the template
-3. Save as `CV_placeholder.docx` in `user_info/`
-
-The application will replace these placeholders with generated content.
-
-#### 4. **Keywords List** (`user_info/keywords.txt`)
-Keywords for first-pass filtering. Jobs containing any of these keywords pass the first filter.
-
-**Format (one per line):**
-```
-Python
-Django
-Backend
-Full-stack
-Remote
-```
-
-#### 5. **Blacklist** (`user_info/blacklist.txt`)
-Keywords that disqualify a job. Postings containing these are filtered out.
-
-**Format (one per line):**
-```
-PHP
-Require relocation
-Requires clearance
-```
-
-### Database Files (Auto-created)
-
-- `db/joblister.db` - SQLite database (auto-created on first run)
-  - `job_data` - Scraped postings
-  - `ai_analysis` - AI grades and analyses
-  - `generated_cv` - Generated CVs for each analyzed posting
-
-### Temporary Files (Auto-created)
-
-All in `temp/` directory, created on each stage:
-- `jobs.csv` - Raw scraped postings
-- `first_filtered_file.csv` - After keyword/blacklist filtering
-- `detailed_jobs.csv` - With full descriptions
-- `filtered_detailed_jobs.csv` - Final filtered list
-- `no_jobs.csv` - Boards that returned no results
-
----
-
-## Running the Application
-
-### Prerequisites
-
-1. **Python 3.11+**
-   ```bash
-   python --version  # Must be 3.11 or higher
-   ```
-
-2. **Claude CLI installed**
-   - Install: https://github.com/anthropics/claude-code
-   - Verify: `claude --version`
-   - Must have API access configured
-
-3. **Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Optional: Playwright (for JS rendering)**
-   ```bash
-   pip install playwright
-   playwright install chromium
-   ```
-
-### Setup Steps
-
-1. **Clone/Navigate to project:**
-   ```bash
-   cd joblister
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure your profile:**
-   - Copy examples: `cp user_info/*_example.* user_info/`
-   - Edit `user_info/my_cv.md` with your CV
-   - Edit `user_info/job_boards.csv` with boards to scrape
-   - Edit `user_info/keywords.txt` with relevant keywords
-   - Edit `user_info/blacklist.txt` with disqualifying keywords
-   - Replace `user_info/CV_placeholder.docx` with your template
-
-4. **Optional: Set up a CV template**
-   - Create or download a CV template in Microsoft Word
-   - Add placeholders (the app will replace them)
-   - Save as `user_info/CV_placeholder.docx`
-
-### Running the Dashboard
+Prerequisites: Python 3.11+, Docker with Compose, and for the cluster path
+minikube and kubectl.
 
 ```bash
-streamlit run visualization/Home.py
+pip install -r requirements.txt            # scraper, tests, tooling
+cp user_info/job_boards_example.csv user_info/job_boards.csv    # then edit
+
+export JWT_SECRET=$(openssl rand -hex 32)
+export ANTHROPIC_API_KEY=sk-ant-...         # or use Ollama, see below
+docker compose --profile jobs run --rm migrate    # schema + boards list
+docker compose up -d api                          # Postgres, gateway, API
+curl http://localhost:8080/healthz
 ```
 
-This launches the Streamlit web interface at `http://localhost:8501` with five pages:
+Then fill the database (`scrape` and `ingest` below) and use the API as shown
+under [Reaching the API](#running-with-docker--kubernetes).
 
-1. **Home** - Dashboard overview
-2. **1_Boards_without_jobs** - Boards that had no postings
-3. **2_Scrape_boards** - Launch board scraping
-4. **3_Scrape_jobs** - Fetch full descriptions and apply filters
-5. **4_AI_analysis** - Grade jobs against your CV
-6. **5_CV_generation** - Generate tailored CVs
-
-### Workflow Example
-
-1. Open `Home` page to see current database state
-2. Go to `2_Scrape_boards` and click "Scrape boards"
-   - Adjust the limit if scraping only specific boards
-   - Enable "Render JS listings" for JavaScript-heavy sites
-3. Review scraped postings
-4. Go to `3_Scrape_jobs` to fetch full descriptions and filter
-5. Check `4_AI_analysis` page to see pending jobs
-6. Click "Analyze jobs" to run Claude grading on pending postings
-7. Once graded, go to `5_CV_generation` to generate tailored CVs
-8. Download generated CVs as DOCX files
-
-### Running Tests
+### Running tests
 
 ```bash
+docker compose up -d postgres
+docker compose exec postgres psql -U joblister -c "CREATE DATABASE joblister_test"   # once
 pytest tests/
 ```
 
-Run specific test:
+Tests use `joblister_test` (override with `TEST_DATABASE_URL`) and recreate its
+schema each session. `tests/test_pdf_gen.py` is skipped without LibreOffice.
+
+## Running with Docker / Kubernetes
+
+The scrape pipeline runs unattended as four stages, one after another. Every
+stage hands over through the data directory (`JOBLISTER_DATA_DIR`, `/data` in
+the images) and the database (`DATABASE_URL`).
+
+| Stage | Command | Reads | Writes |
+|---|---|---|---|
+| ScrapeBoards | `python -m job_scraper.scrape_boards` | active `job_boards` rows | `jobs.csv`, `no_jobs.csv` |
+| RenderBoards | `python -m job_scraper.scrape_boards --render-missed` | `no_jobs.csv` | `jobs_rendered.csv`, `no_jobs_rendered.csv` |
+| IngestJobs | `python -m job_scraper.scrape_postings --ingest [--max-minutes N]` | `jobs.csv`, `jobs_rendered.csv` | `job_postings`, `failed_postings.csv` |
+| RenderPostings | `python -m job_scraper.scrape_postings --render-failed [--max-minutes N]` | `failed_postings.csv` | `job_postings` |
+
+Ingest is resumable: URLs already stored are never refetched, so a killed or
+time-boxed run (`--max-minutes`) picks up where it stopped. The two render
+stages need Chromium and use the `scrape` image; the others use `ingest`.
+
+**Images** (build from the repo root):
+
 ```bash
-pytest tests/test_analysis.py -v
+docker build -f job_scraper/Dockerfile --target ingest -t joblister-ingest .
+docker build -f job_scraper/Dockerfile --target scrape -t joblister-scrape .
+docker build -f api/Dockerfile -t joblister-api .
 ```
 
-With coverage:
+**Docker Compose**, one stage at a time:
+
 ```bash
-pytest tests/ --cov=.
+docker compose --profile jobs run --rm migrate
+docker compose --profile jobs run --rm scrape
+docker compose --profile jobs run --rm ingest
 ```
 
-### Running Individual Scripts
-
-If you want to run stages manually outside the UI:
+**Reaching the API** (needs the schema, so `migrate` first). Three ways to
+get a base URL; the curl sequence below is the same for all of them.
 
 ```bash
-# Scrape boards only
-python -m job_scraper.main_scraper
+# 1. compose: Postgres and the LLM gateway start with it, Ollama does not
+export JWT_SECRET=$(openssl rand -hex 32)      # >= 32 chars or the API refuses to start
+docker compose up -d api
+API=http://localhost:8080
 
-# Analyze jobs with Claude
-python -m ai.main_analysis
+# 2. minikube, port-forward (manifests from the Kubernetes section)
+kubectl port-forward svc/joblister-api 8080:8080 &
+API=http://localhost:8080
 
-# Generate CVs
-python -m cv_generator.docx_gen
+# 3. minikube, NodePort. On macOS with the docker driver the node IP is not
+# routable from the host, so this is a tunnel you leave running:
+kubectl apply -f k8s/dev/api-nodeport.yaml
+API=$(minikube service joblister-api-nodeport --url)     # Linux/VM driver: http://$(minikube ip):30080
+```
+
+```bash
+H='content-type: application/json'
+curl $API/healthz                                         # docs at $API/docs
+
+# signup returns a token; login does too
+TOKEN=$(curl -s $API/v1/auth/signup -H "$H" \
+  -d '{"email":"me@example.com","password":"correct horse"}' | jq -r .access_token)
+TOKEN=$(curl -s $API/v1/auth/login -H "$H" \
+  -d '{"email":"me@example.com","password":"correct horse"}' | jq -r .access_token)
+A="Authorization: Bearer $TOKEN"
+
+curl -s -X POST $API/v1/me/keywords  -H "$H" -H "$A" -d '{"term":"python"}'
+curl -s -X POST $API/v1/me/blacklist -H "$H" -H "$A" -d '{"term":"senior"}'
+curl -s -X POST $API/v1/me/cvs       -H "$H" -H "$A" -d '{"content_md":"Backend engineer, Python, Postgres"}'
+
+curl -s "$API/v1/me/analyses/due?window_days=1" -H "$A"   # how many would be graded
+curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
+  -d '{"limit":5,"window_days":1,"model":"haiku"}'        # repeat while "remaining" > 0
+curl -s "$API/v1/me/analyses?limit=20&min_grade=60" -H "$A"
+```
+
+`model` must be in the API's `ANALYSIS_MODELS` (default `haiku,sonnet`); add
+e.g. `ollama-qwen2.5:0.5b` to grade locally. Every route except `/v1/auth/*`
+and `/healthz` acts on the token's user (`/v1/me/...`); there is no user id in
+any path.
+
+**Gateway access control.** The LLM gateway holds the Anthropic key and is
+callable by the API and by nothing else. Under compose it sits on a private
+`llm` network (shared only with `api` and `ollama`) and publishes no host
+port; poke it through `docker compose exec api python -c "..."`. In the
+cluster, `k8s/networkpolicy-llm-gateway.yaml` allows ingress only from pods
+labelled `app: joblister-api`; it takes effect only on a CNI that enforces
+NetworkPolicy, so run the probe in that file's header on any new cluster
+(verified on minikube's kindnet: an unlabelled pod times out once the policy
+has propagated, a few seconds after `kubectl apply`).
+This restricts *who* can call; how much each user may spend is capped by the
+daily quota (`DAILY_ANALYSIS_CAP`).
+
+**End-to-end check** (`scripts/e2e_api.py`, stdlib only): signs up users,
+seeds tagged postings, and checks that `/v1/me/analyze` grades the same set the
+CLI does for identical inputs, that other keywords give another set, and that
+re-runs and paging behave. It uses a per-run random keyword token, so no real
+posting is graded, and removes everything it created.
+
+```bash
+# compose (Ollama as the grader; the model must be in ANALYSIS_MODELS)
+export JWT_SECRET=$(openssl rand -hex 32) ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+docker compose --profile jobs run --rm migrate
+docker compose up -d ollama api
+docker compose exec ollama ollama pull qwen2.5:0.5b      # once
+python scripts/e2e_api.py
+
+# minikube, grading through the compose Ollama (dev overrides, undo with `env VAR-`)
+kubectl set env deploy/llm-gateway OLLAMA_BASE_URL=http://host.minikube.internal:11434
+kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+E2E_TARGET=k8s python scripts/e2e_api.py
+```
+
+With a real `ANTHROPIC_API_KEY` set `E2E_MODEL=haiku` and skip the overrides.
+The CLI takes the same knobs: `python -m ai.main_analysis <user_id> --model
+… --limit … --window "-7 days"`.
+
+**Kubernetes** (manifests in `k8s/`, schedules in Europe/Paris: scrape 00:00,
+render-boards 00:45, ingest 01:00, render-postings 05:00):
+
+```bash
+kubectl apply -f k8s/pvc.yaml
+kubectl create secret generic joblister-secrets \
+  --from-literal=DATABASE_URL='postgresql+psycopg://...'   # see k8s/secret.example.yaml
+kubectl apply -f k8s/job-migrate.yaml
+kubectl apply -f k8s/cron-scrape_boards.yaml -f k8s/cron-ingest_jobs.yaml \
+              -f k8s/cron-render_boards.yaml -f k8s/cron-render_postings.yaml
+
+# The API and its gateway (after migrate-jobs); secrets are separate, see
+# k8s/secret.example.yaml
+docker build -f api/Dockerfile -t joblister-api .
+docker build -f llm_gateway/Dockerfile -t joblister-llm-gateway .
+minikube image load joblister-api:latest joblister-llm-gateway:latest
+kubectl create secret generic joblister-api-secrets \
+  --from-literal=JWT_SECRET="$(openssl rand -hex 32)"
+kubectl create secret generic joblister-gateway-secrets \
+  --from-literal=ANTHROPIC_API_KEY='...'
+kubectl apply -f k8s/llm-gateway.yaml -f k8s/api.yaml \
+              -f k8s/networkpolicy-llm-gateway.yaml
+# reach it: see "Reaching the API" above (no Ingress yet)
+
+# Optional: self-hosted models (CPU), reachable from the gateway only
+kubectl apply -f k8s/ollama.yaml
+kubectl exec deploy/ollama -- ollama pull qwen2.5:0.5b
+kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+
+# Run a stage now instead of waiting for its schedule
+kubectl create job --from=cronjob/scrape-boards test-scrape
+kubectl logs -f jobs/test-scrape
+```
+
+Set `suspend: true` on a CronJob to switch that stage off.
+
+Environment variables are listed under [Configuration](#environment-variables).
+
+### Measurements (for tuning the schedule)
+
+Taken 2026-10-12 from a laptop against the live boards (plain HTTP for the
+scrape and fetch numbers, Chromium headless shell for the browser ones). The
+first cluster run on minikube (2026-10-14) agrees: 738 boards, 88,601
+postings, 5 boards failed, 11.7 min.
+
+| What | Result |
+|---|---|
+| Full board scrape | 634 boards, **13.1 min**, 81,190 postings, 10 boards raised |
+| Churn | about **3,000 new postings a night** (3.7%), about 3,100 gone |
+| Detail fetch rate | **21.5 postings/s** (1,291/min), 1.5% fail or come back empty |
+| First ingest (about 75,000 backlog) | about 1 h, 1.5 h with the slow-host tail |
+| Steady-state ingest | about 2.5 min |
+
+Per-host politeness caps a single host at about 5 req/s, so one big board
+(e.g. `careers.ey.com`) sets a floor on the tail of a run.
+
+Why 171 boards gave nothing in the scrape:
+
+| Count | Reason | Needs |
+|---|---|---|
+| 85 | Links present, none look like jobs | A better link strategy, not a browser |
+| 34 | Likely JS-rendered | RenderBoards |
+| 19 | No links on page (empty shell or bot challenge) | RenderBoards, maybe |
+| 17 | HTTP 403 | Blocked; rendering rarely helps |
+| 9 | `TypeError` | Fixed since |
+| 7 | HTTP 500/404, connect error, timeout, bad URL | Retry or drop |
+
+So RenderBoards' real input is about 53 boards, not 171.
+
+Browser cost (pool of one browser, N pages at once):
+
+| Pages at once | Pages/s | 99 pages | Peak memory |
+|---|---|---|---|
+| 2 | 0.33 | 298 s | 1,175 MB |
+| 4 (default) | 0.65 | 152 s | 1,321 MB |
+| 6 | 0.91 | 109 s | 1,670 MB |
+
+- Throughput scales about linearly, roughly 0.15 pages/s per page slot. A
+  pool at 4 is about 3.4x the launch-per-call path and uses less memory.
+- Most of the 6 s per page is the fixed settle sleeps (5.25 s); the load
+  itself is under a second, so a smarter wait is the biggest speed win left.
+- Only 13 of 53 candidate boards produced jobs (about 150 postings, 0.18% of
+  the total), and 3 stopped at exactly 25 jobs: the render reads the first
+  page only, with no pagination yet.
+- 40% of rendered boards' postings fail plain HTTP, so they need
+  RenderPostings as well.
+- Expected render load: RenderBoards about 80 s; RenderPostings about 30 min
+  the first night (about 1,100 failures plus rendered-board postings), about
+  1 min afterwards.
+
+Settings chosen from this: ingest `--max-minutes 225` in a 240 min slot,
+render pool of 4, render pods requesting 2 Gi with a 3 Gi limit,
+RenderBoards deadline 15 min and RenderPostings 120 min. Caveats: one laptop,
+99 URLs for the browser runs, no per-host politeness in the browser
+prototype.
+
+### Individual scripts
+
+```bash
+python -m job_scraper.scrape_boards [--limit N] [--render-missed]
+python -m job_scraper.scrape_postings --ingest [--max-minutes N]
+python -m job_scraper.scrape_postings --render-failed [--max-minutes N]
+python -m ai.main_analysis <user_id> [--model haiku] [--limit 20] [--window "-24 hours"]
+python scripts/e2e_api.py                  # HTTP end-to-end check
+python scripts/import_legacy_sqlite.py     # one-off, see below
+scripts/check_clean.sh                     # fails on legacy leftovers
 ```
 
 ---
 
 ## Architecture
 
-### Directory Structure
-
 ```
 jobbed/
-├── job_scraper/          # Board scraping & job fetching
-│   ├── strategies/       # Detection strategies (JSON-LD, links, API, etc.)
-│   ├── detector.py       # ATS detection
-│   ├── main_scraper.py   # Board scraping orchestration
-│   ├── post_scraper.py   # Individual job fetching
-│   └── paths.py          # Filesystem paths
-├── ai/                   # AI integration (Claude)
-│   ├── call_model.py     # CLI wrapper for Claude
-│   ├── analysis.py       # Job grading
-│   ├── cv_generation.py  # CV tailoring
-│   ├── grade-job.md      # Claude grading prompt
-│   └── generate-cv.md    # Claude CV generation prompt
-├── db/                   # Database management
-│   └── db_connection.py  # SQLite schema & queries
-├── cv_generator/         # CV rendering to DOCX
-│   └── docx_gen.py       # DOCX generation
-├── visualization/        # Streamlit dashboard
-│   ├── Home.py           # Main dashboard
-│   ├── pages/            # Dashboard pages (5 total)
-│   └── common.py         # Shared utilities
-├── tests/                # Test suite
-├── user_info/            # Configuration (gitignored)
-│   ├── my_cv.md          # Your CV
-│   ├── job_boards.csv    # Boards to scrape
-│   ├── keywords.txt      # Include keywords
-│   ├── blacklist.txt     # Exclude keywords
-│   └── CV_placeholder.docx # CV template
-├── db/                   # Database (gitignored)
-│   └── joblister.db      # SQLite database
-└── temp/                 # Temp CSVs (gitignored)
+├── job_scraper/      # boards, ATS detection, strategies, posting fetch, render pool
+│   ├── strategies/, api_sources/
+│   ├── scrape_boards.py, scrape_postings.py, pipeline.py, paths.py
+├── api/              # FastAPI: auth, /v1/me/*, JWT (routers/, schemas.py, security.py)
+├── llm_gateway/      # FastAPI gateway: Claude and Ollama adapters, metrics
+├── ai/               # gateway client, grading, CV generation, prompts (*.md)
+├── db/               # Postgres access, SQLAlchemy Core
+│   ├── tables.py     # schema (migrated by alembic/)
+│   └── users.py, boards.py, jobs.py, analysis.py, generated_cv.py, usage.py
+├── alembic/          # migrations
+├── cv_generator/     # DOCX / PDF rendering of a generated CV
+├── k8s/              # manifests (+ k8s/dev for minikube)
+├── scripts/          # e2e_api.py, import_legacy_sqlite.py, check_clean.sh
+├── docs/             # design notes (cv-generation.md)
+├── tests/
+├── user_info/        # boards CSV, credentials, templates (personal files gitignored)
+└── docker-compose.yml
 ```
 
-### Database Schema
+### Database schema (Postgres)
 
-#### job_data
-Scraped job postings
-```sql
-- id (INTEGER PRIMARY KEY)
-- company (TEXT)
-- title (TEXT)
-- description (TEXT)
-- url (TEXT UNIQUE)
-- place (TEXT)
-- timestamp (DATETIME)
+| Table | Holds |
+|---|---|
+| `users` | `email` (unique, case-insensitive), bcrypt `hashed_password` |
+| `user_keywords`, `user_blacklist` | per-user filter terms, unique per `(user_id, term)` |
+| `user_cvs` | per-user CV Markdown; at most one `is_active` |
+| `job_boards` | `company`, `url`, `active`; unique on `md5(url)` |
+| `job_postings` | shared postings: company, title, description, url (unique on `md5(url)`), place, via, ats, `scraped_at` |
+| `ai_analysis` | one grade per `(user_id, job_id)`: `adequation_grade`, `depth_analysis`, `ai_model` |
+| `generated_cv` | tailored CV as JSONB, `locale`, linked to the user, posting and analysis |
+| `llm_usage` | daily counters per `(user_id, day, kind)` for the quota |
+
+Schema changes go through Alembic: `alembic upgrade head`
+(`docker compose --profile jobs run --rm migrate`, or `k8s/job-migrate.yaml`).
+
+## Importing the old SQLite history
+
+Before the API existed the project was single-user with a local SQLite file
+(`db/joblister.db`). To bring that history into Postgres under one account:
+
+```bash
+python scripts/import_legacy_sqlite.py --sqlite db/joblister.db \
+    --email you@example.com --user-info user_info/
 ```
 
-#### ai_analysis
-Claude's job grades and analyses
-```sql
-- id (INTEGER PRIMARY KEY)
-- adequation_grade (INT 0-100)
-- depth_analysis (TEXT)
-- ai_model (TEXT) - "haiku"
-- job_id (FOREIGN KEY)
-```
+It asks for a password only if the account must be created, opens the SQLite
+file read-only, seeds your keywords, blacklist and active CV from the old
+`user_info` text files, and copies postings (reusing any the nightly ingest
+already stored), grades (latest per posting) and generated CVs. It prints
+old/new/skipped counts and is safe to re-run.
 
-#### generated_cv
-Generated CVs for analyzed jobs
-```sql
-- id (INTEGER PRIMARY KEY)
-- locale (TEXT) - "en", "es", "fr", "pt"
-- cv (JSON) - Full CV structure
-- job_id (FOREIGN KEY)
-- ai_analysis_id (FOREIGN KEY)
-```
+### Cutover runbook
 
----
-
-## Environment Variables
-
-The application uses the following environment variable (set automatically):
-
-- `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` - Prevents Claude CLI from storing conversation memory during analyses (privacy)
-
-If you're using a custom Claude installation, ensure the `claude` command is in your PATH.
-
----
+1. Back up outside the repo: copy `db/joblister.db` to e.g. `~/jobbed-archive/`
+   (compare `sha256sum`), and `pg_dump` the target database.
+2. Rebuild the images, then migrate: `docker compose --profile jobs build migrate`
+   and `docker compose --profile jobs run --rm migrate` (on Kubernetes, build,
+   `minikube image load`, then apply `k8s/job-migrate.yaml`). A stale image
+   silently skips newer migrations. Let the nightly jobs run at least once.
+3. Run the import, compare its counts with the SQLite file, and spot-check a few
+   postings and CVs through the API.
+4. Smoke test as that user: `GET /v1/me/analyses`, `POST /v1/me/analyze` with `limit=1`.
+5. Keep `db/joblister.db` and your `user_info/` files where they are: both are
+   gitignored, and an older tag that still reads them keeps working.
 
 ## Troubleshooting
 
-### "Claude CLI not found"
-```bash
-# Install Claude CLI
-pip install claude-cli
-# Or configure if already installed
-which claude
-```
+| Symptom | Cause / fix |
+|---|---|
+| API exits at start | `JWT_SECRET` missing or under 32 characters. |
+| `relation ... does not exist` | Migrations not applied. Rebuild the `migrate` image first (`docker compose --profile jobs build migrate`), then run it; an old image has no newer migrations. |
+| `401` | Token expired or missing; log in again. |
+| `409 no active CV` | Add a CV (`POST /v1/me/cvs`) or activate one. |
+| `409 analysis already running` | One analysis per user at a time; wait for it to finish. |
+| `429` on analyze | Daily cap reached; retry after the `Retry-After` seconds, or raise `DAILY_ANALYSIS_CAP`. |
+| `502` on analyze | Every grading call failed: no `ANTHROPIC_API_KEY` on the gateway, Ollama not running, or the model is not available. Check `docker compose logs llm_gateway`. |
+| Analyze returns `due: 0` | No recent postings match your keywords. Widen `window_days`, check the nightly jobs ran, or `GET /v1/me/analyses/due`. |
+| A board gives nothing | Check `no_jobs.csv` in the data directory; JS-heavy boards need RenderBoards, some are blocked (403). |
 
-### "temp/jobs.csv is empty"
-- Run `2_Scrape_boards` first to populate the jobs list
-- Check that `user_info/job_boards.csv` has valid board URLs
+## Performance notes
 
-### "database unavailable"
-- Ensure you have write permissions to the `db/` directory
-- Delete `db/joblister.db` to reset the database
-- Check that `user_info/my_cv.md` exists and is readable
-
-### AI analysis failing
-- Verify Claude CLI is installed: `claude --version`
-- Check that you have API access: `claude -p "test"`
-- Ensure `user_info/my_cv.md` is valid Markdown
-- Check `ai/grade-job.md` and `ai/generate-cv.md` exist
-
-### CV generation not working
-- Ensure you've graded jobs first (run AI analysis)
-- Check that `user_info/CV_placeholder.docx` exists
-- Verify your CV has the required sections (skills, experience, education)
-
-### Boards return no results
-- Check the board URL is still active and publicly accessible
-- Some boards may require authentication
-- Try enabling "Render JS listings" if the board is JavaScript-heavy
-- Review `temp/no_jobs.csv` for error details
-
----
-
-## Performance Notes
-
-- **First run:** Can take 10-30 minutes depending on number of boards (network I/O bound)
-- **AI analysis:** ~10 seconds per job (Claude API call overhead)
-- **CV generation:** ~20 seconds per job (larger model, more computation)
-- **Database queries:** Fast on databases <10K jobs; consider archiving old data if larger
-
----
+- Full board scrape about 13 minutes; steady-state ingest about 2.5 minutes (see
+  Measurements).
+- A grade is about 10 s per posting with Claude; four run concurrently.
+- A CV rewrite with Sonnet is about 20 s (not exposed over HTTP yet).
 
 ## Contributing
 
-To contribute improvements:
-
-1. Create a feature branch
-2. Run tests: `pytest tests/`
-3. Ensure lint passes: `flake8 .`
-4. Submit a pull request
-
----
-
-## License
-
-[Add your license here]
-
----
-
-## Feedback & Support
-
-For issues, feature requests, or questions:
-- GitHub Issues: [Link to repo]
-- Email: [Your email]
+Branch, run `pytest tests/` and `scripts/check_clean.sh`, open a pull request.

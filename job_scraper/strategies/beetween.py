@@ -3,7 +3,7 @@
 The site is a Vue single-page app: the served HTML is an empty shell, so no
 HTML strategy sees a posting. Its own frontend POSTs `/api/job/list` (10 per
 page, `{"page": n}`) and the answer already carries each posting's body, so --
-as with WTTJ -- post_scraper uses that description instead of fetching a page
+as with WTTJ -- scrape_postings uses that description instead of fetching a page
 that is a shell too.
 """
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 #: A tenant with more than this many pages is not a real board.
 MAX_PAGES = 50
 
-#: Matches post_scraper.MAX_DESCRIPTION; kept local like welcometothejungle.py.
+#: Matches scrape_postings.MAX_DESCRIPTION; kept local like welcometothejungle.py.
 _MAX_DESCRIPTION = 20_000
 
 _DESCRIPTION_FIELDS = (
@@ -41,7 +41,7 @@ def _description(job: dict) -> str:
     return "\n\n".join(part for part in parts if part)[:_MAX_DESCRIPTION]
 
 
-def scrape_beetween(board: "Board") -> List[Job]:
+async def scrape_beetween(board: "Board") -> List[Job]:
     """Scrape a Beetween board through its job-list API.
 
     Args:
@@ -55,7 +55,7 @@ def scrape_beetween(board: "Board") -> List[Job]:
     jobs: List[Job] = []
 
     for page in range(1, MAX_PAGES + 1):
-        data = fetch_json(
+        data = await fetch_json(
             board.session, api, method="post", json={"page": page},
             max_bytes=FEED_MAX_BYTES,
         )

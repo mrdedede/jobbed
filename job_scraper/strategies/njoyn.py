@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 _NJOYN_JOB = re.compile(r"Page=JobDetails", re.I)
 
 
-def scrape_njoyn(board: "Board") -> List[Job]:
+async def scrape_njoyn(board: "Board") -> List[Job]:
     """Scrape an njoyn board out of its listing table.
 
     njoyn publishes no feed, but the board page already carries every posting
@@ -34,7 +34,7 @@ def scrape_njoyn(board: "Board") -> List[Job]:
     Returns:
         List of jobs, or empty list if no listing table is present.
     """
-    html = board.html
+    html = await board.get_html()
 
     if not html:
         return []

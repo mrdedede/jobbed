@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
+import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -237,9 +237,8 @@ def main() -> int:
         args.limit,
     )
 
-    session = requests.Session()
-    session.max_redirects = 5
-    session.headers.update(HEADERS)
+    session = httpx.Client(follow_redirects=True, max_redirects=5,
+                           headers=HEADERS)
 
     labels = []
 
@@ -263,7 +262,7 @@ def main() -> int:
             continue
 
         try:
-            response = session.get(url, timeout=20, stream=True)
+            response = session.get(url, timeout=20)
             response.raise_for_status()
 
             content_type = response.headers.get("Content-Type", "").lower()
@@ -272,28 +271,26 @@ def main() -> int:
                 print(f"[{index}/{len(rows)}] skip    {url} ({content_type})")
                 continue
 
-            raw = response.raw.read(5_000_000, decode_content=True)
-
-            html = raw.decode(
-                response.encoding or response.apparent_encoding or "utf-8",
-                errors="replace",
+            html = response.content[:5_000_000].decode(
+                response.encoding or "utf-8", errors="replace"
             )
-        except (requests.RequestException, ValueError) as exc:
+        except (httpx.HTTPError, ValueError) as exc:
             print(f"[{index}/{len(rows)}] FAIL    {url}: {exc}")
             continue
 
         target.write_text(html, encoding="utf-8")
+        final_url = str(response.url)
 
         labels.append({
             **row,
             "fixture": name,
             # The URL the page actually resolved to; redirects are part of
             # what the detector reasons about.
-            "url": response.url,
-            "expected": ground_truth(response.url, html, row["expected"]),
+            "url": final_url,
+            "expected": ground_truth(final_url, html, row["expected"]),
         })
 
-        print(f"[{index}/{len(rows)}] saved   {response.url} -> {name}")
+        print(f"[{index}/{len(rows)}] saved   {final_url} -> {name}")
         time.sleep(args.delay)
 
     with (FIXTURES / "labels.csv").open(

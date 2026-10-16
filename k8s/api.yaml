@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joblister-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: joblister-api}
+  template:
+    metadata:
+      labels: {app: joblister-api}
+    spec:
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: joblister-api
+        image: joblister-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: {name: joblister-secrets, key: DATABASE_URL}
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef: {name: joblister-api-secrets, key: JWT_SECRET}
+        - {name: GATEWAY_URL, value: "http://llm-gateway:8000"}
+        - {name: DAILY_ANALYSIS_CAP, value: "10"}
+        readinessProbe:
+          httpGet: {path: /healthz, port: 8080}
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: {path: /healthz, port: 8080}
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {memory: 1Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joblister-api
+spec:
+  selector: {app: joblister-api}
+  ports:
+  - port: 8080

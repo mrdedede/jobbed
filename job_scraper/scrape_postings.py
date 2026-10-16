@@ -1,0 +1,809 @@
+"""Read each filtered posting's own page for title, description and place.
+
+The board stage answers "what postings exist?"; this one answers "what does
+this page say?". The URL is already known, so there is no enumeration -- just a
+per-page ladder, cheapest first:
+
+    workday -> JSON-LD JobPosting -> <main> -> de-chromed <body>
+
+Measured against one live posting per ATS and per company in the corpus:
+JSON-LD covers ~68% of rows, <main> covers most of the rest (successfactors,
+radancy, avature, hibob), and Workday needs its own API call because the page
+is a JS shell. The <body> rung exists for the plain WordPress/AEM career sites
+(inetum, alteca, sibylone, danone, benin digital) that have neither -- they
+share no class or id worth matching, so the whole de-chromed page is the
+honest answer. Class/id heuristics ("job-description", "posting", ...) matched
+nothing on any of these boards and are deliberately absent.
+
+Usage:
+    python job_scraper/scrape_postings.py [--limit N] [--workers N] [--no-resume]
+    python -m job_scraper.scrape_postings [--limit N] [--workers N] [--no-resume]
+    python -m job_scraper.scrape_postings --ingest [--max-minutes N]
+    python -m job_scraper.scrape_postings --render-failed [--max-minutes N]
+
+`--ingest` is the nightly run (see `ingest`): new postings only, stored in the
+database, failures listed in failed_postings.csv. `--render-failed` then
+retries the parse-miss ones in a browser.
+
+Both work, and the file is named scrape_postings rather than job_scraper for the
+first one's sake: running a file puts its own directory on sys.path, so a
+module sharing its package's name shadows that package and the absolute
+imports below resolve back to this very file. By-path running also needs the
+project installed -- `pip install -e .` -- since the repo root is not on
+sys.path either way.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import csv
+import random
+import re
+import sys
+import time
+from datetime import date
+from collections import deque
+from dataclasses import asdict
+from html import unescape
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
+
+import httpx
+from bs4 import BeautifulSoup
+
+from job_scraper import paths
+from job_scraper.api_sources import API_SOURCES
+from job_scraper.fetching import (
+    dig,
+    fetch_result,
+    fetch_json,
+    first_string,
+    jobposting_place,
+    jsonld_nodes,
+    new_client,
+    walk_jobpostings,
+    workday_endpoint,
+)
+from job_scraper.detector import Renderer
+from job_scraper.models import Job
+
+FIELDNAMES = ["company", "title", "description", "url", "place", "via", "ats",
+              "error"]
+
+# Phenom's JSON-LD description came back 296k characters -- that is the whole
+# page's furniture, not a posting. Everything genuine measured under 16k.
+MAX_DESCRIPTION = 20_000
+
+#: Postings in flight at once. They span many hosts, so the cap that protects
+#: any one host is fetching.PER_HOST, not this.
+DEFAULT_WORKERS = 50
+
+#: Page furniture, dropped before any text-level extraction. Removing it is
+#: what makes the <body> rung usable at all, and it also trims the "Rechercher
+#: les offres | Postuler" banner off the <main> boards.
+CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
+               "aside", "form", "svg")
+
+_BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def _clean(fragment: object) -> str:
+    """Turn a description field into plain text.
+
+    JSON-LD and Workday both hand back HTML in a JSON string, sometimes
+    double-escaped, so this unescapes before parsing rather than after.
+
+    Args:
+        fragment: Raw description value from a feed or JSON-LD node.
+
+    Returns:
+        Plain text, capped at MAX_DESCRIPTION.
+    """
+    if not isinstance(fragment, str) or not fragment.strip():
+        return ""
+
+    text = BeautifulSoup(unescape(fragment), "html.parser").get_text(
+        "\n", strip=True
+    )
+
+    return _BLANK_LINES.sub("\n\n", text)[:MAX_DESCRIPTION]
+
+
+def _workday_api(url: str) -> Optional[str]:
+    """The /wday/cxs/ endpoint serving one Workday posting.
+
+    Args:
+        url: Public posting URL.
+
+    Returns:
+        API URL, or None if the path carries no site segment.
+    """
+    located = workday_endpoint(url)
+
+    if located is None:
+        return None
+
+    root, tenant, segments = located
+
+    # The whole path, not just the site: everything after it identifies the
+    # individual posting.
+    return f"{root}/wday/cxs/{tenant}/" + "/".join(segments)
+
+
+async def _from_workday(url: str,
+                        client: httpx.AsyncClient) -> Optional[dict]:
+    """Read a Workday posting from its JSON endpoint.
+
+    The rendered page is a 158-character shell, so this runs instead of the
+    page fetch rather than after it.
+
+    Args:
+        url: Public posting URL.
+        client: The run's shared AsyncClient.
+
+    Returns:
+        Field dict, or None if the endpoint gave nothing usable.
+    """
+    endpoint = _workday_api(url)
+
+    if not endpoint:
+        return None
+
+    info = dig(await fetch_json(client, endpoint), "jobPostingInfo")
+
+    if not isinstance(info, dict):
+        return None
+
+    description = _clean(info.get("jobDescription"))
+
+    if not description:
+        return None
+
+    return {
+        "title": first_string(info.get("title")),
+        "description": description,
+        "place": first_string(info.get("location")),
+        "via": "workday",
+    }
+
+
+def _from_jsonld(soup: BeautifulSoup) -> Optional[dict]:
+    """Read the page's JSON-LD JobPosting.
+
+    Args:
+        soup: Parsed posting page.
+
+    Returns:
+        Field dict, or None if the page has no JobPosting with a description.
+    """
+    for node in walk_jobpostings(jsonld_nodes(soup)):
+        description = _clean(node.get("description"))
+
+        if not description:
+            continue
+
+        return {
+            "title": first_string(node.get("title")),
+            "description": description,
+            "company": first_string(dig(node, "hiringOrganization.name")),
+            "place": jobposting_place(node),
+            "via": "jsonld",
+        }
+
+    return None
+
+
+def _text(node) -> str:
+    """One element's text, blank runs collapsed and capped."""
+    return _BLANK_LINES.sub(
+        "\n\n", node.get_text("\n", strip=True)
+    )[:MAX_DESCRIPTION]
+
+
+def _page_title(soup: BeautifulSoup) -> Optional[str]:
+    """The posting's title from og:title, else the first <h1>."""
+    meta = soup.find("meta", attrs={"property": "og:title"})
+
+    if meta and meta.get("content"):
+        return meta["content"]
+
+    heading = soup.find("h1")
+
+    return heading.get_text(" ", strip=True) if heading else None
+
+
+def _from_main(soup: BeautifulSoup, title: Optional[str]) -> Optional[dict]:
+    """Read the posting out of the page's <main> landmark.
+
+    The fallback for boards publishing no JSON-LD. Measured clean on
+    successfactors, radancy, avature and hibob; no company or place, so those
+    stay with whatever the board stage recorded.
+
+    Args:
+        soup: Parsed posting page, already de-chromed.
+        title: Title read before de-chroming.
+
+    Returns:
+        Field dict, or None if the page has no <main> with text.
+    """
+    main = soup.find("main") or soup.find(attrs={"role": "main"})
+
+    if main is None or not _text(main):
+        return None
+
+    return {"title": title, "description": _text(main), "via": "main"}
+
+
+def _from_body(soup: BeautifulSoup, title: Optional[str]) -> Optional[dict]:
+    """Last resort: the whole de-chromed page.
+
+    For the plain WordPress/AEM career sites with no JSON-LD and no <main>.
+    They share no container class or id, so narrowing further would mean one
+    selector per employer; the nav and cookie banner are already gone, and
+    via="body" keeps these rows distinguishable downstream.
+
+    Args:
+        soup: Parsed posting page, already de-chromed.
+        title: Title read before de-chroming.
+
+    Returns:
+        Field dict, or None if the page has no text at all.
+    """
+    body = soup.body or soup
+
+    if not _text(body):
+        return None
+
+    return {"title": title, "description": _text(body), "via": "body"}
+
+
+def _from_html(html: str) -> Optional[dict]:
+    """The page ladder: JSON-LD, then <main>, then the de-chromed <body>.
+
+    Synchronous and CPU-bound -- fetch_job runs it off the event loop.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    found = _from_jsonld(soup)
+
+    if found:
+        return found
+
+    # After the JSON-LD rung, never before: de-chroming drops the
+    # <script> tags the ld+json blocks live in.
+    title = _page_title(soup)
+
+    for tag in soup.find_all(CHROME_TAGS):
+        tag.decompose()
+
+    return _from_main(soup, title) or _from_body(soup, title)
+
+
+async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
+                    render: Optional[Renderer] = None) -> Job:
+    """Read one posting's page, falling back to the row when a field is absent.
+
+    Args:
+        row: A first_filtered_file.csv row -- company, title, url, place, ats.
+        client: The run's shared AsyncClient.
+        render: Optional async browser renderer. When given, the page is
+            loaded through it instead of a plain GET (RenderPostings).
+
+    Returns:
+        A Job. Never raises: a dead page yields via="none" with an empty
+        description, so one bad posting cannot stop a 8000-row run.
+    """
+    url = row["url"]
+    found = None
+    error = None
+
+    if (row.get("ats") or "") == "workday":
+        found = await _from_workday(url, client)
+        error = None if found else "workday-miss"
+    elif (row.get("ats") or "") in ("wttj", "beetween"):
+        # WTTJ posting pages sit behind a WAF wall and Beetween's are an empty
+        # SPA shell; either way the board stage already pulled the full
+        # posting from the vendor's API, so there is nothing left to fetch.
+        found = {
+            "title": row.get("title", ""),
+            "description": row.get("description", ""),
+            "via": row["ats"],
+        }
+    elif (row.get("ats") or "") in API_SOURCES:
+        # An API source's search response already carries the full posting,
+        # same reasoning as WTTJ above -- there is no page left to fetch.
+        found = {
+            "title": row.get("title", ""),
+            "description": row.get("description", ""),
+            "via": row.get("ats", ""),
+        }
+    else:
+        if render is not None:
+            html = await render(url)
+            error = None if html else "render-failed"
+        else:
+            html, error = await fetch_result(client, url)
+
+        # "truncated" arrives with text, so it only counts if parsing fails.
+        if html:
+            found = await asyncio.to_thread(_from_html, html)
+            error = None if found else "parse-miss"
+
+    found = found or {}
+
+    def pick(key: str) -> str:
+        # Page wins: a board-stage title is often a URL slug or a card label.
+        # Unescaped twice because these fields arrive double-escaped often
+        # enough to matter -- Quanteam's title reached "&#8211;" after one
+        # pass. Descriptions already get two passes for free, since _clean
+        # unescapes and then parses the result as HTML.
+        return unescape(
+            unescape(found.get(key) or row.get(key) or "")
+        ).strip()
+
+    return Job(
+        company=pick("company"),
+        title=pick("title"),
+        description=found.get("description", ""),
+        url=url,
+        place=pick("place") or None,
+        via=found.get("via", "none"),
+        error=error,
+    )
+
+
+def start_order(rows: List[Dict[str, str]]) -> List[int]:
+    """Indices of `rows`, round-robin across hosts.
+
+    The input is sorted by company, so its first rows all hit one or two
+    hosts. Started in that order, they fill every worker slot while queued
+    behind a single host's limit and the rest of the hosts sit idle.
+
+    Args:
+        rows: Postings in output order.
+
+    Returns:
+        Row indices in the order to start them; each host's own rows keep
+        their relative order.
+    """
+    queues: Dict[Optional[str], deque] = {}
+
+    for index, row in enumerate(rows):
+        queues.setdefault(urlparse(row["url"]).hostname, deque()).append(index)
+
+    order: List[int] = []
+
+    while queues:
+        for host in list(queues):
+            order.append(queues[host].popleft())
+
+            if not queues[host]:
+                del queues[host]
+
+    return order
+
+
+def already_done(path: Path) -> set:
+    """URLs an earlier run already wrote.
+
+    Args:
+        path: Output CSV, which may not exist.
+
+    Returns:
+        Set of URLs to skip.
+    """
+    if not path.exists():
+        return set()
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        return {row["url"] for row in csv.DictReader(handle) if row.get("url")}
+
+
+async def scrape_details(input_file: Optional[Path] = None,
+                         output_file: Optional[Path] = None,
+                         limit: int = 0,
+                         workers: int = DEFAULT_WORKERS,
+                         resume: bool = True,
+                         on_progress: Optional[Callable[[str], None]] = None,
+                         rows: Optional[List[Dict[str, str]]] = None,
+                         deadline: Optional[float] = None) -> dict:
+    """Fetch each filtered posting's own page and write the detail CSV.
+
+    Args:
+        input_file: The scraped rows to fetch. Defaults to
+            paths.JOBS_CSV, resolved at call time so a caller that
+            repoints `paths` is actually followed. Ignored when `rows` is given.
+        output_file: Where to write postings with descriptions.
+        limit: Only fetch the first N postings; 0 means all of them.
+        workers: Postings fetched concurrently. Per-host request rate is
+            bounded by fetching.PER_HOST and REQUEST_DELAY, whatever this is.
+        resume: Skip URLs the output already holds and append to it. False
+            rewrites the file from scratch.
+        on_progress: Optional callback given progress lines.
+        rows: Postings to fetch, as the dicts the input CSV would have held.
+            Lets a caller that already filtered in memory skip writing first_filtered_file.csv just to read it back.
+        deadline: `time.monotonic()` value after which no more results are
+            waited for. Fetches still running are cancelled, rows already
+            fetched are still written, and the rest stay pending for the next
+            run (the output file is the resume point).
+
+    Returns:
+        Dict with `pending`, `skipped`, `unfinished` (cancelled at the
+        deadline) and per-extractor `counts`, plus the `output` path.
+    """
+    input_file = input_file or paths.JOBS_CSV
+    output_file = output_file or paths.DETAILED_CSV
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if rows is None:
+        with input_file.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+    if limit:
+        rows = rows[:limit]
+
+    done = already_done(output_file) if resume else set()
+    pending = [row for row in rows if row["url"] not in done]
+
+    if on_progress:
+        on_progress(f"{len(pending)} postings to fetch "
+                    f"({len(rows) - len(pending)} already done)")
+
+    counts: Dict[str, int] = {}
+    unfinished = 0
+    fresh = not resume or not output_file.exists()
+
+    with output_file.open(
+        "w" if fresh else "a", newline="", encoding="utf-8"
+    ) as output:
+        writer = csv.DictWriter(output, fieldnames=FIELDNAMES,
+                                extrasaction="ignore")
+
+        if fresh:
+            writer.writeheader()
+
+        async with new_client() as client:
+            gate = asyncio.Semaphore(workers)
+
+            async def bounded(row: Dict[str, str]) -> Job:
+                async with gate:
+                    return await fetch_job(row, client)
+
+            # Started spread across hosts, awaited in input order.
+            started = {
+                index: asyncio.create_task(bounded(pending[index]))
+                for index in start_order(pending)
+            }
+            tasks = [started[index] for index in range(len(pending))]
+
+            try:
+                # Awaited in input order, like pool.map was, so the writer
+                # stays in one task and needs no lock. Flushed per row: a
+                # crash at 8000 keeps the first 7999, and the next run
+                # resumes from exactly there.
+                for index, (row, task) in enumerate(
+                    zip(pending, tasks), start=1
+                ):
+                    try:
+                        # wait_for cancels the fetch on timeout; a task that
+                        # already finished is still returned at timeout <= 0.
+                        job = await asyncio.wait_for(
+                            task, None if deadline is None
+                            else deadline - time.monotonic())
+                    except asyncio.TimeoutError:
+                        unfinished += 1
+                        continue
+
+                    writer.writerow(
+                        {**asdict(job), "ats": row.get("ats", "")}
+                    )
+                    output.flush()
+
+                    counts[job.via] = counts.get(job.via, 0) + 1
+
+                    if on_progress and (index % 50 == 0
+                                        or index == len(pending)):
+                        on_progress(
+                            f"  {index}/{len(pending)}  "
+                            + "  ".join(f"{via}={n}"
+                                        for via, n in sorted(counts.items()))
+                        )
+            finally:
+                # An error or Ctrl-C must not leave fetches running against a
+                # client that is about to close.
+                for task in tasks:
+                    task.cancel()
+
+    return {
+        "pending": len(pending),
+        "skipped": len(rows) - len(pending),
+        "unfinished": unfinished,
+        "counts": counts,
+        "output": output_file,
+    }
+
+
+def store(rows: List[Dict[str, str]]) -> int:
+    """Insert fetched postings into job_postings; the one store path.
+
+    Used by ingest and RenderPostings. Idempotent on the URL, so either can
+    be re-run, and `db.jobs.insert_jobs` leaves out dead pages.
+
+    Args:
+        rows: Dicts with company, title, description, url, place, via, ats.
+
+    Returns:
+        How many rows were new.
+
+    Raises:
+        RuntimeError: If the database rejects the batch.
+    """
+    from db import jobs
+
+    inserted, _ = jobs.insert_jobs([
+        (row.get("company"), row.get("title"), row.get("description"),
+         row.get("url"), row.get("place"), row.get("via"),
+         row.get("ats") or None)
+        for row in rows
+    ])
+
+    return inserted
+
+
+async def ingest(limit: int = 0, workers: int = DEFAULT_WORKERS,
+                 max_minutes: float = 0,
+                 on_progress: Optional[Callable[[str], None]] = None) -> dict:
+    """The nightly detail stage: new postings only, within a time budget.
+
+    Reads jobs.csv, drops URLs already in job_postings and duplicates, fetches
+    the rest in a per-night shuffled order (so no board starves when the
+    budget runs out), stores what has a description, and records the rest in
+    failed_postings.csv. detailed_jobs.csv is deleted only after the store
+    succeeded, so its presence means "unfinished run, resume".
+
+    Args:
+        limit: Only fetch the first N new postings; 0 means all.
+        workers: Postings fetched concurrently.
+        max_minutes: Stop waiting for fetches after this long; 0 means no
+            budget. What was not fetched is simply pending tomorrow.
+        on_progress: Optional callback given progress lines.
+
+    Returns:
+        Stats: `new`, `known`, `fetched`, `unfinished`, `inserted`,
+        `not_stored`, and `failures` (reason -> count).
+
+    Raises:
+        RuntimeError: If the database rejects the insert. The detail file is
+            left in place for the next run.
+    """
+    from db import jobs
+
+    def say(message: str) -> None:
+        if on_progress:
+            on_progress(message)
+
+    with paths.JOBS_CSV.open(newline="", encoding="utf-8") as handle:
+        scraped = list(csv.DictReader(handle))
+
+    # What RenderBoards found with a browser, if it has run. Same columns as
+    # jobs.csv; URLs already stored or listed twice drop out below.
+    if paths.JOBS_RENDERED_CSV.exists():
+        with paths.JOBS_RENDERED_CSV.open(newline="", encoding="utf-8") as h:
+            scraped += list(csv.DictReader(h))
+
+    seen = jobs.select_job_urls()
+    known = len(seen)
+    fresh = []
+
+    for row in scraped:
+        url = row.get("url")
+
+        if url and url not in seen:
+            seen.add(url)
+            fresh.append(row)
+
+    # Seeded per night: a resumed run keeps its order, tomorrow gets another.
+    random.Random(date.today().isoformat()).shuffle(fresh)
+    say(f"{len(scraped)} scraped, {len(fresh)} new, {known} already stored")
+
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes else None
+    stats = await scrape_details(
+        output_file=paths.DETAILED_CSV, limit=limit, workers=workers,
+        on_progress=on_progress, rows=fresh, deadline=deadline)
+
+    with paths.DETAILED_CSV.open(newline="", encoding="utf-8") as handle:
+        fetched = list(csv.DictReader(handle))
+
+    failures: Dict[str, int] = {}
+    paths.FAILED_POSTINGS_CSV.parent.mkdir(parents=True, exist_ok=True)
+
+    with paths.FAILED_POSTINGS_CSV.open(
+            "w", newline="", encoding="utf-8") as handle:
+        out = csv.writer(handle)
+        out.writerow(["url", "company", "ats", "reason"])
+
+        for row in fetched:
+            if row.get("description") and row.get("via") != "none":
+                continue
+
+            reason = row.get("error") or "empty-description"
+            failures[reason] = failures.get(reason, 0) + 1
+            out.writerow([row["url"], row.get("company", ""),
+                          row.get("ats", ""), reason])
+
+    inserted = store(fetched)
+    paths.DETAILED_CSV.unlink()
+
+    return {
+        "new": len(fresh),
+        "known": known,
+        "fetched": len(fetched),
+        "unfinished": stats["unfinished"],
+        "inserted": inserted,
+        "not_stored": sum(failures.values()),
+        "failures": failures,
+    }
+
+
+async def render_postings(limit: int = 0, contexts: int = 4,
+                          max_minutes: float = 0,
+                          on_progress: Optional[Callable[[str], None]] = None,
+                          pool=None) -> dict:
+    """RenderPostings: retry, in a browser, what plain fetching could not read.
+
+    Reads failed_postings.csv, keeps the `parse-miss` rows (the page arrived
+    but held no posting, which is what a JS-built page looks like) and stores
+    whatever a render recovers. A row that is not recovered stays unstored and
+    is tried again by the next night's ingest.
+
+    Args:
+        limit: Only render the first N rows; 0 means all.
+        contexts: Pages rendered at once.
+        max_minutes: Stop starting renders after this long; 0 means no budget.
+        on_progress: Optional callback given progress lines.
+        pool: A RenderPool; one is created (and closed) when omitted.
+
+    Returns:
+        Stats: `candidates`, `rendered`, `recovered`, `stored`, `unstarted`.
+
+    Raises:
+        RuntimeError: If the database rejects the insert.
+    """
+    if not paths.FAILED_POSTINGS_CSV.exists():
+        return {"candidates": 0, "rendered": 0, "recovered": 0, "stored": 0,
+                "unstarted": 0}
+
+    with paths.FAILED_POSTINGS_CSV.open(newline="", encoding="utf-8") as h:
+        rows = [row for row in csv.DictReader(h)
+                if row.get("reason") == "parse-miss"]
+
+    if limit:
+        rows = rows[:limit]
+
+    if on_progress:
+        on_progress(f"{len(rows)} parse-miss postings to render")
+
+    own_pool = pool is None
+
+    if own_pool:
+        # Local import: Playwright is an opt-in extra.
+        from job_scraper.render import RenderPool
+        pool = RenderPool(contexts=contexts)
+
+    deadline = time.monotonic() + max_minutes * 60 if max_minutes else None
+    unstarted = 0
+
+    # ponytail: the deadline is checked before a render starts, not enforced
+    # on one in flight; a render is bounded by the navigation timeout.
+    async def one(row: Dict[str, str], client) -> Optional[Job]:
+        nonlocal unstarted
+
+        if deadline is not None and time.monotonic() > deadline:
+            unstarted += 1
+
+            return None
+
+        return await fetch_job(row, client, render=pool.render)
+
+    try:
+        async with new_client() as client:
+            jobs = await asyncio.gather(*(one(r, client) for r in rows))
+    finally:
+        if own_pool:
+            await pool.aclose()
+
+    rendered = [job for job in jobs if job is not None]
+    recovered = [job for job in rendered
+                 if job.description and job.via != "none"]
+    stored = store([{**asdict(job)} for job in recovered])
+
+    return {"candidates": len(rows), "rendered": len(rendered),
+            "recovered": len(recovered), "stored": stored,
+            "unstarted": unstarted}
+
+
+def main() -> int:
+    """Scrape every filtered posting's page into the detail CSV.
+
+    Returns:
+        0 on success (including a run cut short by --max-minutes); 1 if the
+        --ingest store failed.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--limit", type=int, default=0,
+                        help="only scrape the first N postings")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="postings fetched concurrently")
+    parser.add_argument("--input", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--no-resume", action="store_true",
+                        help="rewrite the output instead of skipping URLs it "
+                             "already holds")
+    parser.add_argument("--ingest", action="store_true",
+                        help="the nightly run: skip URLs already in "
+                             "job_postings, fetch the rest, store them and "
+                             "write failed_postings.csv")
+    parser.add_argument("--render-failed", action="store_true",
+                        help="RenderPostings: render the parse-miss rows of "
+                             "failed_postings.csv in a browser and store "
+                             "what is recovered")
+    parser.add_argument("--max-minutes", type=float, default=0,
+                        help="stop waiting for fetches after this long "
+                             "(0 = no budget); the rest is pending next run")
+    args = parser.parse_args()
+
+    if args.render_failed:
+        try:
+            stats = asyncio.run(render_postings(
+                limit=args.limit, max_minutes=args.max_minutes,
+                on_progress=print))
+        except RuntimeError as err:
+            print(f"FAILED: {err}", file=sys.stderr)
+
+            return 1
+
+        print(f"\n{stats['recovered']} of {stats['candidates']} recovered, "
+              f"{stats['stored']} stored, {stats['unstarted']} left for next "
+              f"run")
+
+        return 0
+
+    if args.ingest:
+        try:
+            stats = asyncio.run(ingest(
+                limit=args.limit, workers=args.workers,
+                max_minutes=args.max_minutes, on_progress=print))
+        except RuntimeError as err:
+            print(f"FAILED: {err}", file=sys.stderr)
+
+            return 1
+
+        reasons = "  ".join(f"{reason}={n}"
+                            for reason, n in sorted(stats["failures"].items()))
+        print(f"\n{stats['inserted']} stored, {stats['not_stored']} not "
+              f"stored ({reasons or 'none'}), {stats['unfinished']} left "
+              f"for next run -> {paths.FAILED_POSTINGS_CSV}")
+
+        return 0
+
+    deadline = (time.monotonic() + args.max_minutes * 60
+                if args.max_minutes else None)
+    stats = asyncio.run(scrape_details(
+        input_file=args.input,
+        output_file=args.output,
+        limit=args.limit,
+        workers=args.workers,
+        resume=not args.no_resume,
+        on_progress=print,
+        deadline=deadline,
+    ))
+
+    print(f"\n-> {stats['output']}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

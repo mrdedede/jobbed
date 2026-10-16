@@ -1,1 +1,1 @@
-"""SQLite persistence for scraped job postings."""
+"""PostgreSQL persistence for scraped job postings."""

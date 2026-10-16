@@ -1,52 +1,68 @@
+"""Grade one posting against one CV, through the LLM gateway."""
+
 import json
-from ai import call_model
+from typing import Optional, Tuple
+
+import httpx
+
+from ai import gateway
 from job_scraper import paths
-from typing import List, Tuple
 
 with open(paths.GRADE_JOB_MD, "r") as f:
     grade_job = f.read()
-    
-with open(paths.CV_MD, "r") as f:
-    my_cv = f.read()
 
-# Enforced by the CLI, not by the prompt: asking for "no code fences" in prose
-# got ignored often enough to break parsing.
-ANALYSIS_SCHEMA = json.dumps({
+# Enforced by the model API, not by the prompt: asking for "no code fences" in
+# prose got ignored often enough to break parsing. The 0-100 range is checked
+# in `analyze` -- structured-output schemas do not reliably honour min/max.
+ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
-        "adequation_grade": {"type": "integer", "minimum": 0, "maximum": 100},
+        "adequation_grade": {"type": "integer"},
         "depth_analysis": {"type": "string"},
     },
     "required": ["adequation_grade", "depth_analysis"],
-})
+    "additionalProperties": False,
+}
 
-ANALYSIS_PROMPT = f"""{grade_job}
---------
-# User CV
-{my_cv}
---------
-# JOB POST
 
-"""
+def build_prompt(cv_md: str, job_description: str) -> str:
+    return (f"{grade_job}\n--------\n# User CV\n{cv_md}\n--------\n"
+            f"# JOB POST\n\n{job_description}")
 
-def _send_claude_request(job_description: str):
-    final_prompt = f"{ANALYSIS_PROMPT}{job_description}"
-    
-    # (model, prompt, schema) -- the schema and the prompt were swapped here,
-    # so every call graded the schema text instead of the posting.
-    result = call_model.call_claude(call_model.HAIKU_MODEL, final_prompt, ANALYSIS_SCHEMA)
 
-    # call_claude already reports and returns None on a non-zero exit.
-    if result is None:
-        return None
+async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
+                  client: Optional[httpx.AsyncClient] = None) -> dict:
+    """Grade one posting.
+
+    Args:
+        job: (id, company, title, description), as
+            db.analysis.select_jobs_to_analyse returns it.
+        cv_md: The CV to grade against -- the user's active CV.
+        model: Any model the gateway serves; Haiku unless told otherwise.
+        client: Shared AsyncClient for a batch, optional.
+
+    Returns:
+        {"adequation_grade": int 0-100, "depth_analysis": str}.
+
+    Raises:
+        gateway.GatewayError: The model call failed.
+        ValueError: The answer was not JSON of the expected shape.
+    """
+    raw = await gateway.chat(
+        model, build_prompt(cv_md, job[3]), ANALYSIS_SCHEMA, client)
 
     try:
-        json_analysis = json.loads(result.stdout)
-        return json_analysis
-    except json.JSONDecodeError:
-        print(f"Failed to parse JSON: {result.stdout}")
-        return None
+        verdict = json.loads(raw)
+        grade = verdict["adequation_grade"]
+        analysis = verdict["depth_analysis"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"unusable model answer: {raw[:200]!r}") from exc
 
-def analyze(job: List[Tuple]):
-    json_result = _send_claude_request(job[3])
-    return json_result
+    if not isinstance(grade, int) or isinstance(grade, bool) \
+            or not 0 <= grade <= 100:
+        raise ValueError(f"grade out of range: {grade!r}")
+
+    if not isinstance(analysis, str):
+        raise ValueError("depth_analysis is not text")
+
+    return {"adequation_grade": grade, "depth_analysis": analysis}

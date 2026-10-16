@@ -1,0 +1,7 @@
+# The gateway's runtime dependencies, pinned to what the tests ran against.
+fastapi==0.142.2
+uvicorn==0.52.1
+anthropic==0.121.0
+httpx==0.28.1
+python-dotenv==1.2.4
+prometheus-fastapi-instrumentator==8.1.0

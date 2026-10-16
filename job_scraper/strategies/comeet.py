@@ -21,7 +21,7 @@ COMEET_API = (
 )
 
 
-def scrape_comeet(board: "Board") -> List[Job]:
+async def scrape_comeet(board: "Board") -> List[Job]:
     """Scrape Comeet through its careers API.
 
     The API is keyed by a company UID that never appears in the board URL, and
@@ -35,7 +35,7 @@ def scrape_comeet(board: "Board") -> List[Job]:
     Returns:
         List of jobs, or empty list if discovery or the API fails.
     """
-    html = board.html
+    html = await board.get_html()
 
     if not html:
         return []
@@ -46,7 +46,7 @@ def scrape_comeet(board: "Board") -> List[Job]:
     if not uid or not token:
         return []
 
-    items = fetch_json(
+    items = await fetch_json(
         board.session,
         COMEET_API.format(uid=uid.group(1), token=token.group(1)),
         max_bytes=FEED_MAX_BYTES,

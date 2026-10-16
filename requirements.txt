@@ -1,15 +1,26 @@
 # Runtime dependencies. Pinned to the versions this was developed against.
-requests==2.32.3
+httpx==0.28.1
 beautifulsoup4==4.12.3
+
+# Added with the Postgres / FastAPI / LLM-gateway work. Pinned to what the
+# tests ran against; see pyproject.toml for the floors.
+sqlalchemy==2.1.3
+alembic==1.20.0
+fastapi==0.142.2
+uvicorn==0.52.1
+psycopg[binary]==3.3.6
+python-dotenv==1.2.4
+anthropic==0.121.0
+prometheus-fastapi-instrumentator==8.1.0
+bcrypt==5.0.0
+PyJWT==2.15.1
 
 # job_scraper/filters.py only, and there it earns its place: both filters are
 # vectorised str.count/str.contains over the whole frame plus a seeded
 # groupby().sample() for the per-company exemption cap, which is a real loop
 # and a real reservoir sample in plain Python. (The claim this comment used to
-# make -- "main_scraper.py only, to write one CSV that csv.DictWriter would
-# also write" -- was already false: main_scraper does not import pandas.
-# db/db_connection.py did, to reimplement a UNIQUE constraint with iterrows();
-# that is now INSERT OR IGNORE over csv.DictReader.)
+# make -- "scrape_boards.py only, to write one CSV that csv.DictWriter would
+# also write" -- was false: scrape_boards does not import pandas.)
 pandas==2.2.3
 
 # cv_generator/docx_gen.py only. The alternative was string-substituting
@@ -29,7 +40,7 @@ pytest==8.3.4
 flake8==7.1.1
 
 # A JS renderer stays deliberately unpinned and uninstalled, and
-# main_scraper.py must keep running on a machine with no browser. The seam is
+# scrape_boards.py must keep running on a machine with no browser. The seam is
 # now wired -- job_scraper/render.py, reached only via --render, which imports
 # playwright inside the flag branch -- but it stays an opt-in extra, never a
 # hard requirement. The generic and API-discovery strategies were measured

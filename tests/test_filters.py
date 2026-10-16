@@ -1,7 +1,8 @@
 """Tests for job_scraper/filters.py filtering logic.
 
-The `filter_files` fixture (see conftest.py) points the module's four file
-constants at tmp_path and writes whichever inputs a test needs.
+The `filter_files` fixture (see conftest.py) points the module's CSV path
+constants at tmp_path and writes whichever inputs a test needs. Keyword and
+blacklist lists are passed to the filters directly.
 """
 
 import pandas as pd
@@ -67,6 +68,30 @@ class TestBuildWordPattern:
         # "Go" matches, "Google" does not (word boundary).
         assert matches[0]
         assert not matches[1]
+
+    @pytest.mark.parametrize("term,text", [
+        ("c++", "We use C++ daily"),
+        ("c#", "C# developer"),
+        (".net", "Senior .NET developer"),
+        ("node.js", "Node.js and React"),
+    ])
+    def test_terms_with_symbol_edges_match(self, term, text):
+        """\\b needs a word character on both sides, so `c++`, `c#` and
+        `.net` never matched until the pattern used lookarounds."""
+        pattern = _build_word_pattern([term])
+
+        assert pd.Series([text]).str.contains(
+            pattern, case=False, regex=True).all()
+
+    @pytest.mark.parametrize("term,text", [
+        ("go", "Golang engineer"), ("java", "JavaScript developer"),
+        (".net", "ASP.NET developer"),
+    ])
+    def test_symbol_edges_do_not_widen_into_longer_words(self, term, text):
+        pattern = _build_word_pattern([term])
+
+        assert not pd.Series([text]).str.contains(
+            pattern, case=False, regex=True).any()
 
     def test_special_chars_escaped(self):
         """A keyword like C++ must not blow up the alternation."""
@@ -136,11 +161,9 @@ class TestFirstFilter:
     def test_keep_job_via_keywords(self, filter_files):
         filter_files(
             jobs(("Acme", "Python Java Developer", "http://acme.com/py-job")),
-            keywords=["python", "java"],
-            blacklist=["senior"],
         )
 
-        result = filters.first_filter()
+        result = filters.first_filter(["python", "java"], ["senior"])
 
         assert len(result) == 1
         assert result.iloc[0]["title"] == "Python Java Developer"
@@ -148,45 +171,53 @@ class TestFirstFilter:
     def test_drop_job_via_blacklist(self, filter_files):
         filter_files(
             jobs(("Acme", "Senior Python Developer", "http://acme.com/py")),
-            keywords=["python"],
-            blacklist=["senior"],
         )
 
-        assert len(filters.first_filter()) == 0
+        assert len(filters.first_filter(["python"], ["senior"])) == 0
 
     def test_case_insensitive_matching(self, filter_files):
         filter_files(
             jobs(("Acme", "python java", "http://acme.com/job")),
-            keywords=["PYTHON", "java"],
         )
 
-        assert len(filters.first_filter()) == 1
+        assert len(filters.first_filter(["PYTHON", "java"], [])) == 1
 
     def test_one_hit_is_not_enough(self, filter_files):
         """A single keyword in the URL is 1 hit, below MIN_KEYWORD_MATCHES."""
         filter_files(
             jobs(("Acme", "Developer Job", "http://acme.com/python-role")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.first_filter()) == 0
+        assert len(filters.first_filter(["python", "java"], [])) == 0
 
     def test_two_keyword_hits_are_enough(self, filter_files):
         filter_files(
             jobs(("Acme", "Python Java Developer", "http://acme.com/job")),
-            keywords=["python", "java", "goal"],
         )
 
-        assert len(filters.first_filter()) == 1
+        assert len(filters.first_filter(["python", "java", "goal"], [])) == 1
 
     def test_url_hits_count_toward_the_threshold(self, filter_files):
         """One in the title plus one in the URL clears the bar."""
         filter_files(
             jobs(("Acme", "Python Developer", "http://acme.com/java-role")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.first_filter()) == MIN_KEYWORD_MATCHES - 1 == 1
+        assert len(filters.first_filter(["python", "java"], [])) == MIN_KEYWORD_MATCHES - 1 == 1
+
+
+    def test_different_term_lists_give_different_results(self, filter_files):
+        """Per-user filtering: one shared scrape, two users, two outcomes."""
+        filter_files(jobs(
+            ("Acme", "Python Java Developer", "http://acme.com/a"),
+            ("Acme", "Rust Go Engineer", "http://acme.com/b"),
+        ))
+
+        backend = filters.first_filter(["python", "java"], [])
+        systems = filters.first_filter(["rust", "go"], [])
+
+        assert list(backend["url"]) == ["http://acme.com/a"]
+        assert list(systems["url"]) == ["http://acme.com/b"]
 
 
 class TestFirstFilterExemption:
@@ -201,10 +232,9 @@ class TestFirstFilterExemption:
         """A row with nothing to match must not be judged on nothing."""
         filter_files(
             jobs(("AXA", "", "https://axa.com/jobs/843490")),
-            keywords=["python"],
         )
 
-        assert len(filters.first_filter()) == 1
+        assert len(filters.first_filter(["python"], [])) == 1
 
     def test_id_like_url_alone_no_longer_exempts(self, filter_files):
         """This is the leak. The title is real and matches no keyword, so the
@@ -212,10 +242,9 @@ class TestFirstFilterExemption:
         filter_files(
             jobs(("Leroy Merlin", "Junior Accountant",
                   "https://recrute.leroymerlin.fr/jobs/842306")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.first_filter()) == 0
+        assert len(filters.first_filter(["python", "java"], [])) == 0
 
     def test_a_title_recovered_from_the_url_is_then_judged(self, filter_files):
         """Recovery and exemption interact: once the slug yields a title, the
@@ -223,10 +252,9 @@ class TestFirstFilterExemption:
         filter_files(
             jobs(("Sander", "",
                   "https://x.com/fr/jobs/python-java-developer/76969")),
-            keywords=["python", "java"],
         )
 
-        result = filters.first_filter()
+        result = filters.first_filter(["python", "java"], [])
 
         assert len(result) == 1
         assert result.iloc[0]["title"] == "Python Java Developer"
@@ -235,11 +263,9 @@ class TestFirstFilterExemption:
         """Exempt from the keyword requirement is not exempt from everything."""
         filter_files(
             jobs(("AXA", "", "https://axa.com/jobs/senior/843490")),
-            keywords=["python"],
-            blacklist=["senior"],
         )
 
-        assert len(filters.first_filter()) == 0
+        assert len(filters.first_filter(["python"], ["senior"])) == 0
 
     def test_exemption_is_capped_per_company(self, filter_files):
         """One board must not be able to spend the whole detail budget."""
@@ -247,10 +273,9 @@ class TestFirstFilterExemption:
         filter_files(
             jobs(*[("AXA", "", f"https://axa.com/jobs/{n}")
                    for n in range(over)]),
-            keywords=["python"],
         )
 
-        assert len(filters.first_filter()) == MAX_UNJUDGEABLE_PER_COMPANY
+        assert len(filters.first_filter(["python"], [])) == MAX_UNJUDGEABLE_PER_COMPANY
 
     def test_the_cap_is_per_company_not_global(self, filter_files):
         """A small board keeps every row even while a large one is thinned."""
@@ -258,9 +283,9 @@ class TestFirstFilterExemption:
                 for n in range(MAX_UNJUDGEABLE_PER_COMPANY + 50)]
         rows += [("Leroy Merlin", "", f"https://lm.fr/jobs/{n}")
                  for n in range(10)]
-        filter_files(jobs(*rows), keywords=["python"])
+        filter_files(jobs(*rows))
 
-        result = filters.first_filter()
+        result = filters.first_filter(["python"], [])
         counts = result["company"].value_counts()
 
         assert counts["AXA"] == MAX_UNJUDGEABLE_PER_COMPANY
@@ -271,10 +296,10 @@ class TestFirstFilterExemption:
         fetch -- otherwise resume and reporting both drift."""
         frame = jobs(*[("AXA", "", f"https://axa.com/jobs/{n}")
                        for n in range(MAX_UNJUDGEABLE_PER_COMPANY + 50)])
-        filter_files(frame, keywords=["python"])
+        filter_files(frame)
 
-        first = list(filters.first_filter()["url"])
-        second = list(filters.first_filter()["url"])
+        first = list(filters.first_filter(["python"], [])["url"])
+        second = list(filters.first_filter(["python"], [])["url"])
 
         assert first == second
 
@@ -284,10 +309,9 @@ class TestFirstFilterExemption:
         filter_files(
             jobs(*[("AXA", "Python Java Developer",
                     f"https://axa.com/jobs/{n}") for n in range(over)]),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.first_filter()) == over
+        assert len(filters.first_filter(["python", "java"], [])) == over
 
 
 # ======================================================================
@@ -306,10 +330,9 @@ class TestSecondFilter:
                 "experience required.",
                 "http://acme.com/py-job",
             )),
-            keywords=["python", "java", "docker", "kubernetes"],
         )
 
-        result = filters.second_filter()
+        result = filters.second_filter(["python", "java", "docker", "kubernetes"], [])
 
         assert len(result) == 1
         assert result.iloc[0]["keyword_hits"] == 5
@@ -318,20 +341,18 @@ class TestSecondFilter:
         filter_files(
             detailed=detailed(("Developer", "Looking for Java expertise.",
                                "http://acme.com/job")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.second_filter()) == 0
+        assert len(filters.second_filter(["python", "java"], [])) == 0
 
     def test_lower_threshold_when_title_is_missing(self, filter_files):
         """3 hits clears the bar for a row with no title to have matched on."""
         filter_files(
             detailed=detailed(("", "Python Java and Docker required.",
                                "http://acme.com/job")),
-            keywords=["python", "java", "docker"],
         )
 
-        result = filters.second_filter()
+        result = filters.second_filter(["python", "java", "docker"], [])
 
         assert len(result) == 1
         assert result.iloc[0]["keyword_hits"] == 3
@@ -341,10 +362,9 @@ class TestSecondFilter:
         filter_files(
             detailed=detailed(("Python Java Developer", "",
                                "http://acme.com/job")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.second_filter()) == 0
+        assert len(filters.second_filter(["python", "java"], [])) == 0
 
     def test_blacklist_spans_the_description(self, filter_files):
         filter_files(
@@ -353,11 +373,9 @@ class TestSecondFilter:
                 "This is a senior position with internship opportunities.",
                 "http://acme.com/job",
             )),
-            keywords=["python", "java"],
-            blacklist=["senior", "internship"],
         )
 
-        assert len(filters.second_filter()) == 0
+        assert len(filters.second_filter(["python", "java"], ["senior", "internship"])) == 0
 
     def test_keyword_hits_column_annotation(self, filter_files):
         filter_files(
@@ -366,11 +384,10 @@ class TestSecondFilter:
                 "Description with Java Docker Kubernetes React and MongoDB.",
                 "http://acme.com/job",
             )),
-            keywords=["python", "java", "docker", "kubernetes", "react",
-                      "mongodb"],
         )
 
-        result = filters.second_filter()
+        result = filters.second_filter(["python", "java", "docker", "kubernetes", "react",
+                      "mongodb"], [])
 
         assert "keyword_hits" in result.columns
         assert result.iloc[0]["keyword_hits"] == 6
@@ -381,10 +398,9 @@ class TestSecondFilter:
         filter_files(
             detailed=detailed(("", "We sell garden furniture.",
                                "http://axa.com/jobs/843490")),
-            keywords=["python", "java"],
         )
 
-        assert len(filters.second_filter()) == 0
+        assert len(filters.second_filter(["python", "java"], [])) == 0
 
 
 # ======================================================================
@@ -398,7 +414,56 @@ def test_empty_input_returns_empty_rather_than_raising(filter_files, stage):
     filter_files(
         jobs=pd.DataFrame(columns=FIRST_COLUMNS),
         detailed=pd.DataFrame(columns=DETAIL_COLUMNS),
-        keywords=["python"],
     )
 
-    assert len(getattr(filters, stage)()) == 0
+    assert len(getattr(filters, stage)(["python"], [])) == 0
+
+
+# ======================================================================
+# filter_frame
+# ======================================================================
+
+
+class TestFilterFrame:
+    """The pure core of second_filter, usable on rows that never touched a CSV."""
+
+    DESC = "python python python python python"
+
+    def test_matches_second_filter_on_same_rows(self, filter_files):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Cook", "bake bread", "http://a/2"))
+        filter_files(detailed=frame)
+
+        cols = ["title", "url", "keyword_hits"]
+        assert filters.filter_frame(frame, ["python"], [])[cols].equals(
+            filters.second_filter(["python"], [])[cols])
+
+    def test_extra_columns_pass_through(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"))
+        frame["id"] = ["job-1"]
+
+        assert list(filters.filter_frame(frame, ["python"], []).id) == ["job-1"]
+
+    def test_no_keywords_keeps_rows_with_a_description(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Blank", "", "http://a/2"))
+
+        assert len(filters.filter_frame(frame, [], [])) == 1
+
+    def test_empty_frame_does_not_raise(self):
+        assert filters.filter_frame(detailed(), ["python"], []).empty
+
+    def test_blacklist_applies_without_keywords(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Senior Dev", self.DESC, "http://a/2"))
+
+        result = filters.filter_frame(frame, [], ["senior"])
+
+        assert list(result.url) == ["http://a/1"]
+
+    def test_keywords_apply_without_blacklist(self):
+        frame = detailed(("Dev", self.DESC, "http://a/1"),
+                         ("Cook", "bake bread", "http://a/2"))
+
+        assert list(filters.filter_frame(frame, ["python"], []).url) == [
+            "http://a/1"]

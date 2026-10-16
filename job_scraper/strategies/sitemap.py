@@ -6,8 +6,8 @@ sitemap gives URLs and nothing else, so a title costs one request per posting.
 
 from __future__ import annotations
 
+import asyncio
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -34,11 +34,6 @@ MIN_JOB_URLS = 3
 
 # Maximum detail postings to fetch individually (one request each).
 MAX_DETAIL = 200
-
-#: Threads for the detail pass. Lower than post_scraper's 8 on purpose: every
-#: request here goes to one host, where post_scraper's are spread across all of
-#: them. See fetching.REQUEST_DELAY for the resulting ceiling.
-SITEMAP_WORKERS = 4
 
 LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
 
@@ -78,11 +73,11 @@ def _nested_sitemaps(xml: str) -> List[str]:
     ]
 
 
-def _find_sitemap_jobs(session, url: str) -> Optional[Tuple[str, List[str]]]:
+async def _find_sitemap_jobs(session, url: str) -> Optional[Tuple[str, List[str]]]:
     """Discover and crawl sitemaps for job URLs.
 
     Args:
-        session: Requests session.
+        session: Shared httpx.AsyncClient.
         url: Starting URL to search for sitemaps.
 
     Returns:
@@ -110,7 +105,7 @@ def _find_sitemap_jobs(session, url: str) -> Optional[Tuple[str, List[str]]]:
             elif not robots_tried:
                 robots_tried = True
                 budget -= 1
-                robots = fetch(session, urljoin(root, "/robots.txt"))
+                robots = await fetch(session, urljoin(root, "/robots.txt"))
                 queue = [
                     urljoin(root, line)
                     for line in re.findall(
@@ -129,7 +124,7 @@ def _find_sitemap_jobs(session, url: str) -> Optional[Tuple[str, List[str]]]:
 
         seen.add(target)
         budget -= 1
-        xml = fetch(session, target)
+        xml = await fetch(session, target)
 
         if not xml:
             continue
@@ -165,29 +160,33 @@ def posting_fields(html: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
-def _detail(session, url: str) -> Tuple[Optional[str], Optional[str]]:
+async def _detail(session, url: str) -> Tuple[Optional[str], Optional[str]]:
     """Fetch one posting and read its structured fields.
 
     Args:
-        session: Requests session.
+        session: Shared httpx.AsyncClient.
         url: Posting URL.
 
     Returns:
         Tuple of (title, place); both None if the page is dead or bare.
     """
-    html = fetch(session, url)
+    html = await fetch(session, url)
 
-    return posting_fields(html) if html else (None, None)
+    if not html:
+        return None, None
+
+    return await asyncio.to_thread(posting_fields, html)
 
 
-def scrape_sitemap(board: "Board") -> List[Job]:
+async def scrape_sitemap(board: "Board") -> List[Job]:
     """Enumerate postings from a sitemap, then read each one's JSON-LD.
 
-    The detail pass runs on a small thread pool. It was serial, one blocking
-    request per posting across every sitemap board, which made it the dominant
+    The detail pass fans out with gather. It was serial, one blocking request
+    per posting across every sitemap board, which made it the dominant
     wall-clock cost of an entire run -- up to ~6,400 round trips end to end.
-    `pool.map` yields in the calling thread and in submission order, so the
-    result still follows sitemap order and needs no lock.
+    Every request goes to one host, so fetching.PER_HOST is what bounds it;
+    gather returns in submission order, so the result still follows sitemap
+    order.
 
     Args:
         board: Board instance with session and URL.
@@ -195,7 +194,7 @@ def scrape_sitemap(board: "Board") -> List[Job]:
     Returns:
         List of Job results, or empty list if no sitemap found.
     """
-    found = _find_sitemap_jobs(board.session, board.url)
+    found = await _find_sitemap_jobs(board.session, board.url)
 
     if found is None:
         return []
@@ -207,10 +206,9 @@ def scrape_sitemap(board: "Board") -> List[Job]:
     detailed = job_urls[:MAX_DETAIL]
 
     if detailed:
-        with ThreadPoolExecutor(max_workers=SITEMAP_WORKERS) as pool:
-            fields = list(pool.map(
-                lambda url: _detail(board.session, url), detailed
-            ))
+        fields = list(await asyncio.gather(
+            *(_detail(board.session, url) for url in detailed)
+        ))
     else:
         fields = []
 

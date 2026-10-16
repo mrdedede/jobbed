@@ -64,45 +64,14 @@ MAX_UNJUDGEABLE_PER_COMPANY = 300
 EXEMPTION_SEED = 0
 
 
-def get_keywords() -> List[str]:
-    """Load and normalize keywords from file.
-
-    Reads keywords.txt, strips whitespace, drops empty lines, and lowercases
-    all entries for case-insensitive matching.
-
-    Returns:
-        List of normalized keyword strings (lowercased, stripped).
-    """
-    return [
-        line.strip().lower()
-        for line in paths.KEYWORDS_TXT.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
-
-def get_blacklist() -> List[str]:
-    """Load and normalize blacklist words from file.
-
-    Reads blacklist.txt, strips whitespace, drops empty lines, and lowercases
-    all entries for case-insensitive matching.
-
-    Returns:
-        List of normalized blacklist strings (lowercased, stripped).
-    """
-    return [
-        line.strip().lower()
-        for line in paths.BLACKLIST_TXT.read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line.strip()
-    ]
-
-
 def _build_word_pattern(words: List[str]) -> str:
     """Build a regex pattern for whole-word/phrase matching.
 
     Escapes special regex characters and joins words with | operator for
-    case-insensitive alternation.
+    case-insensitive alternation. Whole-word is enforced with lookarounds,
+    not `\\b`: `\\b` needs a word character on the term's own edge, so `c++`,
+    `c#` and `.net` could never match. For terms that start and end with
+    word characters the two are identical.
 
     Args:
         words: List of keywords or blacklist words to match.
@@ -111,7 +80,7 @@ def _build_word_pattern(words: List[str]) -> str:
         A regex pattern matching any of the words as whole words/phrases.
     """
     escaped = [re.escape(word) for word in words]
-    return r"\b(?:" + "|".join(escaped) + r")\b"
+    return r"(?<!\w)(?:" + "|".join(escaped) + r")(?!\w)"
 
 
 def _row_matches_any(jobs: pd.DataFrame, words: List[str],
@@ -232,7 +201,8 @@ def _cap_per_company(exempt: pd.Series, companies: pd.Series) -> pd.Series:
     return kept
 
 
-def first_filter() -> pd.DataFrame:
+def first_filter(keywords: List[str],
+                 blacklist: List[str]) -> pd.DataFrame:
     """Filter scraped rows on title and URL, before any posting is fetched.
 
     Keeps a row if it is not blacklisted, and either matches enough keywords
@@ -253,11 +223,14 @@ def first_filter() -> pd.DataFrame:
     case-insensitive and anchored to word boundaries so that e.g. the keyword
     'Go' won't match inside 'Google'.
 
+    Args:
+        keywords: Terms to match, case-insensitive. Where they come from
+            (a user's DB rows, a fixed list) is the caller's business.
+        blacklist: Terms that drop a row outright.
+
     Returns:
         Filtered DataFrame with jobs meeting the criteria, in original order.
     """
-    keywords = get_keywords()
-    blacklist = get_blacklist()
     jobs = pd.read_csv(paths.JOBS_CSV)
 
     if jobs.empty:
@@ -288,7 +261,22 @@ def first_filter() -> pd.DataFrame:
     return jobs_filtered[keep].reset_index(drop=True)
 
 
-def second_filter() -> pd.DataFrame:
+def second_filter(keywords: List[str],
+                  blacklist: List[str]) -> pd.DataFrame:
+    """Run `filter_frame` over the detailed-jobs CSV.
+
+    Args:
+        keywords: Terms to match, case-insensitive.
+        blacklist: Terms that drop a job outright.
+
+    Returns:
+        See `filter_frame`.
+    """
+    return filter_frame(pd.read_csv(paths.DETAILED_CSV), keywords, blacklist)
+
+
+def filter_frame(jobs: pd.DataFrame, keywords: List[str],
+                 blacklist: List[str]) -> pd.DataFrame:
     """Filter detailed jobs on title, URL and description, with annotation.
 
     Keeps a job if it is not blacklisted in any of the three fields and its
@@ -300,44 +288,47 @@ def second_filter() -> pd.DataFrame:
     relevant across its entire body is a genuine miss rather than a blind spot.
     Jobs with missing or blank descriptions are dropped entirely.
 
-    Returns:
-        Filtered DataFrame with jobs meeting criteria, plus a `keyword_hits`
-        column showing the total keyword match count (for inspection/tuning).
-    """
-    keywords = get_keywords()
-    blacklist = get_blacklist()
-    jobs = pd.read_csv(paths.DETAILED_CSV)
+    The keyword and blacklist stages are independent: an empty keyword list
+    skips only the keyword stage (the blacklist still applies), and vice
+    versa. With neither, nothing is filtered beyond the description check, so
+    callers that spend money per row must cap the result themselves.
 
+    Args:
+        jobs: Rows with at least `title`, `url` and `description`; other
+            columns (`id`, `company`, ...) pass through untouched.
+        keywords: Terms to match, case-insensitive.
+        blacklist: Terms that drop a job outright.
+
+    Returns:
+        Filtered DataFrame in input order, plus a `keyword_hits` column
+        showing the total keyword match count (for inspection/tuning).
+    """
     if jobs.empty:
         return jobs
 
     fields = ("title", "url", "description")
 
-    jobs_with_desc = jobs[~_is_blank(jobs["description"])].copy()
+    result = jobs[~_is_blank(jobs["description"])].copy()
 
-    if jobs_with_desc.empty or not keywords:
-        return jobs_with_desc.reset_index(drop=True)
+    # Two independent stages, keywords first. An empty list switches off only
+    # its own stage: no keywords still applies the blacklist, and no blacklist
+    # still applies the keywords.
+    if keywords and not result.empty:
+        kw_count = _count_keywords(
+            result, _build_word_pattern(keywords), fields
+        )
+        incomplete = (_is_blank(result["title"]) | _is_blank(result["url"]))
+        threshold = incomplete.map({
+            True: MIN_KEYWORD_MATCHES_INCOMPLETE,
+            False: MIN_KEYWORD_MATCHES_DETAILED,
+        })
+        keep = kw_count >= threshold
+        result = result[keep].copy()
+        result["keyword_hits"] = kw_count[keep]
 
-    is_blacklisted = _row_matches_any(jobs_with_desc, blacklist,
-                                      columns=fields)
-    jobs_filtered = jobs_with_desc[~is_blacklisted].copy()
-
-    if jobs_filtered.empty:
-        return jobs_filtered.reset_index(drop=True)
-
-    kw_count = _count_keywords(
-        jobs_filtered, _build_word_pattern(keywords), fields
-    )
-
-    incomplete = (_is_blank(jobs_filtered["title"])
-                  | _is_blank(jobs_filtered["url"]))
-    threshold = incomplete.map({
-        True: MIN_KEYWORD_MATCHES_INCOMPLETE,
-        False: MIN_KEYWORD_MATCHES_DETAILED,
-    })
-
-    keep = kw_count >= threshold
-    result = jobs_filtered[keep].copy()
-    result["keyword_hits"] = kw_count[keep]
+    if blacklist and not result.empty:
+        result = result[
+            ~_row_matches_any(result, blacklist, columns=fields)
+        ].copy()
 
     return result.reset_index(drop=True)

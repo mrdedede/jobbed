@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: render-boards
+spec:
+  schedule: "45 0 * * *"
+  timeZone: Europe/Paris
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 900
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+          - name: render-boards
+            image: joblister-scrape:latest
+            imagePullPolicy: IfNotPresent
+            command: ["python", "-m", "job_scraper.scrape_boards", "--render-missed"]
+            envFrom:
+            - secretRef: {name: joblister-secrets}
+            resources:
+              requests: {cpu: 250m, memory: 2Gi}
+              limits: {memory: 3Gi}
+            volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: shm, mountPath: /dev/shm}
+          volumes:
+          - name: data
+            persistentVolumeClaim: {claimName: joblister-data}
+          - name: shm
+            emptyDir: {medium: Memory, sizeLimit: 1Gi}

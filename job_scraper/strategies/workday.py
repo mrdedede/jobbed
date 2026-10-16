@@ -15,7 +15,7 @@ WORKDAY_PAGE = 20
 WORKDAY_MAX_PAGES = 50
 
 
-def scrape_workday(board: "Board") -> List[Job]:
+async def scrape_workday(board: "Board") -> List[Job]:
     """Scrape Workday board via /wday/cxs/ JSON endpoint.
 
     Args:
@@ -36,7 +36,7 @@ def scrape_workday(board: "Board") -> List[Job]:
     jobs: List[Job] = []
 
     for page in range(WORKDAY_MAX_PAGES):
-        body = fetch_json(
+        body = await fetch_json(
             board.session,
             endpoint,
             method="post",

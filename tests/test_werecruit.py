@@ -5,11 +5,15 @@ listed ~12,000 foreign postings for each board. The tenant's own offers are
 embedded in the board page as `window.allOffers`.
 """
 
+import pytest
+
 from job_scraper.board import Board
 from job_scraper.detector import ATSName
 from job_scraper.strategies import VENDOR_SCRAPERS
 from job_scraper.strategies.werecruit import scrape_werecruit
 from job_scraper.urls import ats_from_host
+
+pytestmark = pytest.mark.anyio
 
 URL = "https://careers.werecruit.io/en/unseenlabs"
 
@@ -30,14 +34,15 @@ PAGE = """<html><script>window.didomiOnReady = window.didomiOnReady || [];</scri
 
 
 def board(html: str) -> Board:
-    made = Board("unseenlabs", URL)
+    # Strategy reads the inline page only; no request is ever made.
+    made = Board("unseenlabs", URL, session=None)
     made._html = html
 
     return made
 
 
-def test_reads_only_the_tenants_embedded_offers():
-    jobs = scrape_werecruit(board(PAGE))
+async def test_reads_only_the_tenants_embedded_offers():
+    jobs = await scrape_werecruit(board(PAGE))
 
     assert [(j.title, j.url, j.place) for j in jobs] == [
         ("Ingénieur Système F/H",
@@ -50,9 +55,9 @@ def test_reads_only_the_tenants_embedded_offers():
     assert {j.via for j in jobs} == {"werecruit"}
 
 
-def test_page_without_offers_yields_nothing():
-    assert scrape_werecruit(board("<html></html>")) == []
-    assert scrape_werecruit(board("window.allOffers = [{broken")) == []
+async def test_page_without_offers_yields_nothing():
+    assert await scrape_werecruit(board("<html></html>")) == []
+    assert await scrape_werecruit(board("window.allOffers = [{broken")) == []
 
 
 def test_host_resolves_to_werecruit_and_is_wired_in():
@@ -60,11 +65,11 @@ def test_host_resolves_to_werecruit_and_is_wired_in():
     assert VENDOR_SCRAPERS[ATSName.WERECRUIT] is scrape_werecruit
 
 
-def test_board_never_falls_through_to_the_multi_tenant_sitemap():
+async def test_board_never_falls_through_to_the_multi_tenant_sitemap():
     made = board(PAGE)
     made.ats = ATSName.WERECRUIT
 
-    jobs = made.scrape_board()
+    jobs = await made.scrape_board()
 
     assert len(jobs) == 2
     assert {j.via for j in jobs} == {"werecruit"}

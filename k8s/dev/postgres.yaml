@@ -1,0 +1,42 @@
+# Postgres for the minikube checkpoint only. Not for production: the data is
+# an emptyDir and the credentials are the compose ones. Matches the
+# DATABASE_URL in secret.example.yaml (host "postgres" is the Service below).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:16-alpine
+        env:
+        - {name: POSTGRES_USER, value: joblister}
+        - {name: POSTGRES_PASSWORD, value: change-me}
+        - {name: POSTGRES_DB, value: joblister}
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "joblister", "-d", "joblister"]
+          periodSeconds: 5
+        volumeMounts:
+        - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports:
+  - port: 5432

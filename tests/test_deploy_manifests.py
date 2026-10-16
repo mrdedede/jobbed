@@ -60,3 +60,16 @@ def test_k8s_labels_match_what_the_policy_selects():
 
     assert label(gateway) == "llm-gateway"
     assert label(api) == "joblister-api"
+
+
+def test_k8s_ollama_is_reachable_only_from_the_gateway():
+    docs = list(yaml.safe_load_all((ROOT / "k8s/ollama.yaml").read_text()))
+    policy = next(d for d in docs if d["kind"] == "NetworkPolicy")
+    service = next(d for d in docs if d["kind"] == "Service")
+
+    assert service["spec"].get("type", "ClusterIP") == "ClusterIP"
+    assert policy["spec"]["podSelector"]["matchLabels"] == {"app": "ollama"}
+    (rule,) = policy["spec"]["ingress"]
+    assert rule["from"] == [
+        {"podSelector": {"matchLabels": {"app": "llm-gateway"}}}]
+    assert policy["spec"]["policyTypes"] == ["Ingress"]

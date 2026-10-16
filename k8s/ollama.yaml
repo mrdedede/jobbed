@@ -1,0 +1,82 @@
+# Self-hosted models for the LLM gateway (compose has the same `ollama`
+# service). Optional: Claude-only grading needs none of this, and the gateway
+# reaches Ollama lazily, so leaving it out breaks nothing until a request names
+# an `ollama-*` model.
+#
+#   kubectl apply -f k8s/ollama.yaml
+#   kubectl exec deploy/ollama -- ollama pull qwen2.5:0.5b     # once; kept on the PVC
+#
+# then let clients ask for it (the API only accepts models it lists):
+#
+#   kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+#
+# CPU only. The memory limit fits a ~0.5B model; raise it (and the PVC) before
+# pulling anything bigger, or the pod is OOM-killed mid-answer.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+spec:
+  replicas: 1
+  # One pod owns the RWO volume, so replace it rather than overlap on rollout.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: ollama}
+  template:
+    metadata:
+      labels: {app: ollama}
+    spec:
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest
+        ports:
+        - containerPort: 11434
+        readinessProbe:
+          exec:
+            command: ["ollama", "list"]
+          periodSeconds: 10
+        resources:
+          requests: {cpu: 500m, memory: 1Gi}
+          limits: {memory: 2Gi}
+        volumeMounts:
+        - {name: models, mountPath: /root/.ollama}
+      volumes:
+      - name: models
+        persistentVolumeClaim: {claimName: ollama-models}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+spec:
+  selector: {app: ollama}
+  ports:
+  - port: 11434
+---
+# Only the gateway may call Ollama (it is unauthenticated and anyone who can
+# reach it can pull models or run prompts). Same CNI caveat as
+# networkpolicy-llm-gateway.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ollama-from-gateway-only
+spec:
+  podSelector:
+    matchLabels: {app: ollama}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels: {app: llm-gateway}
+    ports:
+    - {port: 11434, protocol: TCP}

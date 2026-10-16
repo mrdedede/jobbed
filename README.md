@@ -254,6 +254,11 @@ kubectl apply -f k8s/llm-gateway.yaml -f k8s/api.yaml \
               -f k8s/networkpolicy-llm-gateway.yaml
 # reach it: see "Reaching the API" above (no Ingress yet)
 
+# Optional: self-hosted models (CPU), reachable from the gateway only
+kubectl apply -f k8s/ollama.yaml
+kubectl exec deploy/ollama -- ollama pull qwen2.5:0.5b
+kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+
 # Run a stage now instead of waiting for its schedule
 kubectl create job --from=cronjob/scrape-boards test-scrape
 kubectl logs -f jobs/test-scrape
@@ -394,7 +399,10 @@ old/new/skipped counts and is safe to re-run.
 
 1. Back up outside the repo: copy `db/joblister.db` to e.g. `~/jobbed-archive/`
    (compare `sha256sum`), and `pg_dump` the target database.
-2. `alembic upgrade head`; let the nightly jobs run at least once.
+2. Rebuild the images, then migrate: `docker compose --profile jobs build migrate`
+   and `docker compose --profile jobs run --rm migrate` (on Kubernetes, build,
+   `minikube image load`, then apply `k8s/job-migrate.yaml`). A stale image
+   silently skips newer migrations. Let the nightly jobs run at least once.
 3. Run the import, compare its counts with the SQLite file, and spot-check a few
    postings and CVs through the API.
 4. Smoke test as that user: `GET /v1/me/analyses`, `POST /v1/me/analyze` with `limit=1`.
@@ -406,7 +414,7 @@ old/new/skipped counts and is safe to re-run.
 | Symptom | Cause / fix |
 |---|---|
 | API exits at start | `JWT_SECRET` missing or under 32 characters. |
-| `relation ... does not exist` | Migrations not run: `alembic upgrade head`. |
+| `relation ... does not exist` | Migrations not applied. Rebuild the `migrate` image first (`docker compose --profile jobs build migrate`), then run it; an old image has no newer migrations. |
 | `401` | Token expired or missing; log in again. |
 | `409 no active CV` | Add a CV (`POST /v1/me/cvs`) or activate one. |
 | `409 analysis already running` | One analysis per user at a time; wait for it to finish. |

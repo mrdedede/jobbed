@@ -1,8 +1,7 @@
 # The handoff volume: the four jobs pass jobs.csv, no_jobs.csv,
 # jobs_rendered.csv, detailed_jobs.csv and failed_postings.csv through it.
 # They never run at the same time, so ReadWriteOnce is enough on one node.
-# Size is final on minikube's hostpath class (no expansion). See
-# PHASE4_PLAN.md section 10.
+# Size is final on minikube's hostpath class (no expansion).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

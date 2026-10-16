@@ -1,4 +1,4 @@
-"""Claude backend: the anthropic SDK, not the claude CLI -- no subprocess,
+"""Claude backend: the anthropic SDK -- no subprocess,
 no CLI binary in the image, no dependency on an interactively-authenticated
 session.
 """

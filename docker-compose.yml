@@ -102,7 +102,7 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------
-  # Nightly jobs (PHASE4_PLAN.md). Not started by `docker compose up`; run
+  # Nightly jobs. Not started by `docker compose up`; run
   # one stage at a time, in order, as the CronJobs will:
   #
   #   docker compose --profile jobs run --rm migrate

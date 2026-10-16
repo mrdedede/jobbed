@@ -13,8 +13,7 @@ Usage:
         board = Board(company, url, render=pool.render)
 
 One browser per pool, one context per page, and at most `contexts` pages in
-flight: the browser is the expensive part (about 1.3 GB at 4 contexts, see
-PHASE4_PLAN.md M5) and a context is cheap. `pool.render` satisfies
+flight: the browser is the expensive part (about 1.3 GB at 4 contexts) and a context is cheap. `pool.render` satisfies
 detector.Renderer -- Callable[[str], Awaitable[Optional[str]]].
 """
 

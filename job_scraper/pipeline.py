@@ -15,8 +15,7 @@ something else can supply a progress bar or a log line.
 
 Stages hand off through CSV files in `temp/` rather than in memory. Those
 files are not incidental -- the detail stage resumes from its own output after
-a crash, and every measurement in REFACTORING.md was taken from them after the
-fact.
+a crash, and every performance measurement was taken from them after the fact.
 """
 
 import asyncio

@@ -20,9 +20,7 @@ PyJWT==2.15.1
 # groupby().sample() for the per-company exemption cap, which is a real loop
 # and a real reservoir sample in plain Python. (The claim this comment used to
 # make -- "scrape_boards.py only, to write one CSV that csv.DictWriter would
-# also write" -- was already false: scrape_boards does not import pandas.
-# db/db_connection.py did, to reimplement a UNIQUE constraint with iterrows();
-# that is now INSERT OR IGNORE over csv.DictReader.)
+# also write" -- was false: scrape_boards does not import pandas.)
 pandas==2.2.3
 
 # cv_generator/docx_gen.py only. The alternative was string-substituting

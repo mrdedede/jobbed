@@ -415,7 +415,7 @@ def main() -> int:
     print(f"boards that gave nothing -> {stats['no_jobs']}")
 
     if args.render_missed:
-        # A browser pass recovers little by nature (see PHASE4_PLAN.md M5);
+        # A browser pass recovers little by nature (a render pass is expensive);
         # zero found is a quiet night, not a failed run.
         return 0
 

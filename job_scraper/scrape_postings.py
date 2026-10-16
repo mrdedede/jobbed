@@ -421,8 +421,7 @@ async def scrape_details(input_file: Optional[Path] = None,
             rewrites the file from scratch.
         on_progress: Optional callback given progress lines.
         rows: Postings to fetch, as the dicts the input CSV would have held.
-            Lets a caller that already filtered in memory -- the Streamlit
-            pages -- skip writing first_filtered_file.csv just to read it back.
+            Lets a caller that already filtered in memory skip writing first_filtered_file.csv just to read it back.
         deadline: `time.monotonic()` value after which no more results are
             waited for. Fetches still running are cancelled, rows already
             fetched are still written, and the rest stay pending for the next

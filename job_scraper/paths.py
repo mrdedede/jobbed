@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 #: Directory for the CSV passed between pipeline stages (the PVC mount in
 #: Kubernetes). These are not throwaway: scrape_postings resumes from its own
-#: output, and every measurement in REFACTORING.md was taken from these files.
+#: output, and every performance measurement was taken from these files.
 TEMP = Path(os.environ.get("JOBLISTER_DATA_DIR", ROOT / "temp"))
 
 USER_INFO = ROOT / "user_info"
@@ -28,9 +28,6 @@ USER_INFO = ROOT / "user_info"
 # Inputs the user supplies (all gitignored; each has an *_example sibling).
 BOARDS_CSV = Path(os.environ.get("JOBLISTER_BOARDS_CSV",
                                  USER_INFO / "job_boards.csv"))
-KEYWORDS_TXT = USER_INFO / "keywords.txt"
-BLACKLIST_TXT = USER_INFO / "blacklist.txt"
-CV_MD = USER_INFO / "my_cv.md"
 CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
 FRANCE_TRAVAIL_CREDENTIALS = Path(os.environ.get(
     "FRANCE_TRAVAIL_CREDENTIALS_FILE",
@@ -55,10 +52,6 @@ NO_JOBS_RENDERED_CSV = TEMP / "no_jobs_rendered.csv"
 #: One row per posting the ingest could not store (url, company, ats, reason).
 #: RenderPostings reads the `parse-miss` ones.
 FAILED_POSTINGS_CSV = TEMP / "failed_postings.csv"
-
-# Databases
-DB = ROOT / "db"
-DB_PATH = DB / "joblister.db"
 
 # AI
 AI = ROOT / "ai"

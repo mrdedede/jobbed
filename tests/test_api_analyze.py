@@ -179,6 +179,8 @@ def test_analyses_filter_order_and_isolation(client, chat):
     assert len(listed) == 1 and "description" not in listed[0]
     assert as_user(uid).get("/v1/me/analyses?min_grade=90").json() == []
     assert as_user(other).get("/v1/me/analyses").json() == []
+    assert len(as_user(uid).get("/v1/me/analyses?since_days=1").json()) == 1
+    assert as_user(uid).get("/v1/me/analyses?since_days=0").status_code == 422
 
 
 def test_due_counts_the_filtered_backlog_then_zero(client, chat):

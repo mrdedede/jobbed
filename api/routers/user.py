@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Set
+from typing import List, Optional, Set
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -308,8 +308,11 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
 def get_analyses(
         user_id: CurrentUser,
         limit: int = Query(50, ge=1, le=200),
-        min_grade: int = Query(0, ge=0, le=100)) -> List[AnalysisOut]:
-    rows = db_analysis.select_analysis_page(user_id, limit, min_grade)
+        min_grade: int = Query(0, ge=0, le=100),
+        since_days: Optional[int] = Query(None, ge=1, le=365)
+) -> List[AnalysisOut]:
+    rows = db_analysis.select_analysis_page(
+        user_id, limit, min_grade, since_days=since_days)
 
     return [_analysis_out(r) for r in rows]
 

@@ -176,6 +176,28 @@ def test_select_analysis_page_omits_description_orders_and_filters(
         user, 10, job_ids=[low])] == [low]
 
 
+def test_select_analysis_page_since_days_excludes_older_analyses(
+        user, two_jobs):
+    from datetime import timedelta
+
+    from sqlalchemy import update
+    from db.engine import engine
+    from db.tables import ai_analysis
+
+    old, new = _job_id_for_url("http://x/1"), _job_id_for_url("http://x/2")
+    analysis.insert_analysis((user, 40, "old", "haiku", old))
+    analysis.insert_analysis((user, 90, "new", "haiku", new))
+    with engine.begin() as conn:
+        conn.execute(update(ai_analysis).where(ai_analysis.c.job_id == old)
+                     .values(created_at=ai_analysis.c.created_at
+                             - timedelta(days=3)))
+
+    assert [r[0] for r in analysis.select_analysis_page(
+        user, 10, since_days=1)] == [new]
+    assert len(analysis.select_analysis_page(user, 10, since_days=7)) == 2
+    assert len(analysis.select_analysis_page(user, 10)) == 2
+
+
 def _age(url, days):
     from datetime import timedelta
 

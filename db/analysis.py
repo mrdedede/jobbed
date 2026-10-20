@@ -195,7 +195,8 @@ def select_analyses(user_id: UUID) -> List[Tuple]:
 
 def select_analysis_page(
         user_id: UUID, limit: int, min_grade: int = 0,
-        job_ids: Optional[Sequence[UUID]] = None) -> List[Tuple]:
+        job_ids: Optional[Sequence[UUID]] = None,
+        since_days: Optional[int] = None) -> List[Tuple]:
     """A user's graded postings, best fit first, without the description.
 
     The description is large and the url has it, so unlike `select_analyses`
@@ -206,6 +207,7 @@ def select_analysis_page(
         limit: Cap on rows returned.
         min_grade: Only grades at or above this; 0 keeps ungraded (NULL) rows.
         job_ids: Restrict to these postings (e.g. one run's results).
+        since_days: Only analyses made within this many days.
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
@@ -218,6 +220,7 @@ def select_analysis_page(
     #      FROM ai_analysis JOIN job_postings ON job_postings.id = ai_analysis.job_id
     #      WHERE ai_analysis.user_id = ? [AND job_id IN (...)]
     #      [AND adequation_grade >= ?]
+    #      [AND ai_analysis.created_at >= now() + INTERVAL '-<since_days> days']
     #      ORDER BY adequation_grade DESC NULLS LAST, created_at DESC LIMIT ?
     stmt = (
         select(
@@ -237,6 +240,11 @@ def select_analysis_page(
         stmt = stmt.where(ai_analysis.c.job_id.in_(job_ids))
     if min_grade > 0:
         stmt = stmt.where(ai_analysis.c.adequation_grade >= min_grade)
+    if since_days is not None:
+        # since_days is a validated int, never client text: text_interval
+        # inlines it into SQL.
+        stmt = stmt.where(ai_analysis.c.created_at
+                          >= func.now() + text_interval(f"-{since_days} days"))
 
     with engine.connect() as conn:
         return conn.execute(stmt).all()

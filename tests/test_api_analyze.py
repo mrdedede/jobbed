@@ -140,15 +140,15 @@ def test_validation_is_422(client, chat, body):
 def test_in_flight_user_is_409_and_released_after_failure(client, chat):
     jobs.insert_jobs([posting(1, "Go Dev", "go " * 6)])
     uid = make_user("go")
-    user_router._in_flight.add(uid)
+    user_router._analysis_in_flight.add(uid)
     try:
         assert analyze(client, uid).status_code == 409
     finally:
-        user_router._in_flight.discard(uid)
+        user_router._analysis_in_flight.discard(uid)
 
     chat[1]["answer"] = "garbage"
     assert analyze(client, uid).status_code == 502
-    assert uid not in user_router._in_flight
+    assert uid not in user_router._analysis_in_flight
 
 
 def test_window_reaches_sql_as_an_int_derived_string(
@@ -284,4 +284,4 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
         finished = await first
 
     assert (finished.status_code, second.status_code) == (200, 409)
-    assert uid not in user_router._in_flight
+    assert uid not in user_router._analysis_in_flight

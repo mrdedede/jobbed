@@ -16,6 +16,7 @@ from ai import gateway
 from db import generated_cv as db_generated_cv
 from db import users
 from job_scraper import paths
+from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
 
 with open(paths.GENERATE_CV_MD, "r") as f:
     generate_cv_prompt = f.read()
@@ -100,7 +101,7 @@ def _build_prompt(cv_md: str, depth_analysis: str, description: str) -> str:
 async def generate_cv(user_id: UUID, job_id: UUID,
                       model: str = gateway.SONNET_MODEL,
                       cv_md: Optional[str] = None,
-                      client: Optional[httpx.AsyncClient] = None) -> str:
+                      client: Optional[httpx.AsyncClient] = None) -> UUID:
     """Generate and store the CV for one posting this user already graded.
 
     Args:
@@ -114,24 +115,25 @@ async def generate_cv(user_id: UUID, job_id: UUID,
         client: Shared AsyncClient, optional.
 
     Returns:
-        The locale the model wrote the CV in.
+        The id of the stored generated_cv row.
 
     Raises:
-        RuntimeError: Ungraded posting, or no CV to start from.
+        NoAnalysisForJob: Ungraded posting.
+        NoActiveCv: No `cv_md` given and the user has no active CV.
         gateway.GatewayError: The model call failed.
-        ValueError: The answer was not JSON of the expected shape.
+        UnusableAnswer: The answer was not JSON of the expected shape.
     """
     row = await asyncio.to_thread(
         db_generated_cv.select_job_for_generation, user_id, job_id)
 
     if row is None:
-        raise RuntimeError(f"no analysis stored for job {job_id}")
+        raise NoAnalysisForJob(f"no analysis stored for job {job_id} and user {user_id}")
 
     if cv_md is None:
         active = await asyncio.to_thread(users.select_active_user_cv, user_id)
 
         if active is None:
-            raise RuntimeError(f"user {user_id} has no active CV")
+            raise NoActiveCv(f"user {user_id} has no active CV")
 
         cv_md = active[1]
 
@@ -144,10 +146,8 @@ async def generate_cv(user_id: UUID, job_id: UUID,
         answer = json.loads(raw)
         locale, cv = answer["locale"], answer["cv"]
     except (ValueError, KeyError, TypeError) as exc:
-        raise ValueError(f"unusable model answer: {raw[:200]!r}") from exc
+        raise UnusableAnswer(f"unusable model answer: {raw[:200]!r}") from exc
 
-    await asyncio.to_thread(
+    return await asyncio.to_thread(
         db_generated_cv.insert_generated_cv,
         user_id, locale, cv, job_id, analysis_id)
-
-    return locale

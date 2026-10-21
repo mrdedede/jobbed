@@ -145,3 +145,29 @@ class AnalyzeOut(BaseModel):
 class DueOut(BaseModel):
     """Postings an analysis run could grade right now, filter applied."""
     due: int
+
+
+# CV GENERATION
+
+class GenCvRequest(BaseModel):
+    job_id: UUID
+
+
+class GenCvOut(BaseModel):
+    cv_id: UUID
+    title: str
+    company: str
+    adequation_grade: int
+    locale: str
+    cv: dict
+    job_id: UUID
+
+
+class GenCvStarted(BaseModel):
+    generation_id: UUID
+
+
+class GenCvStatus(BaseModel):
+    status: Literal["running", "done", "failed"]
+    cv: Optional[GenCvOut] = None
+    error: Optional[dict] = None

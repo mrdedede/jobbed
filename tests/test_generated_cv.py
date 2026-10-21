@@ -138,12 +138,32 @@ def test_select_generated_cvs_returns_this_users_cvs_newest_first(
     generated_cv.insert_generated_cv(
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
-    (cv_id, title, company, grade, locale, cv, url, created_at), = \
+    (cv_id, title, company, grade, locale, cv, job_id_), = \
         generated_cv.select_generated_cvs(user)
 
     assert (title, company, grade, locale) == (
         "Go Developer", "Acme", 80, "pt")
     assert cv == {"profile_text": "perfil"}
+    assert job_id_ == job_id
+
+
+def test_insert_generated_cv_returns_the_new_id(user, graded_job):
+    job_id, analysis_id = graded_job
+
+    cv_id = generated_cv.insert_generated_cv(
+        user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
+
+    assert generated_cv.select_generated_cvs(user)[0][0] == cv_id
+
+
+def test_select_generated_cv_is_scoped_to_the_owner(user, other_user, graded_job):
+    job_id, analysis_id = graded_job
+    cv_id = generated_cv.insert_generated_cv(
+        user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
+
+    assert generated_cv.select_generated_cv(user, cv_id)[0] == cv_id
+    assert generated_cv.select_generated_cv(other_user, cv_id) is None
+    assert generated_cv.select_generated_cv(user, uuid.uuid4()) is None
 
 
 def test_select_generated_cvs_empty_for_a_user_with_none(user, other_user,

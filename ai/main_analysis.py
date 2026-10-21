@@ -20,10 +20,7 @@ from ai import analysis, gateway
 from db import analysis as db_analysis
 from db import users
 from job_scraper.filters import filter_frame
-
-
-class NoActiveCv(ValueError):
-    """The user has no active CV to grade against."""
+from ai.exceptions import NoActiveCv
 
 
 CANDIDATE_COLUMNS = ["id", "company", "title", "url", "place", "description",

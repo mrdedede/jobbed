@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ai import analysis, cv_generation, gateway, main_analysis
+from ai.exceptions import NoActiveCv, UnusableAnswer
 from db import analysis as db_analysis
 from db import generated_cv, jobs, users
 
@@ -156,10 +157,10 @@ async def test_generate_cv_stores_for_this_user(user, fake_chat):
     _, state = fake_chat
     state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
 
-    locale = await cv_generation.generate_cv(user, job_id)
+    cv_id = await cv_generation.generate_cv(user, job_id)
 
-    assert locale == "fr"
-    assert [r[4] for r in generated_cv.select_generated_cvs(user)] == ["fr"]
+    rows = generated_cv.select_generated_cvs(user)
+    assert [(r[0], r[4], r[6]) for r in rows] == [(cv_id, "fr", job_id)]
 
 
 async def test_generate_cv_refuses_an_ungraded_posting(user, fake_chat):
@@ -169,6 +170,31 @@ async def test_generate_cv_refuses_an_ungraded_posting(user, fake_chat):
 
     with pytest.raises(RuntimeError, match="no analysis"):
         await cv_generation.generate_cv(user, job_id)
+
+
+async def test_generate_cv_without_an_active_cv_refuses(user, fake_chat):
+    _two_jobs()
+    users.insert_user_cv(user, "my cv")
+    await main_analysis.run_analysis(user)
+    job_id = db_analysis.select_analyses(user)[0][0]
+    users.delete_user_cv(user, users.select_active_user_cv(user)[0])
+
+    with pytest.raises(NoActiveCv):
+        await cv_generation.generate_cv(user, job_id)
+
+
+@pytest.mark.parametrize("answer", ["garbage", "[]", '{"locale": "fr"}'])
+async def test_generate_cv_unusable_answer_stores_nothing(user, fake_chat, answer):
+    _two_jobs()
+    users.insert_user_cv(user, "my cv")
+    await main_analysis.run_analysis(user)
+    job_id = db_analysis.select_analyses(user)[0][0]
+    fake_chat[1]["answer"] = answer
+
+    with pytest.raises(UnusableAnswer):
+        await cv_generation.generate_cv(user, job_id)
+
+    assert generated_cv.select_generated_cvs(user) == []
 
 
 # per-user filtering inside run_analysis

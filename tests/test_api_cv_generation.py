@@ -1,0 +1,313 @@
+"""POST/GET /cvs/generate and /generated-cvs over the real test DB, no network."""
+
+import asyncio
+import contextlib
+import json
+import time
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from api_helpers import bearer, make_user
+
+import ai.main_analysis as main_analysis
+from ai import gateway
+from api.main import app
+from api.routers import user as user_router
+from db import analysis as db_analysis
+from db import generated_cv, jobs, usage, users
+from db.engine import engine
+
+CV = {"profile_text": "p"}
+GOOD = json.dumps({"locale": "fr", "cv": CV})
+GRADE = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
+
+
+@pytest.fixture
+def chat(monkeypatch):
+    """Fake gateway: grading answers GRADE, CV generation answers state['answer']."""
+    state = {"answer": GOOD, "error": None, "gate": None}
+
+    async def fake(model, prompt, schema=None, client=None):
+        if schema is not None and "locale" in json.dumps(schema):
+            if state["gate"] is not None:
+                await state["gate"].wait()
+            if state["error"] is not None:
+                raise state["error"]
+            return state["answer"]
+
+        return GRADE
+
+    monkeypatch.setattr(gateway, "chat", fake)
+
+    return state
+
+
+@pytest.fixture
+def as_user(db):
+    """as_user(uid) -> client sending that user's token.
+
+    Entered as a context manager so one event loop outlives the request:
+    the generation runs in a background task that a per-request loop would kill.
+    """
+    with contextlib.ExitStack() as stack:
+        yield lambda uid: stack.enter_context(
+            TestClient(app, raise_server_exceptions=False, headers=bearer(uid)))
+
+
+def graded_user(n=1):
+    """A user with an active CV and `n` graded postings; returns (uid, [job_ids])."""
+    jobs.insert_jobs([("Acme", f"Go Dev {i}", "go " * 6, f"http://cv/{i}", "Paris", None, None)
+                      for i in range(n)])
+    uid = make_user("go")
+    asyncio.run(main_analysis.run_analysis(uid))
+
+    return uid, [r[0] for r in db_analysis.select_analyses(uid)]
+
+
+def start(c, job_id):
+    return c.post("/v1/me/cvs/generate", json={"job_id": str(job_id)})
+
+
+def poll(c, generation_id):
+    return c.get(f"/v1/me/cvs/generate/{generation_id}")
+
+
+def finish(c, job_id):
+    """Start, wait for the background task, return the final poll body."""
+    started = start(c, job_id)
+    assert started.status_code == 202
+    gid = started.json()["generation_id"]
+
+    for _ in range(200):
+        body = poll(c, gid).json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.05)
+
+    raise AssertionError("generation never finished")
+
+
+def used(uid):
+    with engine.connect() as conn:
+        return conn.execute(text(
+            "SELECT COALESCE(SUM(count), 0) FROM llm_usage "
+            "WHERE user_id = :u AND kind = :k"),
+            dict(u=uid, k=usage.KIND_CV)).scalar_one()
+
+
+# happy path
+
+def test_generation_runs_in_the_background_and_stores_the_cv(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+
+    body = finish(c, job_id)
+
+    assert body["status"] == "done" and body["error"] is None
+    assert (body["cv"]["locale"], body["cv"]["cv"], body["cv"]["job_id"]) == (
+        "fr", CV, str(job_id))
+    assert [str(r[0]) for r in generated_cv.select_generated_cvs(uid)] == [body["cv"]["cv_id"]]
+    assert used(uid) == 1
+
+
+def test_poll_while_running_then_done(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    # An asyncio.Event must be created on the loop the task lives on.
+    chat["gate"] = c.portal.call(asyncio.Event)
+    gid = start(c, job_id).json()["generation_id"]
+
+    assert poll(c, gid).json() == {"status": "running", "cv": None, "error": None}
+    c.portal.call(chat["gate"].set)
+    assert finish_poll(c, gid)["status"] == "done"
+
+
+def finish_poll(c, gid):
+    for _ in range(200):
+        body = poll(c, gid).json()
+        if body["status"] != "running":
+            return body
+        time.sleep(0.05)
+
+    raise AssertionError("generation never finished")
+
+
+def test_the_returned_cv_is_the_new_one_not_the_oldest(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    chat["answer"] = json.dumps({"locale": "en", "cv": {"profile_text": "first"}})
+    first = finish(c, job_id)
+    chat["answer"] = json.dumps({"locale": "pt", "cv": {"profile_text": "second"}})
+
+    second = finish(c, job_id)
+
+    assert second["cv"]["cv"] == {"profile_text": "second"}
+    assert second["cv"]["cv_id"] != first["cv"]["cv_id"]
+
+
+def test_the_running_slot_is_released_after_the_run(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+
+    finish(c, job_id)
+
+    assert uid not in user_router._cv_in_flight
+    assert finish(c, job_id)["status"] == "done"
+
+
+# failures: job fails, quota comes back
+
+@pytest.mark.parametrize("make_error, code, detail", [
+    (lambda: gateway.GatewayError("boom"), 502, "the AI model call failed"),
+])
+def test_gateway_failure_fails_the_job_and_refunds(
+        as_user, chat, make_error, code, detail):
+    uid, (job_id,) = graded_user()
+    chat["error"] = make_error()
+
+    body = finish(as_user(uid), job_id)
+
+    assert body["status"] == "failed"
+    assert body["error"] == {"status": code, "detail": detail}
+    assert used(uid) == 0
+    assert generated_cv.select_generated_cvs(uid) == []
+
+
+@pytest.mark.parametrize("answer", ["garbage", "[]", '{"locale": "fr"}'])
+def test_unusable_answer_fails_the_job_and_refunds(as_user, chat, answer):
+    uid, (job_id,) = graded_user()
+    chat["answer"] = answer
+
+    body = finish(as_user(uid), job_id)
+
+    assert body["status"] == "failed"
+    assert body["error"]["status"] == 502
+    assert "unusable" in body["error"]["detail"]
+    assert used(uid) == 0
+
+
+def test_ungraded_posting_fails_with_409_and_refunds(as_user, chat):
+    uid, _ = graded_user()
+    jobs.insert_jobs([("Acme", "Other", "go " * 6, "http://cv/other", "Paris", None, None)])
+    other_job = db_analysis.select_jobs_to_analyse(uid)[0][0]
+
+    body = finish(as_user(uid), other_job)
+
+    assert body["status"] == "failed"
+    assert body["error"] == {"status": 409, "detail": "no analysis for job"}
+    assert used(uid) == 0
+
+
+def test_another_users_graded_posting_is_not_usable(as_user, chat):
+    _, (job_id,) = graded_user()
+    intruder = make_user("go")
+
+    body = finish(as_user(intruder), job_id)
+
+    assert body["error"]["status"] == 409
+    assert generated_cv.select_generated_cvs(intruder) == []
+
+
+def test_no_active_cv_fails_with_409(as_user, chat):
+    uid, (job_id,) = graded_user()
+    users.delete_user_cv(uid, users.select_active_user_cv(uid)[0])
+
+    body = finish(as_user(uid), job_id)
+
+    assert body["error"] == {"status": 409, "detail": "no active CV"}
+    assert used(uid) == 0
+
+
+# start-time refusals
+
+def test_second_start_while_running_is_409(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    chat["gate"] = c.portal.call(asyncio.Event)
+    gid = start(c, job_id).json()["generation_id"]
+
+    assert start(c, job_id).status_code == 409
+
+    c.portal.call(chat["gate"].set)
+    assert finish_poll(c, gid)["status"] == "done"
+
+
+def test_daily_cap_is_429_with_retry_after(as_user, chat, monkeypatch):
+    uid, (job_id,) = graded_user()
+    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 1)
+    c = as_user(uid)
+    finish(c, job_id)
+
+    response = start(c, job_id)
+
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) > 0
+    assert uid not in user_router._cv_in_flight
+
+
+def test_bad_body_is_422(as_user, chat):
+    uid, _ = graded_user()
+
+    assert as_user(uid).post("/v1/me/cvs/generate", json={"job_id": "nope"}).status_code == 422
+
+
+# poll scoping
+
+def test_poll_of_another_users_generation_is_404(as_user, chat):
+    uid, (job_id,) = graded_user()
+    gid = start(as_user(uid), job_id).json()["generation_id"]
+
+    assert poll(as_user(make_user()), gid).status_code == 404
+
+
+def test_poll_of_an_unknown_generation_is_404(as_user):
+    assert poll(as_user(make_user()), uuid.uuid4()).status_code == 404
+
+
+def test_generate_requires_a_token(db):
+    with TestClient(app) as c:
+        assert c.post("/v1/me/cvs/generate", json={"job_id": str(uuid.uuid4())}).status_code == 401
+        assert c.get(f"/v1/me/cvs/generate/{uuid.uuid4()}").status_code == 401
+        assert c.get("/v1/me/generated-cvs").status_code == 401
+
+
+def test_finished_generations_are_pruned(as_user, chat, monkeypatch):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    finish(c, job_id)
+    for gen in user_router._generations.values():
+        gen.finished -= user_router._GENERATION_TTL_S + 1
+
+    start_body = start(c, job_id)
+
+    assert start_body.status_code == 202
+    assert len(user_router._generations) == 1
+
+
+# listing
+
+def test_list_is_per_user_newest_first_with_job_id(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    chat["answer"] = json.dumps({"locale": "en", "cv": {"profile_text": "a"}})
+    finish(c, job_id)
+    chat["answer"] = json.dumps({"locale": "pt", "cv": {"profile_text": "b"}})
+    finish(c, job_id)
+
+    listed = c.get("/v1/me/generated-cvs").json()
+
+    assert [g["locale"] for g in listed] == ["pt", "en"]
+    assert {g["job_id"] for g in listed} == {str(job_id)}
+    assert as_user(make_user()).get("/v1/me/generated-cvs").json() == []
+
+
+@pytest.mark.parametrize("ext", ["docx", "pdf"])
+def test_server_side_rendering_routes_are_gone(as_user, chat, ext):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    cv_id = finish(c, job_id)["cv"]["cv_id"]
+
+    assert c.get(f"/v1/me/generated-cv/{cv_id}.{ext}").status_code == 404

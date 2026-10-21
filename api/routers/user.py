@@ -3,8 +3,9 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Set
-from uuid import UUID
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
 
@@ -12,9 +13,14 @@ from api.deps import CurrentUser
 from api.security import hash_password, verify_password
 from api.schemas import (AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
                          CvOut, CvUpdate, DueOut, PasswordChange, TermIn,
-                         TermOut, UserOut)
-from ai.main_analysis import NoActiveCv, count_due, run_analysis
+                         TermOut, UserOut, GenCvRequest, GenCvOut,
+                         GenCvStarted, GenCvStatus)
+from ai import gateway
+from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
+from ai.main_analysis import count_due, run_analysis
+from ai.cv_generation import generate_cv
 from db import analysis as db_analysis
+from db import generated_cv as db_cvs
 from db import usage, users
 
 logger = logging.getLogger(__name__)
@@ -28,11 +34,13 @@ NOT_FOUND = {404: {"description": "No such row for this user"}}
 LIMIT_REACHED = {409: {"description": "Per-user row limit reached"}}
 DUPLICATE = {409: {"description": "The user already has this term"}}
 
-# Users with an analysis running. One API worker only: the check-and-add has
-# no await between them, so it is atomic on the single event loop.
+# Users with an analysis or cv generation running. One API worker only:
+# the check-and-add has no await between them, so it is atomic on the single
+# event loop.
 # ponytail: process-local, a Postgres advisory lock if the API scales out.
 # Double runs are already correct (upsert); this only prevents double spend.
-_in_flight: Set[UUID] = set()
+_analysis_in_flight: Set[UUID] = set()
+_cv_in_flight: Set[UUID] = set()
 
 # Bound unbounded rows (100 kB x N CVs is the real concern). Check-then-insert
 # can overshoot by a few under concurrency; the spend quota is db.usage.
@@ -239,11 +247,11 @@ def _seconds_to_utc_midnight() -> int:
              description="Grades the next `limit` matching postings, newest "
                          "first. Call again while `remaining` > 0.")
 async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut:
-    if user_id in _in_flight:
+    if user_id in _analysis_in_flight:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "analysis already running")
 
-    _in_flight.add(user_id)
+    _analysis_in_flight.add(user_id)
     started = time.perf_counter()
     granted = 0
 
@@ -274,7 +282,7 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
                                 granted)
         raise
     finally:
-        _in_flight.discard(user_id)
+        _analysis_in_flight.discard(user_id)
 
     # Only stored verdicts count; failed gateway calls cost the user nothing.
     await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
@@ -321,3 +329,107 @@ def get_analyses(
 async def get_due(user_id: CurrentUser,
                   window_days: int = Query(1, ge=1, le=30)) -> DueOut:
     return DueOut(due=await count_due(user_id, f"-{window_days} days"))
+
+
+@dataclass
+class _Generation:
+    user_id: UUID
+    status: str = "running"
+    cv: Optional[GenCvOut] = None
+    error: Optional[dict] = None
+    finished: float = 0.0
+    task: Optional[asyncio.Task] = field(default=None, repr=False)
+
+
+# Generation runs in a background task; the client polls this registry.
+# ponytail: process-local like _cv_in_flight (one API worker). A restart
+# mid-run makes the poll 404 -- the client treats that as "interrupted".
+# Move to a table if the API scales out.
+_generations: Dict[UUID, _Generation] = {}
+_GENERATION_TTL_S = 3600
+
+
+def _prune_generations() -> None:
+    cutoff = time.monotonic() - _GENERATION_TTL_S
+    for key in [k for k, g in _generations.items() if g.finished and g.finished < cutoff]:
+        del _generations[key]
+
+
+async def _run_generation(gen: _Generation, job_id: UUID) -> None:
+    """Generate one CV, record the outcome, refund the reserved unit on failure."""
+    try:
+        cv_id = await generate_cv(gen.user_id, job_id)
+        row = await asyncio.to_thread(db_cvs.select_generated_cv, gen.user_id, cv_id)
+        gen.cv = _gen_cv_out(row)
+        gen.status = "done"
+    except Exception as exc:
+        known = {
+            NoAnalysisForJob: (status.HTTP_409_CONFLICT, "no analysis for job"),
+            NoActiveCv: (status.HTTP_409_CONFLICT, "no active CV"),
+            UnusableAnswer: (status.HTTP_502_BAD_GATEWAY, "the model's answer was unusable"),
+            gateway.GatewayError: (status.HTTP_502_BAD_GATEWAY, "the AI model call failed"),
+        }
+        code, detail = next((v for k, v in known.items() if isinstance(exc, k)),
+                            (status.HTTP_500_INTERNAL_SERVER_ERROR, "generation failed"))
+        if code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            logger.exception("cv generation crashed")
+        gen.status, gen.error = "failed", {"status": code, "detail": detail}
+        await asyncio.to_thread(usage.refund, gen.user_id, usage.KIND_CV, 1)
+    finally:
+        gen.finished = time.monotonic()
+        _cv_in_flight.discard(gen.user_id)
+
+
+def _gen_cv_out(row) -> GenCvOut:
+    return GenCvOut(cv_id=row[0], title=row[1], company=row[2], adequation_grade=row[3],
+                    locale=row[4], cv=row[5], job_id=row[6])
+
+
+@router.post("/cvs/generate", response_model=GenCvStarted,
+             status_code=status.HTTP_202_ACCEPTED,
+             responses={429: {"description": "Daily generation cap reached"},
+                        409: {"description": "A generation is already running"}},
+             description="Starts writing a CV tailored to a graded posting. "
+                         "Poll GET /cvs/generate/{generation_id} for the result.")
+async def start_cv_generation(user_id: CurrentUser, body: GenCvRequest) -> GenCvStarted:
+    if user_id in _cv_in_flight:
+        raise HTTPException(status.HTTP_409_CONFLICT, "generation already running")
+
+    # No await between the check above and this add: atomic on the event loop.
+    _cv_in_flight.add(user_id)
+    try:
+        granted = await asyncio.to_thread(
+            usage.reserve, user_id, usage.KIND_CV, 1, DAILY_ANALYSIS_CAP)
+
+        if granted == 0:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"daily limit of {DAILY_ANALYSIS_CAP} CV generations reached",
+                headers={"Retry-After": str(_seconds_to_utc_midnight())})
+    except BaseException:
+        _cv_in_flight.discard(user_id)
+        raise
+
+    _prune_generations()
+    generation_id = uuid4()
+    gen = _generations[generation_id] = _Generation(user_id)
+    # Held so the loop cannot garbage-collect the task mid-run.
+    gen.task = asyncio.create_task(_run_generation(gen, body.job_id))
+
+    return GenCvStarted(generation_id=generation_id)
+
+
+@router.get("/cvs/generate/{generation_id}", response_model=GenCvStatus,
+            responses=NOT_FOUND)
+def get_cv_generation(user_id: CurrentUser, generation_id: UUID) -> GenCvStatus:
+    gen = _generations.get(generation_id)
+
+    if gen is None or gen.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such generation")
+
+    return GenCvStatus(status=gen.status, cv=gen.cv, error=gen.error)
+
+
+@router.get("/generated-cvs", response_model=List[GenCvOut])
+def list_gen_cvs(user_id: CurrentUser) -> List[GenCvOut]:
+    return [_gen_cv_out(r) for r in db_cvs.select_generated_cvs(user_id)]

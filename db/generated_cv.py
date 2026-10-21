@@ -19,7 +19,7 @@ from db.tables import ai_analysis, generated_cv, job_postings
 # INSERTIONS
 
 def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
-                         analysis_id: UUID) -> None:
+                         analysis_id: UUID) -> UUID:
     """Store one generated CV against the posting and user it was written for.
 
     Args:
@@ -30,13 +30,16 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
         job_id: The posting the CV targets.
         analysis_id: The ai_analysis row the generation was tailored against.
 
+    Returns:
+        The id of the new generated_cv row.
+
     Raises:
         RuntimeError: If the analysis is not this user's grade of this
             posting, or the database rejects the insertion.
     """
     # SQL: INSERT INTO generated_cv (user_id, locale, cv, job_id,
-    #      ai_analysis_id) VALUES (?, ?, ?, ?, ?)
-    stmt = generated_cv.insert().values(
+    #      ai_analysis_id) VALUES (?, ?, ?, ?, ?) RETURNING id
+    stmt = generated_cv.insert().returning(generated_cv.c.id).values(
         user_id=user_id,
         locale=locale,
         cv=cv,
@@ -55,7 +58,7 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
                 raise ValueError(
                     f"analysis {analysis_id} is not user {user_id}'s "
                     f"grade of job {job_id}")
-            conn.execute(stmt)
+            return conn.execute(stmt).scalar_one()
     except Exception as exc:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
@@ -136,6 +139,24 @@ def select_jobs_for_cv(
         return conn.execute(stmt).all()
 
 
+# SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
+#      ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
+#      generated_cv.job_id
+#      FROM generated_cv
+#      JOIN job_postings ON job_postings.id = generated_cv.job_id
+#      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
+_CV_COLUMNS = (
+    select(
+        generated_cv.c.id, job_postings.c.title, job_postings.c.company,
+        ai_analysis.c.adequation_grade, generated_cv.c.locale,
+        generated_cv.c.cv, generated_cv.c.job_id,
+    )
+    .select_from(generated_cv)
+    .join(job_postings, job_postings.c.id == generated_cv.c.job_id)
+    .join(ai_analysis, ai_analysis.c.id == generated_cv.c.ai_analysis_id)
+)
+
+
 def select_generated_cvs(user_id: UUID) -> List[Tuple]:
     """Every CV stored for this user, newest first, then best fit.
 
@@ -143,29 +164,38 @@ def select_generated_cvs(user_id: UUID) -> List[Tuple]:
         user_id: The user whose generated CVs to return.
 
     Returns:
-        List of (cv_id, title, company, adequation_grade, locale, cv), the
-        last being the CV as a dict (decoded from jsonb).
+        List of (cv_id, title, company, adequation_grade, locale, cv, job_id),
+        `cv` being the CV as a dict (decoded from jsonb).
     """
     # SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
     #      ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-    #      job_postings.url, generated_cv.created_at
+    #      generated_cv.job_id
     #      FROM generated_cv
     #      JOIN job_postings ON job_postings.id = generated_cv.job_id
     #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
     #      WHERE generated_cv.user_id = ?
     #      ORDER BY generated_cv.created_at DESC, ai_analysis.adequation_grade DESC
     stmt = (
-        select(
-            generated_cv.c.id, job_postings.c.title, job_postings.c.company,
-            ai_analysis.c.adequation_grade, generated_cv.c.locale,
-            generated_cv.c.cv, job_postings.c.url, generated_cv.c.created_at,
-        )
-        .select_from(generated_cv)
-        .join(job_postings, job_postings.c.id == generated_cv.c.job_id)
-        .join(ai_analysis, ai_analysis.c.id == generated_cv.c.ai_analysis_id)
+        _CV_COLUMNS
         .where(generated_cv.c.user_id == user_id)
         .order_by(generated_cv.c.created_at.desc(),
                   ai_analysis.c.adequation_grade.desc())
     )
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def select_generated_cv(user_id: UUID, cv_id: UUID) -> Optional[Tuple]:
+    """One of this user's generated CVs.
+
+    Args:
+        user_id: The owner. Another user's id yields None, never their row.
+        cv_id: The generated_cv id.
+
+    Returns:
+        The same tuple `select_generated_cvs` yields, or None.
+    """
+    stmt = _CV_COLUMNS.where(generated_cv.c.user_id == user_id,
+                             generated_cv.c.id == cv_id)
+    with engine.connect() as conn:
+        return conn.execute(stmt).first()

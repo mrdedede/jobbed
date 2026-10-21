@@ -94,6 +94,8 @@ services:
       ANALYSIS_MODELS: ${ANALYSIS_MODELS:-haiku,sonnet}
       # Postings a user may have graded per UTC day.
       DAILY_ANALYSIS_CAP: ${DAILY_ANALYSIS_CAP:-10}
+      # CVs a user may generate per UTC day.
+      DAILY_CV_CAP: ${DAILY_CV_CAP:-2}
     ports:
       - "8080:8080"
     networks: [default, llm]

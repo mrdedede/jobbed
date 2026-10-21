@@ -36,9 +36,11 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
 - **Daily quota:** at most `DAILY_ANALYSIS_CAP` (default 10) postings graded per
   user per UTC day; past that the API answers `429` with `Retry-After`.
 
-CV generation (rewriting your CV for one posting) exists as library code
-(`ai.cv_generation`, `cv_generator`) but has no endpoint yet; the plan is in
-[docs/cv-generation.md](docs/cv-generation.md).
+- `POST /v1/me/cvs/generate` rewrites your active CV for one graded posting
+  in the background (poll `GET /v1/me/cvs/generate/{generation_id}`);
+  `GET /v1/me/generated-cvs` lists the results. At most `DAILY_CV_CAP`
+  (default 2) per user per UTC day. Details in
+  [docs/cv-generation.md](docs/cv-generation.md).
 
 ## Data flow and privacy
 
@@ -64,7 +66,7 @@ Only these are still files; everything per-user is an API resource.
 |---|---|
 | `user_info/job_boards.csv` | `company,url` list of boards. Loaded into `job_boards` by the `migrate` step (`python -m db.boards`). Copy `job_boards_example.csv`. |
 | `user_info/france_travail_credentials.json` | Optional `client_id` / `client_secret` for the France Travail source (or `FRANCE_TRAVAIL_CLIENT_ID` / `_SECRET`). The source also needs `SEARCH_KEYWORDS` filled in `job_scraper/api_sources/france_travail.py`. |
-| `user_info/CV_placeholder.docx` | DOCX template for CV rendering (library code only for now). |
+| `user_info/CV_placeholder.docx` | DOCX template for the local Python renderer (`cv_generator`). The API returns JSON; the front end renders DOCX/PDF. |
 | `user_info/{keywords,blacklist}_example.txt`, `my_cv_example.md` | Samples for the one-time [legacy import](#importing-the-old-sqlite-history). |
 
 ### Environment variables
@@ -76,6 +78,7 @@ Only these are still files; everything per-user is an API resource.
 | `GATEWAY_URL` | API | `http://localhost:8000` |
 | `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. |
 | `DAILY_ANALYSIS_CAP` | API | `10` postings per user per UTC day. |
+| `DAILY_CV_CAP` | API | `2` CV generations per user per UTC day. |
 | `ANTHROPIC_API_KEY` | gateway | Empty means Claude models answer 502. |
 | `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT` | gateway | `http://localhost:11434`, `180` s |
 | `CLAUDE_MODEL_HAIKU` / `_SONNET` / `_OPUS` | gateway | Override the model ids behind the short names. |
@@ -187,6 +190,12 @@ curl -s "$API/v1/me/analyses/due?window_days=1" -H "$A"   # how many would be gr
 curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
   -d '{"limit":5,"window_days":1,"model":"haiku"}'        # repeat while "remaining" > 0
 curl -s "$API/v1/me/analyses?limit=20&min_grade=60" -H "$A"
+
+JOB=$(curl -s "$API/v1/me/analyses?limit=1" -H "$A" | jq -r '.[0].job_id')
+GEN=$(curl -s -X POST $API/v1/me/cvs/generate -H "$H" -H "$A" \
+  -d "{\"job_id\":\"$JOB\"}" | jq -r .generation_id)    # 202
+curl -s $API/v1/me/cvs/generate/$GEN -H "$A"            # poll until status != running
+curl -s $API/v1/me/generated-cvs -H "$A"
 ```
 
 `model` must be in the API's `ANALYSIS_MODELS` (default `haiku,sonnet`); add
@@ -204,7 +213,7 @@ NetworkPolicy, so run the probe in that file's header on any new cluster
 (verified on minikube's kindnet: an unlabelled pod times out once the policy
 has propagated, a few seconds after `kubectl apply`).
 This restricts *who* can call; how much each user may spend is capped by the
-daily quota (`DAILY_ANALYSIS_CAP`).
+daily quotas (`DAILY_ANALYSIS_CAP`, `DAILY_CV_CAP`).
 
 **End-to-end check** (`scripts/e2e_api.py`, stdlib only): signs up users,
 seeds tagged postings, and checks that `/v1/me/analyze` grades the same set the
@@ -419,6 +428,9 @@ old/new/skipped counts and is safe to re-run.
 | `409 no active CV` | Add a CV (`POST /v1/me/cvs`) or activate one. |
 | `409 analysis already running` | One analysis per user at a time; wait for it to finish. |
 | `429` on analyze | Daily cap reached; retry after the `Retry-After` seconds, or raise `DAILY_ANALYSIS_CAP`. |
+| `409 generation already running` | One CV generation per user at a time; poll the running one. |
+| `429` on cvs/generate | Daily CV cap reached; retry after `Retry-After`, or raise `DAILY_CV_CAP`. |
+| Poll of a generation answers `404` | Unknown id, finished over an hour ago, or the API restarted mid-run (the unit was refunded). Check `GET /v1/me/generated-cvs`. |
 | `502` on analyze | Every grading call failed: no `ANTHROPIC_API_KEY` on the gateway, Ollama not running, or the model is not available. Check `docker compose logs llm_gateway`. |
 | Analyze returns `due: 0` | No recent postings match your keywords. Widen `window_days`, check the nightly jobs ran, or `GET /v1/me/analyses/due`. |
 | A board gives nothing | Check `no_jobs.csv` in the data directory; JS-heavy boards need RenderBoards, some are blocked (403). |
@@ -428,7 +440,7 @@ old/new/skipped counts and is safe to re-run.
 - Full board scrape about 13 minutes; steady-state ingest about 2.5 minutes (see
   Measurements).
 - A grade is about 10 s per posting with Claude; four run concurrently.
-- A CV rewrite with Sonnet is about 20 s (not exposed over HTTP yet).
+- A CV rewrite with Sonnet is about 20 s; it runs in the background and the client polls.
 
 ## Contributing
 

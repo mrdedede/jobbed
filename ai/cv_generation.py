@@ -92,9 +92,9 @@ CV_SCHEMA = {
 }
 
 
-def _build_prompt(cv_md: str, depth_analysis: str, description: str) -> str:
+def _build_prompt(cv_md: str, depth_analysis: Optional[str], description: str) -> str:
     return (f"{generate_cv_prompt}\n--------\n# User CV\n{cv_md}\n"
-            f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis}\n"
+            f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis or ''}\n"
             f"--------\n# JOB POST\n\n{description}")
 
 

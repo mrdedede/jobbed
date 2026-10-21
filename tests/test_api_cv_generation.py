@@ -237,7 +237,7 @@ def test_second_start_while_running_is_409(as_user, chat):
 
 def test_daily_cap_is_429_with_retry_after(as_user, chat, monkeypatch):
     uid, (job_id,) = graded_user()
-    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 1)
+    monkeypatch.setattr(user_router, "DAILY_CV_CAP", 1)
     c = as_user(uid)
     finish(c, job_id)
 
@@ -310,4 +310,63 @@ def test_server_side_rendering_routes_are_gone(as_user, chat, ext):
     c = as_user(uid)
     cv_id = finish(c, job_id)["cv"]["cv_id"]
 
-    assert c.get(f"/v1/me/generated-cv/{cv_id}.{ext}").status_code == 404
+    assert c.get(f"/v1/me/generated-cvs/{cv_id}.{ext}").status_code == 404
+
+
+# phase 7a regressions
+
+def test_cv_cap_is_separate_from_the_analysis_cap(as_user, chat, monkeypatch):
+    uid, (job_id,) = graded_user()
+    monkeypatch.setattr(user_router, "DAILY_CV_CAP", 2)
+    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 50)
+    c = as_user(uid)
+    finish(c, job_id)
+    finish(c, job_id)
+
+    response = start(c, job_id)
+
+    assert response.status_code == 429
+    assert "2 CV generations" in response.json()["detail"]
+
+
+def test_failure_after_the_cv_is_stored_keeps_the_unit(as_user, chat, monkeypatch):
+    uid, (job_id,) = graded_user()
+
+    def unreadable(*_):
+        raise RuntimeError("read back failed")
+
+    monkeypatch.setattr(user_router.db_cvs, "select_generated_cv", unreadable)
+
+    body = finish(as_user(uid), job_id)
+
+    assert body == {"status": "done", "cv": None, "error": None}
+    assert used(uid) == 1
+    assert len(generated_cv.select_generated_cvs(uid)) == 1
+
+
+def test_a_cv_with_no_grade_is_still_listed(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    finish(c, job_id)
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE ai_analysis SET adequation_grade = NULL "
+                          "WHERE user_id = :u"), dict(u=uid))
+
+    listed = c.get("/v1/me/generated-cvs")
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["adequation_grade"] is None
+
+
+def test_shutdown_mid_run_refunds_the_unit(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    chat["gate"] = c.portal.call(asyncio.Event)  # never set: the run hangs
+    gid = start(c, job_id).json()["generation_id"]
+    assert used(uid) == 1
+
+    c.portal.call(user_router.cancel_generations)
+
+    assert poll(c, gid).json()["error"] == {"status": 503, "detail": "interrupted"}
+    assert used(uid) == 0
+    assert uid not in user_router._cv_in_flight

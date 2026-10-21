@@ -17,6 +17,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await user.cancel_generations()
+
 
 app = FastAPI(title="Joblister User Rest API", version="0.1.0",
               lifespan=lifespan)

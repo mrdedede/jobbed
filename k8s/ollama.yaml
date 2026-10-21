@@ -8,7 +8,7 @@
 #
 # then let clients ask for it (the API only accepts models it lists):
 #
-#   kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+#   kubectl set env deploy/jobbed-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
 #
 # CPU only. The memory limit fits a ~0.5B model; raise it (and the PVC) before
 # pulling anything bigger, or the pod is OOM-killed mid-answer.

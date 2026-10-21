@@ -1,6 +1,6 @@
 # The user-facing REST API. Build from the repo root:
 #
-#   docker build -f api/Dockerfile -t joblister-api .
+#   docker build -f api/Dockerfile -t jobbed-api .
 #
 # Talks to Postgres (DATABASE_URL) and to the LLM gateway over HTTP
 # (GATEWAY_URL) -- no anthropic SDK or API key in this image.

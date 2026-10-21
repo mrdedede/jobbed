@@ -14,7 +14,7 @@ INCLUDE=(--include='*.py' --include='*.toml' --include='*.yml'
 
 hits=$(
   {
-    grep -rniE "streamlit|sqlite|joblister\.db|PHASE4_PLAN|REFACTORING\.md|claude cli" "${INCLUDE[@]}" .
+    grep -rniE "streamlit|sqlite|jobbed\.db|PHASE4_PLAN|REFACTORING\.md|claude cli" "${INCLUDE[@]}" .
     grep -rnwE "KEYWORDS_TXT|BLACKLIST_TXT|CV_MD|DB_PATH" "${INCLUDE[@]}" .
   } | grep -vE "$ALLOWED"
 )

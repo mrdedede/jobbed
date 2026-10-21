@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: joblister-data
+  name: jobbed-data
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:

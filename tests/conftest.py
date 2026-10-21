@@ -15,7 +15,7 @@ from job_scraper import fetching, paths
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+psycopg://joblister:joblister@localhost:5432/joblister_test",
+    "postgresql+psycopg://jobbed:jobbed@localhost:5432/jobbed_test",
 )
 
 # Before anything imports db.engine: its `engine` is bound once, at import,

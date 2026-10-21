@@ -5,8 +5,8 @@ One module owns these so the stages cannot disagree about a filename. They did:
 ``temp/first_filtered_file.csv``, a path that never existed on disk, which
 silently broke the hand-off between the two.
 
-Deployment locations come from the environment (``JOBLISTER_DATA_DIR`` for the
-hand-off directory, ``JOBLISTER_BOARDS_CSV`` and
+Deployment locations come from the environment (``JOBBED_DATA_DIR`` for the
+hand-off directory, ``JOBBED_BOARDS_CSV`` and
 ``FRANCE_TRAVAIL_CREDENTIALS_FILE`` for inputs), defaulting to the repo layout.
 Nothing is created on import: the stages that write create their own parent
 directory, so a missing volume mount fails loudly instead of landing on the
@@ -21,12 +21,12 @@ ROOT = Path(__file__).resolve().parent.parent
 #: Directory for the CSV passed between pipeline stages (the PVC mount in
 #: Kubernetes). These are not throwaway: scrape_postings resumes from its own
 #: output, and every performance measurement was taken from these files.
-TEMP = Path(os.environ.get("JOBLISTER_DATA_DIR", ROOT / "temp"))
+TEMP = Path(os.environ.get("JOBBED_DATA_DIR", ROOT / "temp"))
 
 USER_INFO = ROOT / "user_info"
 
 # Inputs the user supplies (all gitignored; each has an *_example sibling).
-BOARDS_CSV = Path(os.environ.get("JOBLISTER_BOARDS_CSV",
+BOARDS_CSV = Path(os.environ.get("JOBBED_BOARDS_CSV",
                                  USER_INFO / "job_boards.csv"))
 CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
 FRANCE_TRAVAIL_CREDENTIALS = Path(os.environ.get(

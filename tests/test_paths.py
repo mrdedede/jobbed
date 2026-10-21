@@ -6,8 +6,8 @@ from job_scraper import paths
 
 
 def test_data_dir_from_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("JOBLISTER_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("JOBLISTER_BOARDS_CSV", str(tmp_path / "b.csv"))
+    monkeypatch.setenv("JOBBED_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("JOBBED_BOARDS_CSV", str(tmp_path / "b.csv"))
     try:
         importlib.reload(paths)
         assert paths.TEMP == tmp_path / "data"

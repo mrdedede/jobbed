@@ -1,7 +1,7 @@
 # One-off, at deploy time and on any release that ships a migration. Needs
 # the boards list, which is gitignored and so not in the image:
 #
-#   kubectl create configmap joblister-boards \
+#   kubectl create configmap jobbed-boards \
 #     --from-file=job_boards.csv=user_info/job_boards.csv
 #
 # A Job's spec is immutable: to run it again, delete it first
@@ -17,16 +17,16 @@ spec:
       restartPolicy: Never
       containers:
       - name: migrate-jobs
-        image: joblister-ingest:latest
+        image: jobbed-ingest:latest
         imagePullPolicy: IfNotPresent
         command: ["sh", "-c", "alembic upgrade head && python -m db.boards"]
         env:
-        - name: JOBLISTER_BOARDS_CSV
+        - name: JOBBED_BOARDS_CSV
           value: /config/job_boards.csv
         envFrom:
-        - secretRef: {name: joblister-secrets}
+        - secretRef: {name: jobbed-secrets}
         volumeMounts:
         - {name: boards, mountPath: /config, readOnly: true}
       volumes:
       - name: boards
-        configMap: {name: joblister-boards}
+        configMap: {name: jobbed-boards}

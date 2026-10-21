@@ -47,7 +47,7 @@ def test_k8s_policy_allows_only_the_api_on_8000():
     assert spec["policyTypes"] == ["Ingress"]
     (rule,) = spec["ingress"]
     assert rule["from"] == [
-        {"podSelector": {"matchLabels": {"app": "joblister-api"}}}]
+        {"podSelector": {"matchLabels": {"app": "jobbed-api"}}}]
     assert [p["port"] for p in rule["ports"]] == [8000]
 
 
@@ -59,7 +59,7 @@ def test_k8s_labels_match_what_the_policy_selects():
         return doc["spec"]["template"]["metadata"]["labels"]["app"]
 
     assert label(gateway) == "llm-gateway"
-    assert label(api) == "joblister-api"
+    assert label(api) == "jobbed-api"
 
 
 def test_k8s_ollama_is_reachable_only_from_the_gateway():

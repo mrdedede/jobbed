@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: joblister-api
+  name: jobbed-api
 spec:
   replicas: 1
   # One pod at a time: running generations and in-flight locks live in memory.
   strategy: {type: Recreate}
   selector:
-    matchLabels: {app: joblister-api}
+    matchLabels: {app: jobbed-api}
   template:
     metadata:
-      labels: {app: joblister-api}
+      labels: {app: jobbed-api}
     spec:
       terminationGracePeriodSeconds: 120
       securityContext:
@@ -18,18 +18,18 @@ spec:
         runAsUser: 1000
         fsGroup: 1000
       containers:
-      - name: joblister-api
-        image: joblister-api:latest
+      - name: jobbed-api
+        image: jobbed-api:latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
         env:
         - name: DATABASE_URL
           valueFrom:
-            secretKeyRef: {name: joblister-secrets, key: DATABASE_URL}
+            secretKeyRef: {name: jobbed-secrets, key: DATABASE_URL}
         - name: JWT_SECRET
           valueFrom:
-            secretKeyRef: {name: joblister-api-secrets, key: JWT_SECRET}
+            secretKeyRef: {name: jobbed-api-secrets, key: JWT_SECRET}
         - {name: GATEWAY_URL, value: "http://llm-gateway:8000"}
         - {name: DAILY_ANALYSIS_CAP, value: "10"}
         - {name: DAILY_CV_CAP, value: "2"}
@@ -50,8 +50,8 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: joblister-api
+  name: jobbed-api
 spec:
-  selector: {app: joblister-api}
+  selector: {app: jobbed-api}
   ports:
   - port: 8080

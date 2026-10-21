@@ -10,7 +10,7 @@ only; leaves the database as it found it.
     E2E_API_URL=...          API base URL                 (compose :8080, k8s port-forward :18080)
                              when set, no port-forward is started, e.g.
                              E2E_TARGET=k8s E2E_API_URL=$(minikube service \
-                               joblister-api-nodeport --url) python scripts/e2e_api.py
+                               jobbed-api-nodeport --url) python scripts/e2e_api.py
 
 The model must be in the API's ANALYSIS_MODELS. Postings and keywords carry a
 per-run random token, so only the seeded rows can match: no real posting is
@@ -71,7 +71,7 @@ def sql(statement):
     prefix = (["docker", "compose", "exec", "-T", "postgres"]
               if TARGET == "compose" else
               ["kubectl", "exec", "deploy/postgres", "--"])
-    done = run(*prefix, "psql", "-U", "joblister", "-d", "joblister",
+    done = run(*prefix, "psql", "-U", "jobbed", "-d", "jobbed",
                "-tAc", statement)
 
     if done.returncode:
@@ -83,7 +83,7 @@ def sql(statement):
 def cli(*args):
     prefix = (["docker", "compose", "exec", "-T", "api"]
               if TARGET == "compose" else
-              ["kubectl", "exec", "deploy/joblister-api", "--"])
+              ["kubectl", "exec", "deploy/jobbed-api", "--"])
 
     return run(*prefix, "python", "-m", "ai.main_analysis", *args)
 
@@ -269,7 +269,7 @@ def main():
 
     if TARGET == "k8s" and not EXPLICIT_API:
         forward = subprocess.Popen(
-            ["kubectl", "port-forward", "svc/joblister-api", "18080:8080"],
+            ["kubectl", "port-forward", "svc/jobbed-api", "18080:8080"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(3)
 

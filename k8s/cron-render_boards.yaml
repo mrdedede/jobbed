@@ -23,11 +23,11 @@ spec:
             fsGroup: 1000
           containers:
           - name: render-boards
-            image: joblister-scrape:latest
+            image: jobbed-scrape:latest
             imagePullPolicy: IfNotPresent
             command: ["python", "-m", "job_scraper.scrape_boards", "--render-missed"]
             envFrom:
-            - secretRef: {name: joblister-secrets}
+            - secretRef: {name: jobbed-secrets}
             resources:
               requests: {cpu: 250m, memory: 2Gi}
               limits: {memory: 3Gi}
@@ -36,6 +36,6 @@ spec:
             - {name: shm, mountPath: /dev/shm}
           volumes:
           - name: data
-            persistentVolumeClaim: {claimName: joblister-data}
+            persistentVolumeClaim: {claimName: jobbed-data}
           - name: shm
             emptyDir: {medium: Memory, sizeLimit: 1Gi}

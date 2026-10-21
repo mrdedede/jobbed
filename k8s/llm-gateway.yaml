@@ -16,7 +16,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: llm-gateway
-        image: joblister-llm-gateway:latest
+        image: jobbed-llm-gateway:latest
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
@@ -24,7 +24,7 @@ spec:
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
-              name: joblister-gateway-secrets
+              name: jobbed-gateway-secrets
               key: ANTHROPIC_API_KEY
               optional: true
         - {name: OLLAMA_BASE_URL, value: "http://ollama:11434"}

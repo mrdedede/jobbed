@@ -23,11 +23,11 @@ spec:
             fsGroup: 1000
           containers:
           - name: ingest-jobs
-            image: joblister-ingest:latest
+            image: jobbed-ingest:latest
             imagePullPolicy: IfNotPresent
             command: ["python", "-m", "job_scraper.scrape_postings", "--ingest", "--max-minutes", "225"]
             envFrom:
-            - secretRef: {name: joblister-secrets}
+            - secretRef: {name: jobbed-secrets}
             resources:
               requests: {cpu: 250m, memory: 512Mi}
               limits: {memory: 1Gi}
@@ -35,4 +35,4 @@ spec:
             - {name: data, mountPath: /data}
           volumes:
           - name: data
-            persistentVolumeClaim: {claimName: joblister-data}
+            persistentVolumeClaim: {claimName: jobbed-data}

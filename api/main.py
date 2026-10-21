@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
     await user.cancel_generations()
 
 
-app = FastAPI(title="Joblister User Rest API", version="0.1.0",
+app = FastAPI(title="Jobbed User Rest API", version="0.1.0",
               lifespan=lifespan)
 app.include_router(infra.router)
 app.include_router(user.router)

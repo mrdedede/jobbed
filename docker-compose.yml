@@ -1,6 +1,6 @@
 x-job-env: &job-env
-  DATABASE_URL: postgresql+psycopg://joblister:joblister@postgres:5432/joblister
-  JOBLISTER_DATA_DIR: /data
+  DATABASE_URL: postgresql+psycopg://jobbed:jobbed@postgres:5432/jobbed
+  JOBBED_DATA_DIR: /data
   # Optional; the France Travail source stays off without them.
   FRANCE_TRAVAIL_CLIENT_ID: ${FRANCE_TRAVAIL_CLIENT_ID:-}
   FRANCE_TRAVAIL_CLIENT_SECRET: ${FRANCE_TRAVAIL_CLIENT_SECRET:-}
@@ -15,7 +15,7 @@ x-job: &job
     context: .
     dockerfile: job_scraper/Dockerfile
     target: ingest
-  image: joblister-ingest
+  image: jobbed-ingest
   environment: *job-env
   volumes:
     - jobs_data:/data
@@ -27,11 +27,11 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: joblister
-      POSTGRES_PASSWORD: joblister
-      POSTGRES_DB: joblister
+      POSTGRES_USER: jobbed
+      POSTGRES_PASSWORD: jobbed
+      POSTGRES_DB: jobbed
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U joblister -d joblister"]
+      test: ["CMD-SHELL", "pg_isready -U jobbed -d jobbed"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -82,9 +82,9 @@ services:
     build:
       context: .
       dockerfile: api/Dockerfile
-    image: joblister-api
+    image: jobbed-api
     environment:
-      DATABASE_URL: postgresql+psycopg://joblister:joblister@postgres:5432/joblister
+      DATABASE_URL: postgresql+psycopg://jobbed:jobbed@postgres:5432/jobbed
       GATEWAY_URL: http://llm_gateway:8000
       # Empty, not `:?`: interpolation is file-wide, so a required variable
       # would break every other compose command. The app fails fast instead.
@@ -124,7 +124,7 @@ services:
     command: ["sh", "-c", "alembic upgrade head && python -m db.boards"]
     environment:
       <<: *job-env
-      JOBLISTER_BOARDS_CSV: /config/job_boards.csv
+      JOBBED_BOARDS_CSV: /config/job_boards.csv
     volumes:
       - jobs_data:/data
       - ./user_info/job_boards.csv:/config/job_boards.csv:ro
@@ -138,7 +138,7 @@ services:
     <<: *job
     profiles: ["jobs"]
     build: *scrape-build
-    image: joblister-scrape
+    image: jobbed-scrape
     command: ["python", "-m", "job_scraper.scrape_boards", "--render-missed"]
     # Chromium's /dev/shm is 64 MB by default.
     shm_size: "1gb"
@@ -153,7 +153,7 @@ services:
     <<: *job
     profiles: ["jobs"]
     build: *scrape-build
-    image: joblister-scrape
+    image: jobbed-scrape
     command: ["python", "-m", "job_scraper.scrape_postings", "--render-failed"]
     shm_size: "1gb"
 

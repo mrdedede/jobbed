@@ -1,7 +1,7 @@
 # The nightly jobs' images. Build from the repo root:
 #
-#   docker build -f job_scraper/Dockerfile --target ingest -t joblister-ingest .
-#   docker build -f job_scraper/Dockerfile --target scrape -t joblister-scrape .
+#   docker build -f job_scraper/Dockerfile --target ingest -t jobbed-ingest .
+#   docker build -f job_scraper/Dockerfile --target scrape -t jobbed-scrape .
 #
 # ingest: HTTP-only stages (ScrapeBoards, IngestJobs, the one-off migrate).
 # scrape: ingest plus Playwright and Chromium, for the two render jobs.
@@ -16,7 +16,7 @@ FROM python:3.12-slim-bookworm AS ingest
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
-    JOBLISTER_DATA_DIR=/data
+    JOBBED_DATA_DIR=/data
 
 WORKDIR /app
 

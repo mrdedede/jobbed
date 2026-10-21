@@ -7,13 +7,13 @@
 # driver (minikube's node IP is inside Docker's VM and not routable from the
 # host): use the tunnel instead, and leave it running:
 #
-#   minikube service joblister-api-nodeport --url
+#   minikube service jobbed-api-nodeport --url
 apiVersion: v1
 kind: Service
 metadata:
-  name: joblister-api-nodeport
+  name: jobbed-api-nodeport
 spec:
   type: NodePort
-  selector: {app: joblister-api}
+  selector: {app: jobbed-api}
   ports:
   - {port: 8080, targetPort: 8080, nodePort: 30080}

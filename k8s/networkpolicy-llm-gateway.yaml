@@ -8,7 +8,7 @@
 #
 #   kubectl run probe --rm -it --restart=Never --image=busybox -- \
 #     wget -qO- -T3 http://llm-gateway:8000/healthz        # must time out
-#   kubectl run probe --rm -it --restart=Never --labels app=joblister-api \
+#   kubectl run probe --rm -it --restart=Never --labels app=jobbed-api \
 #     --image=busybox -- wget -qO- -T3 http://llm-gateway:8000/healthz   # ok
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -21,6 +21,6 @@ spec:
   ingress:
   - from:
     - podSelector:
-        matchLabels: {app: joblister-api}
+        matchLabels: {app: jobbed-api}
     ports:
     - {port: 8000, protocol: TCP}

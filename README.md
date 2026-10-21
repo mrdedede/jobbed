@@ -73,7 +73,7 @@ Only these are still files; everything per-user is an API resource.
 
 | Variable | Used by | Default / notes |
 |---|---|---|
-| `DATABASE_URL` | everything | `postgresql+psycopg://joblister:joblister@localhost:5432/joblister` |
+| `DATABASE_URL` | everything | `postgresql+psycopg://jobbed:jobbed@localhost:5432/jobbed` |
 | `JWT_SECRET` | API | Required, at least 32 characters; the API refuses to start otherwise. |
 | `GATEWAY_URL` | API | `http://localhost:8000` |
 | `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. |
@@ -82,8 +82,8 @@ Only these are still files; everything per-user is an API resource.
 | `ANTHROPIC_API_KEY` | gateway | Empty means Claude models answer 502. |
 | `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT` | gateway | `http://localhost:11434`, `180` s |
 | `CLAUDE_MODEL_HAIKU` / `_SONNET` / `_OPUS` | gateway | Override the model ids behind the short names. |
-| `JOBLISTER_DATA_DIR` | scraper jobs | CSV hand-off directory (`temp/`; `/data` in the images). |
-| `JOBLISTER_BOARDS_CSV` | `migrate` | Path to the boards CSV. |
+| `JOBBED_DATA_DIR` | scraper jobs | CSV hand-off directory (`temp/`; `/data` in the images). |
+| `JOBBED_BOARDS_CSV` | `migrate` | Path to the boards CSV. |
 | `FRANCE_TRAVAIL_CLIENT_ID` / `_SECRET` | scraper jobs | Optional. |
 | `CHROMIUM_NO_SANDBOX` | render jobs | Set to `1` by the `scrape` image. |
 
@@ -112,17 +112,17 @@ under [Reaching the API](#running-with-docker--kubernetes).
 
 ```bash
 docker compose up -d postgres
-docker compose exec postgres psql -U joblister -c "CREATE DATABASE joblister_test"   # once
+docker compose exec postgres psql -U jobbed -c "CREATE DATABASE jobbed_test"   # once
 pytest tests/
 ```
 
-Tests use `joblister_test` (override with `TEST_DATABASE_URL`) and recreate its
+Tests use `jobbed_test` (override with `TEST_DATABASE_URL`) and recreate its
 schema each session. `tests/test_pdf_gen.py` is skipped without LibreOffice.
 
 ## Running with Docker / Kubernetes
 
 The scrape pipeline runs unattended as four stages, one after another. Every
-stage hands over through the data directory (`JOBLISTER_DATA_DIR`, `/data` in
+stage hands over through the data directory (`JOBBED_DATA_DIR`, `/data` in
 the images) and the database (`DATABASE_URL`).
 
 | Stage | Command | Reads | Writes |
@@ -139,9 +139,9 @@ stages need Chromium and use the `scrape` image; the others use `ingest`.
 **Images** (build from the repo root):
 
 ```bash
-docker build -f job_scraper/Dockerfile --target ingest -t joblister-ingest .
-docker build -f job_scraper/Dockerfile --target scrape -t joblister-scrape .
-docker build -f api/Dockerfile -t joblister-api .
+docker build -f job_scraper/Dockerfile --target ingest -t jobbed-ingest .
+docker build -f job_scraper/Dockerfile --target scrape -t jobbed-scrape .
+docker build -f api/Dockerfile -t jobbed-api .
 ```
 
 **Docker Compose**, one stage at a time:
@@ -162,13 +162,13 @@ docker compose up -d api
 API=http://localhost:8080
 
 # 2. minikube, port-forward (manifests from the Kubernetes section)
-kubectl port-forward svc/joblister-api 8080:8080 &
+kubectl port-forward svc/jobbed-api 8080:8080 &
 API=http://localhost:8080
 
 # 3. minikube, NodePort. On macOS with the docker driver the node IP is not
 # routable from the host, so this is a tunnel you leave running:
 kubectl apply -f k8s/dev/api-nodeport.yaml
-API=$(minikube service joblister-api-nodeport --url)     # Linux/VM driver: http://$(minikube ip):30080
+API=$(minikube service jobbed-api-nodeport --url)     # Linux/VM driver: http://$(minikube ip):30080
 ```
 
 ```bash
@@ -208,7 +208,7 @@ callable by the API and by nothing else. Under compose it sits on a private
 `llm` network (shared only with `api` and `ollama`) and publishes no host
 port; poke it through `docker compose exec api python -c "..."`. In the
 cluster, `k8s/networkpolicy-llm-gateway.yaml` allows ingress only from pods
-labelled `app: joblister-api`; it takes effect only on a CNI that enforces
+labelled `app: jobbed-api`; it takes effect only on a CNI that enforces
 NetworkPolicy, so run the probe in that file's header on any new cluster
 (verified on minikube's kindnet: an unlabelled pod times out once the policy
 has propagated, a few seconds after `kubectl apply`).
@@ -231,7 +231,7 @@ python scripts/e2e_api.py
 
 # minikube, grading through the compose Ollama (dev overrides, undo with `env VAR-`)
 kubectl set env deploy/llm-gateway OLLAMA_BASE_URL=http://host.minikube.internal:11434
-kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+kubectl set env deploy/jobbed-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
 E2E_TARGET=k8s python scripts/e2e_api.py
 ```
 
@@ -244,7 +244,7 @@ render-boards 00:45, ingest 01:00, render-postings 05:00):
 
 ```bash
 kubectl apply -f k8s/pvc.yaml
-kubectl create secret generic joblister-secrets \
+kubectl create secret generic jobbed-secrets \
   --from-literal=DATABASE_URL='postgresql+psycopg://...'   # see k8s/secret.example.yaml
 kubectl apply -f k8s/job-migrate.yaml
 kubectl apply -f k8s/cron-scrape_boards.yaml -f k8s/cron-ingest_jobs.yaml \
@@ -252,12 +252,12 @@ kubectl apply -f k8s/cron-scrape_boards.yaml -f k8s/cron-ingest_jobs.yaml \
 
 # The API and its gateway (after migrate-jobs); secrets are separate, see
 # k8s/secret.example.yaml
-docker build -f api/Dockerfile -t joblister-api .
-docker build -f llm_gateway/Dockerfile -t joblister-llm-gateway .
-minikube image load joblister-api:latest joblister-llm-gateway:latest
-kubectl create secret generic joblister-api-secrets \
+docker build -f api/Dockerfile -t jobbed-api .
+docker build -f llm_gateway/Dockerfile -t jobbed-llm-gateway .
+minikube image load jobbed-api:latest jobbed-llm-gateway:latest
+kubectl create secret generic jobbed-api-secrets \
   --from-literal=JWT_SECRET="$(openssl rand -hex 32)"
-kubectl create secret generic joblister-gateway-secrets \
+kubectl create secret generic jobbed-gateway-secrets \
   --from-literal=ANTHROPIC_API_KEY='...'
 kubectl apply -f k8s/llm-gateway.yaml -f k8s/api.yaml \
               -f k8s/networkpolicy-llm-gateway.yaml
@@ -266,7 +266,7 @@ kubectl apply -f k8s/llm-gateway.yaml -f k8s/api.yaml \
 # Optional: self-hosted models (CPU), reachable from the gateway only
 kubectl apply -f k8s/ollama.yaml
 kubectl exec deploy/ollama -- ollama pull qwen2.5:0.5b
-kubectl set env deploy/joblister-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
+kubectl set env deploy/jobbed-api ANALYSIS_MODELS=haiku,sonnet,ollama-qwen2.5:0.5b
 
 # Run a stage now instead of waiting for its schedule
 kubectl create job --from=cronjob/scrape-boards test-scrape

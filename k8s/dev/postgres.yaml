@@ -17,14 +17,14 @@ spec:
       - name: postgres
         image: postgres:16-alpine
         env:
-        - {name: POSTGRES_USER, value: joblister}
+        - {name: POSTGRES_USER, value: jobbed}
         - {name: POSTGRES_PASSWORD, value: change-me}
-        - {name: POSTGRES_DB, value: joblister}
+        - {name: POSTGRES_DB, value: jobbed}
         ports:
         - containerPort: 5432
         readinessProbe:
           exec:
-            command: ["pg_isready", "-U", "joblister", "-d", "joblister"]
+            command: ["pg_isready", "-U", "jobbed", "-d", "jobbed"]
           periodSeconds: 5
         volumeMounts:
         - {name: data, mountPath: /var/lib/postgresql/data}

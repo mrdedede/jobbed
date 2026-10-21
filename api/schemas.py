@@ -10,8 +10,8 @@ from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import (AfterValidator, BaseModel, Field, StringConstraints,
-                      field_validator)
+from pydantic import (AfterValidator, BaseModel, ConfigDict, Field,
+                      StringConstraints, field_validator)
 
 Email = Annotated[str, StringConstraints(
     strip_whitespace=True, to_lower=True, max_length=254,
@@ -161,6 +161,51 @@ class GenCvOut(BaseModel):
     locale: str
     cv: dict
     job_id: UUID
+
+
+# A user's edit of a generated CV: same shape as the `cv` object of
+# ai.cv_generation.CV_SCHEMA (tests/test_api_cv_generation.py pins the fields).
+CvText = Annotated[str, Field(max_length=5_000)]
+CvList = Annotated[List[CvText], Field(max_length=50)]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class GenSkillGroup(_Strict):
+    competence: CvText
+    skills: CvList
+
+
+class GenExperience(_Strict):
+    role: CvText
+    company: CvText
+    location: CvText
+    start_date: CvText
+    end_date: CvText
+    bullets: CvList
+
+
+class GenEducation(_Strict):
+    diploma: CvText
+    institution: CvText
+    location: CvText
+    period: CvText
+    degree: CvText
+    details: CvText
+
+
+class GenCvBody(_Strict):
+    cv_introduction: CvText
+    profile_text: CvText
+    skills: List[GenSkillGroup] = Field(max_length=50)
+    experiences: List[GenExperience] = Field(max_length=50)
+    education: List[GenEducation] = Field(max_length=50)
+
+
+class GenCvUpdate(_Strict):
+    cv: GenCvBody
 
 
 class GenCvStarted(BaseModel):

@@ -21,6 +21,16 @@ from db import generated_cv, jobs, usage, users
 from db.engine import engine
 
 CV = {"profile_text": "p"}
+EDITED = {
+    "cv_introduction": "Go Developer, Paris",
+    "profile_text": "Fixed by hand.",
+    "skills": [{"competence": "Go", "skills": ["Go", "gRPC"]}],
+    "experiences": [{"role": "Dev", "company": "Acme", "location": "Paris",
+                     "start_date": "2022", "end_date": "Present",
+                     "bullets": ["Shipped things."]}],
+    "education": [{"diploma": "MSc", "institution": "Centrale", "location": "Lille",
+                   "period": "2019 - 2021", "degree": "CS", "details": ""}],
+}
 GOOD = json.dumps({"locale": "fr", "cv": CV})
 GRADE = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
 
@@ -272,6 +282,8 @@ def test_generate_requires_a_token(db):
         assert c.post("/v1/me/cvs/generate", json={"job_id": str(uuid.uuid4())}).status_code == 401
         assert c.get(f"/v1/me/cvs/generate/{uuid.uuid4()}").status_code == 401
         assert c.get("/v1/me/generated-cvs").status_code == 401
+        assert c.put(f"/v1/me/generated-cvs/{uuid.uuid4()}",
+                     json={"cv": EDITED}).status_code == 401
 
 
 def test_finished_generations_are_pruned(as_user, chat, monkeypatch):
@@ -310,7 +322,8 @@ def test_server_side_rendering_routes_are_gone(as_user, chat, ext):
     c = as_user(uid)
     cv_id = finish(c, job_id)["cv"]["cv_id"]
 
-    assert c.get(f"/v1/me/generated-cvs/{cv_id}.{ext}").status_code == 404
+    # 405, not 404: PUT /generated-cvs/{cv_id} owns the path, GET is unrouted.
+    assert c.get(f"/v1/me/generated-cvs/{cv_id}.{ext}").status_code in (404, 405)
 
 
 # phase 7a regressions
@@ -370,3 +383,61 @@ def test_shutdown_mid_run_refunds_the_unit(as_user, chat):
     assert poll(c, gid).json()["error"] == {"status": 503, "detail": "interrupted"}
     assert used(uid) == 0
     assert uid not in user_router._cv_in_flight
+
+
+# editing
+
+def generated(c, job_id):
+    finish(c, job_id)
+    return c.get("/v1/me/generated-cvs").json()[0]["cv_id"]
+
+
+def test_put_replaces_the_cv_and_the_list_shows_it(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    cv_id = generated(c, job_id)
+
+    put = c.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": EDITED})
+
+    assert put.status_code == 200
+    assert put.json()["cv"] == EDITED
+    assert put.json()["locale"] == "fr"
+    assert c.get("/v1/me/generated-cvs").json()[0]["cv"] == EDITED
+
+
+def test_put_on_another_users_or_unknown_cv_is_404(as_user, chat):
+    uid, (job_id,) = graded_user()
+    cv_id = generated(as_user(uid), job_id)
+    other = as_user(make_user())
+
+    assert other.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": EDITED}).status_code == 404
+    assert other.put(f"/v1/me/generated-cvs/{uuid.uuid4()}", json={"cv": EDITED}).status_code == 404
+    assert as_user(uid).get("/v1/me/generated-cvs").json()[0]["cv"] == CV
+
+
+@pytest.mark.parametrize("bad", [
+    {k: v for k, v in EDITED.items() if k != "skills"},
+    {**EDITED, "languages": []},
+    {**EDITED, "profile_text": "x" * 5_001},
+    {**EDITED, "experiences": [{**EDITED["experiences"][0], "bullets": ["b"] * 51}]},
+])
+def test_put_with_a_bad_cv_is_422(as_user, chat, bad):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    cv_id = generated(c, job_id)
+
+    assert c.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": bad}).status_code == 422
+
+
+def test_edit_schema_matches_the_generation_schema():
+    """The PUT body must accept exactly what the model is asked to write."""
+    from ai.cv_generation import CV_SCHEMA
+    from api.schemas import GenCvBody, GenEducation, GenExperience, GenSkillGroup
+
+    cv = CV_SCHEMA["properties"]["cv"]
+    items = {k: cv["properties"][k]["items"] for k in ("skills", "experiences", "education")}
+
+    assert set(GenCvBody.model_fields) == set(cv["required"])
+    assert set(GenSkillGroup.model_fields) == set(items["skills"]["required"])
+    assert set(GenExperience.model_fields) == set(items["experiences"]["required"])
+    assert set(GenEducation.model_fields) == set(items["education"]["required"])

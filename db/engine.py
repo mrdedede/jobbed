@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+psycopg://joblister:joblister@localhost:5432/joblister",
+    "postgresql+psycopg://jobbed:jobbed@localhost:5432/jobbed",
 )
 
 engine = create_engine(DATABASE_URL)

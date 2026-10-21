@@ -173,3 +173,16 @@ def test_select_generated_cvs_empty_for_a_user_with_none(user, other_user,
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
     assert generated_cv.select_generated_cvs(other_user) == []
+
+
+def test_update_generated_cv_is_scoped_to_the_owner(user, other_user, graded_job):
+    job_id, analysis_id = graded_job
+    cv_id = generated_cv.insert_generated_cv(
+        user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
+
+    assert generated_cv.update_generated_cv(other_user, cv_id, {"profile_text": "x"}) is False
+    assert generated_cv.update_generated_cv(user, uuid.uuid4(), {"profile_text": "x"}) is False
+    assert generated_cv.select_generated_cv(user, cv_id)[5] == {"profile_text": "perfil"}
+
+    assert generated_cv.update_generated_cv(user, cv_id, {"profile_text": "editado"}) is True
+    assert generated_cv.select_generated_cv(user, cv_id)[5] == {"profile_text": "editado"}

@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from api_helpers import as_user, bearer, make_user
 
@@ -14,6 +15,7 @@ from ai import gateway
 from api.main import app
 from api.routers import user as user_router
 from db import jobs, users
+from db.engine import engine
 
 GOOD = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
 
@@ -179,7 +181,13 @@ def test_analyses_filter_order_and_isolation(client, chat):
     assert len(listed) == 1 and "description" not in listed[0]
     assert as_user(uid).get("/v1/me/analyses?min_grade=90").json() == []
     assert as_user(other).get("/v1/me/analyses").json() == []
-    assert len(as_user(uid).get("/v1/me/analyses?since_days=1").json()) == 1
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE ai_analysis SET created_at = now() - interval '3 days' "
+            "WHERE user_id = :u AND job_id = (SELECT id FROM job_postings "
+            "WHERE title = 'Go A')"), dict(u=uid))
+    recent = as_user(uid).get("/v1/me/analyses?since_days=1").json()
+    assert [a["title"] for a in recent] == ["Go B"]
     assert as_user(uid).get("/v1/me/analyses?since_days=0").status_code == 422
 
 

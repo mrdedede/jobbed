@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/me", tags=["user"])
 
 # CRUD handlers are plain `def` (FastAPI threads them): db.* is blocking.
-# Only analyze is `async def`, awaiting run_analysis.
+# Only handlers that await ai.* (analyze, due, cvs/generate) are `async def`.
 
 NOT_FOUND = {404: {"description": "No such row for this user"}}
 LIMIT_REACHED = {409: {"description": "Per-user row limit reached"}}
@@ -49,6 +49,8 @@ MAX_TERMS = 200
 
 #: Postings graded per user per UTC day (the LLM spend cap).
 DAILY_ANALYSIS_CAP = int(os.environ.get("DAILY_ANALYSIS_CAP", "10"))
+#: CVs generated per user per UTC day (Sonnet, the expensive call).
+DAILY_CV_CAP = int(os.environ.get("DAILY_CV_CAP", "2"))
 
 
 def _found(matched: bool) -> None:
@@ -355,14 +357,37 @@ def _prune_generations() -> None:
         del _generations[key]
 
 
+async def _refund_cv(user_id: UUID) -> None:
+    try:
+        await asyncio.to_thread(usage.refund, user_id, usage.KIND_CV, 1)
+    except Exception:
+        logger.exception("cv generation refund failed for %s", user_id)
+
+
 async def _run_generation(gen: _Generation, job_id: UUID) -> None:
-    """Generate one CV, record the outcome, refund the reserved unit on failure."""
+    """Generate one CV, record the outcome, refund the reserved unit on failure.
+
+    Once the row is stored the unit is spent: a failure reading it back still
+    reports done (cv=None, the client lists /generated-cvs instead).
+    """
+    cv_id = None
     try:
         cv_id = await generate_cv(gen.user_id, job_id)
         row = await asyncio.to_thread(db_cvs.select_generated_cv, gen.user_id, cv_id)
         gen.cv = _gen_cv_out(row)
         gen.status = "done"
+    except asyncio.CancelledError:
+        # Shutdown mid-run: give the unit back before the loop goes away.
+        gen.status, gen.error = "failed", {"status": 503, "detail": "interrupted"}
+        if cv_id is None:
+            await _refund_cv(gen.user_id)
+        raise
     except Exception as exc:
+        if cv_id is not None:
+            logger.exception("generated cv %s stored but not readable", cv_id)
+            gen.status = "done"
+            return
+
         known = {
             NoAnalysisForJob: (status.HTTP_409_CONFLICT, "no analysis for job"),
             NoActiveCv: (status.HTTP_409_CONFLICT, "no active CV"),
@@ -373,11 +398,22 @@ async def _run_generation(gen: _Generation, job_id: UUID) -> None:
                             (status.HTTP_500_INTERNAL_SERVER_ERROR, "generation failed"))
         if code == status.HTTP_500_INTERNAL_SERVER_ERROR:
             logger.exception("cv generation crashed")
+        else:
+            logger.warning("cv generation failed for job %s: %s (%s)",
+                           job_id, detail, exc)
         gen.status, gen.error = "failed", {"status": code, "detail": detail}
-        await asyncio.to_thread(usage.refund, gen.user_id, usage.KIND_CV, 1)
+        await _refund_cv(gen.user_id)
     finally:
         gen.finished = time.monotonic()
         _cv_in_flight.discard(gen.user_id)
+
+
+async def cancel_generations() -> None:
+    """Shutdown hook: cancel running generations so they refund their unit."""
+    tasks = [g.task for g in _generations.values() if g.task and not g.task.done()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _gen_cv_out(row) -> GenCvOut:
@@ -390,7 +426,9 @@ def _gen_cv_out(row) -> GenCvOut:
              responses={429: {"description": "Daily generation cap reached"},
                         409: {"description": "A generation is already running"}},
              description="Starts writing a CV tailored to a graded posting. "
-                         "Poll GET /cvs/generate/{generation_id} for the result.")
+                         "Poll GET /cvs/generate/{generation_id} for the result; "
+                         "failures inside the run (no analysis, no active CV, "
+                         "model errors) arrive in the poll body.")
 async def start_cv_generation(user_id: CurrentUser, body: GenCvRequest) -> GenCvStarted:
     if user_id in _cv_in_flight:
         raise HTTPException(status.HTTP_409_CONFLICT, "generation already running")
@@ -399,12 +437,12 @@ async def start_cv_generation(user_id: CurrentUser, body: GenCvRequest) -> GenCv
     _cv_in_flight.add(user_id)
     try:
         granted = await asyncio.to_thread(
-            usage.reserve, user_id, usage.KIND_CV, 1, DAILY_ANALYSIS_CAP)
+            usage.reserve, user_id, usage.KIND_CV, 1, DAILY_CV_CAP)
 
         if granted == 0:
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
-                f"daily limit of {DAILY_ANALYSIS_CAP} CV generations reached",
+                f"daily limit of {DAILY_CV_CAP} CV generations reached",
                 headers={"Retry-After": str(_seconds_to_utc_midnight())})
     except BaseException:
         _cv_in_flight.discard(user_id)

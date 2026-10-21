@@ -25,7 +25,7 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
     Args:
         user_id: The user this CV was generated for.
         locale: Language the CV body is written in ("en", "es", "fr", "pt").
-        cv: The CV object as returned by `ai.cv_generation.generate`, stored
+        cv: The CV object as returned by `ai.cv_generation.generate_cv`, stored
             as jsonb.
         job_id: The posting the CV targets.
         analysis_id: The ai_analysis row the generation was tailored against.

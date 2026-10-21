@@ -15,8 +15,8 @@ WORKDIR /app
 COPY api/requirements.txt api/requirements.txt
 RUN pip install --no-cache-dir -r api/requirements.txt
 
-# What the handlers import: db/ for storage, ai/ for grading (it reads
-# ai/grade-job.md at import), and job_scraper/ because filters.py reaches
+# What the handlers import: db/ for storage, ai/ for grading and CV
+# generation (it reads ai/grade-job.md and ai/generate-cv.md), and job_scraper/ because filters.py reaches
 # urls -> detector -> fetching, so it cannot be cut down to a few files.
 COPY api api
 COPY db db
@@ -32,6 +32,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 CMD python -c \
     "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"
 
-# One worker on purpose: the per-user in-flight analysis lock lives in this
-# process, and a second worker would silently stop honouring it.
+# One worker on purpose: the per-user in-flight locks and the running CV
+# generations live in this process; a second worker would split them.
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]

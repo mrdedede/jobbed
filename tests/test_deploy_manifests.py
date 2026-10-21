@@ -73,3 +73,14 @@ def test_k8s_ollama_is_reachable_only_from_the_gateway():
     assert rule["from"] == [
         {"podSelector": {"matchLabels": {"app": "llm-gateway"}}}]
     assert policy["spec"]["policyTypes"] == ["Ingress"]
+
+
+def test_k8s_api_runs_one_pod_at_a_time_with_its_caps():
+    """Generations and in-flight locks are in memory: a rolling update would
+    briefly run two pods and split them."""
+    api = _deployment("k8s/api.yaml")
+    env = {e["name"]: e.get("value")
+           for e in api["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    assert api["spec"]["strategy"] == {"type": "Recreate"}
+    assert env["DAILY_CV_CAP"] == "2"

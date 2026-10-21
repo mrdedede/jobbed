@@ -157,7 +157,7 @@ class GenCvOut(BaseModel):
     cv_id: UUID
     title: str
     company: str
-    adequation_grade: int
+    adequation_grade: Optional[int] = None  # legacy imports may lack a grade
     locale: str
     cv: dict
     job_id: UUID

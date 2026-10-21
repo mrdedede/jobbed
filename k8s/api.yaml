@@ -4,6 +4,8 @@ metadata:
   name: joblister-api
 spec:
   replicas: 1
+  # One pod at a time: running generations and in-flight locks live in memory.
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app: joblister-api}
   template:
@@ -30,6 +32,7 @@ spec:
             secretKeyRef: {name: joblister-api-secrets, key: JWT_SECRET}
         - {name: GATEWAY_URL, value: "http://llm-gateway:8000"}
         - {name: DAILY_ANALYSIS_CAP, value: "10"}
+        - {name: DAILY_CV_CAP, value: "2"}
         readinessProbe:
           httpGet: {path: /healthz, port: 8080}
           periodSeconds: 5

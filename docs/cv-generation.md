@@ -1,60 +1,61 @@
-# CV generation: design (not yet implemented)
+# CV generation
 
-Status: design spike. Nothing here is built except what "What exists" lists.
-Owners are proposals; change them freely.
+Rewrites the user's active CV for one posting they already graded. The model
+returns structured JSON; the browser renders it to DOCX or PDF.
 
-## 1. What exists
+## Endpoints
 
-| Piece | Where | Notes |
+All need `Authorization: Bearer <jwt>` and act on the token's user.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| POST | `/v1/me/cvs/generate` | `{"job_id": "<uuid>"}` | **202** `{"generation_id": "<uuid>"}`. **409** `generation already running`. **429** with `Retry-After` when the daily cap is reached. |
+| GET | `/v1/me/cvs/generate/{generation_id}` | – | `{"status": "running"\|"done"\|"failed", "cv": GenCvOut\|null, "error": {"status", "detail"}\|null}`. **404** for an unknown id, another user's, one finished over 1 h ago, or one lost to an API restart. |
+| GET | `/v1/me/generated-cvs` | – | `[GenCvOut]`, newest first. |
+
+`GenCvOut` is `{cv_id, title, company, adequation_grade (nullable), locale, cv, job_id}`.
+
+Failures inside the run are reported in the poll body, not as the HTTP status:
+
+| `error.status` | `error.detail` | Meaning |
 |---|---|---|
-| Rewrite a CV for one graded posting | `ai.cv_generation.generate_cv(user_id, job_id, model=SONNET)` | One gateway call; stores a row in `generated_cv` (JSONB `cv`, `locale`, FK to the posting and its `ai_analysis`). Refuses ungraded postings (`RuntimeError`). Uses the user's active CV. |
-| JSON to DOCX | `cv_generator.docx_gen.render_docx(blocks, l10n, template) -> bytes` | python-docx, pure Python. Template = `user_info/CV_placeholder.docx` (`paths.CV_TEMPLATE_DOCX`). Has no `__main__`. |
-| JSON to PDF | `cv_generator.pdf_gen.render_pdf` | Shells out to `soffice --headless --convert-to pdf`. LibreOffice is not in the API image. |
-| Storage helpers | `db.generated_cv` | `insert_generated_cv`, `select_generated_cvs`, `select_job_for_generation`. |
+| 409 | `no analysis for job` | The posting has no grade for this user. |
+| 409 | `no active CV` | Add or activate a CV. |
+| 502 | `the AI model call failed` | The gateway or model failed. |
+| 502 | `the model's answer was unusable` | The answer was not JSON of the expected shape. |
+| 503 | `interrupted` | The API shut down mid-run. |
+| 500 | `generation failed` | Anything else (logged). |
 
-Missing: any HTTP endpoint, a quota for it, a per-user template, watermark handling.
+A `done` status with `cv: null` means the CV was stored but could not be read
+back; list `/v1/me/generated-cvs` instead.
 
-## 2. Endpoint shape
+## How it runs
 
-- `POST /v1/me/cvs/generate {job_id, locale?, model?}`: needs an existing grade for `(user, job_id)`, else **409**; needs an active CV, else **409**. Returns **202** `{id, status}`.
-- `GET /v1/me/generated-cvs` (list), `GET /v1/me/generated-cvs/{id}` (JSON), `GET /v1/me/generated-cvs/{id}.docx` (rendered on request from the stored JSON; no file storage).
-- A Sonnet call is about 20 s (README), against about 10 s for a grade. That is long for a synchronous request behind a gateway or proxy timeout.
+- The POST reserves one unit of the `cv_generation` quota, starts an asyncio
+  task and returns at once. The task calls `ai.cv_generation.generate_cv`
+  (always Sonnet), which stores a row in `generated_cv`.
+- Status lives in an in-memory registry in `api/routers/user.py`. Finished
+  entries are pruned after an hour. A restart loses it, which the poll reports
+  as 404.
+- One generation per user at a time (process-local lock). This is why the API
+  runs a single worker and the Deployment uses `strategy: Recreate`.
+- **Quota:** `DAILY_CV_CAP` (default 2) per user per UTC day, separate from
+  `DAILY_ANALYSIS_CAP`. The unit is refunded when the run fails before a CV is
+  stored, including when the API shuts down (the lifespan cancels running
+  tasks). It is kept once the CV is stored.
 
-Recommendation: **asynchronous.** The POST reserves quota, starts the work as a background task and returns 202. The client polls `GET .../{id}`. This needs a `status` column (`pending|done|failed`), which means making `generated_cv.cv` nullable. If that is too much for the first cut, stay synchronous with a 60 s client timeout, because the existing `_in_flight` guard already limits one run per user. Re-decide when the first timeout is seen.
-Owner: backend (proposed: andre).
+## Rendering
 
-## 3. Cost control
+The API stores JSON only. The front end turns it into DOCX (`docx` npm
+package) and PDF (print dialog) in the browser, with localized headings and a
+profile (name, contact, photo) the user keeps in the browser. The Python
+renderers in `cv_generator/` (`docx_gen`, `pdf_gen`) are library code for local
+use. They are not in the API image, which has neither the template nor
+LibreOffice.
 
-- Quota kind `cv_generation`, **2 per UTC day per user** (`DAILY_CV_CAP`, default 2), through `db.usage.reserve/refund` (`KIND_CV` already exists). Reserve before the call and refund if it fails.
-- Model: reuse the `ANALYSIS_MODELS` whitelist (`api.schemas.allowed_models`); default `sonnet`. Haiku is allowed but writes visibly worse prose.
-- 429 with `Retry-After`, same as analyze.
+## Not built
 
-Owner: backend.
-
-## 4. Where rendering runs
-
-- DOCX: python-docx is already a dependency and renders in milliseconds. Do it **in the API process**, on download.
-- PDF: needs LibreOffice (about 400 MB image, slow cold start).
-
-Recommendation: **DOCX only in the first release.** PDF is a later, separate worker image (a K8s Job or a second Deployment with `soffice`) fed by the same stored JSON. Users can print a DOCX to PDF in the meantime.
-Owner: backend for DOCX; infra for the PDF worker, later.
-
-## 5. Watermark removal
-
-**Deferred, to be defined.** It is a future feature; what the watermark is, where it appears and whether a local model is needed will be discussed later. Until then no recommendation is made, and nothing here (including an Ollama deployment on K8s, which today exists only in compose) depends on it.
-Owner: to be assigned when scoped.
-
-## 6. Template
-
-Today the template is one shared file, `user_info/CV_placeholder.docx`, which is a single-tenant leftover that the cleanup deliberately keeps. In a container it would have to be baked into the image or mounted.
-
-Recommendation: **one shared template first.** Move it out of `user_info/` into the repo (for example `cv_generator/templates/default.docx`, committed, since it is a generic file) and change `paths.CV_TEMPLATE_DOCX` accordingly. Per-user upload (a `user_templates` table, a size cap, and a check that all five `TOKENS` placeholders are present) is a separate later feature, because it adds a user-supplied-file attack surface.
-Owner: backend.
-
-## Suggested build order
-
-1. Move the template into the repo.
-2. Endpoint with the quota (sync, or async if the timeout is a problem).
-3. DOCX download.
-4. PDF worker.
-5. Watermark removal, once scoped.
+- Moving status to a table, which the API needs before it can run more than
+  one pod.
+- Per-user DOCX templates.
+- Watermark removal (to be scoped).

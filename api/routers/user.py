@@ -14,7 +14,7 @@ from api.security import hash_password, verify_password
 from api.schemas import (AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
                          CvOut, CvUpdate, DueOut, PasswordChange, TermIn,
                          TermOut, UserOut, GenCvRequest, GenCvOut,
-                         GenCvStarted, GenCvStatus)
+                         GenCvStarted, GenCvStatus, GenCvUpdate)
 from ai import gateway
 from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
 from ai.main_analysis import count_due, run_analysis
@@ -471,3 +471,12 @@ def get_cv_generation(user_id: CurrentUser, generation_id: UUID) -> GenCvStatus:
 @router.get("/generated-cvs", response_model=List[GenCvOut])
 def list_gen_cvs(user_id: CurrentUser) -> List[GenCvOut]:
     return [_gen_cv_out(r) for r in db_cvs.select_generated_cvs(user_id)]
+
+
+@router.put("/generated-cvs/{cv_id}", response_model=GenCvOut,
+            responses=NOT_FOUND)
+def change_gen_cv(user_id: CurrentUser, cv_id: UUID,
+                  body: GenCvUpdate) -> GenCvOut:
+    _found(db_cvs.update_generated_cv(user_id, cv_id, body.cv.model_dump()))
+
+    return _gen_cv_out(db_cvs.select_generated_cv(user_id, cv_id))

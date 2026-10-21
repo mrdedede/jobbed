@@ -63,6 +63,36 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
 
+# UPDATES
+
+def update_generated_cv(user_id: UUID, cv_id: UUID, cv: dict) -> bool:
+    """Replace the body of one of a user's generated CVs (the user's edit).
+
+    Args:
+        user_id: The owner of the CV -- scopes the update.
+        cv_id: The generated_cv row to change.
+        cv: The edited CV, same shape as the generated one, stored as jsonb.
+
+    Returns:
+        Whether a row matched (False: no such CV for this user).
+
+    Raises:
+        RuntimeError: If the database rejects the update.
+    """
+    # SQL: UPDATE generated_cv SET cv = ? WHERE id = ? AND user_id = ?
+    stmt = (
+        generated_cv.update()
+        .where(generated_cv.c.id == cv_id)
+        .where(generated_cv.c.user_id == user_id)
+        .values(cv=cv)
+    )
+    try:
+        with engine.begin() as conn:
+            return conn.execute(stmt).rowcount > 0
+    except Exception as exc:
+        raise RuntimeError(f"Database update failed: {exc}") from exc
+
+
 # SELECTIONS
 
 def select_job_for_generation(

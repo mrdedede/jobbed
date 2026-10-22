@@ -31,11 +31,14 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
 - `POST /v1/me/cvs/{cv_id}/suggest-terms` asks the first model in
   `ANALYSIS_MODELS` for keywords and blacklist terms fitting a CV (stores nothing; at most `DAILY_TERMS_CAP` per
   day); `POST /v1/me/terms` adds the ones the user keeps in one call.
-- `POST /v1/me/analyze` filters the recent postings by your keywords and
-  blacklist, sends each survivor with your active CV to the LLM gateway, and
-  stores a 0-100 grade plus a written analysis in `ai_analysis`.
-- `GET /v1/me/analyses` lists your grades; `GET /v1/me/analyses/due` says how
-  many postings are waiting.
+- `GET /v1/me/analyses/candidates?window_days=N` lists the recent ungraded
+  postings that pass your keywords and blacklist, newest first (no
+  description; `GET /v1/me/jobs/{job_id}` has it).
+- `POST /v1/me/analyze` takes `{"job_ids": [...], "model": ...}` (1-50 ids
+  picked from the candidates), sends each with your active CV to the LLM
+  gateway, and stores a 0-100 grade plus a written analysis in `ai_analysis`.
+  Unknown, already graded and over-quota ids come back counted in `skipped`.
+- `GET /v1/me/analyses` lists your grades.
 - **Daily quota:** at most `DAILY_ANALYSIS_CAP` (default 10) postings graded per
   user per UTC day; past that the API answers `429` with `Retry-After`.
 
@@ -190,9 +193,10 @@ curl -s -X POST $API/v1/me/keywords  -H "$H" -H "$A" -d '{"term":"python"}'
 curl -s -X POST $API/v1/me/blacklist -H "$H" -H "$A" -d '{"term":"senior"}'
 curl -s -X POST $API/v1/me/cvs       -H "$H" -H "$A" -d '{"content_md":"Backend engineer, Python, Postgres"}'
 
-curl -s "$API/v1/me/analyses/due?window_days=1" -H "$A"   # how many would be graded
+IDS=$(curl -s "$API/v1/me/analyses/candidates?window_days=1" -H "$A" \
+  | jq -c '[.[:5][].job_id]')                             # pick the first five
 curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
-  -d '{"limit":5,"window_days":1,"model":"haiku"}'        # repeat while "remaining" > 0
+  -d "{\"job_ids\":$IDS,\"model\":\"haiku\"}"
 curl -s "$API/v1/me/analyses?limit=20&min_grade=60" -H "$A"
 
 JOB=$(curl -s "$API/v1/me/analyses?limit=1" -H "$A" | jq -r '.[0].job_id')
@@ -436,7 +440,7 @@ old/new/skipped counts and is safe to re-run.
 | `429` on cvs/generate | Daily CV cap reached; retry after `Retry-After`, or raise `DAILY_CV_CAP`. |
 | Poll of a generation answers `404` | Unknown id, finished over an hour ago, or the API restarted mid-run (the unit was refunded). Check `GET /v1/me/generated-cvs`. |
 | `502` on analyze | Every grading call failed: no `ANTHROPIC_API_KEY` on the gateway, Ollama not running, or the model is not available. Check `docker compose logs llm_gateway`. |
-| Analyze returns `due: 0` | No recent postings match your keywords. Widen `window_days`, check the nightly jobs ran, or `GET /v1/me/analyses/due`. |
+| `GET /v1/me/analyses/candidates` is empty | No recent postings match your keywords. Widen `window_days` or check the nightly jobs ran. |
 | A board gives nothing | Check `no_jobs.csv` in the data directory; JS-heavy boards need RenderBoards, some are blocked (403). |
 
 ## Performance notes

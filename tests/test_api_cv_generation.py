@@ -72,7 +72,8 @@ def graded_user(n=1):
     jobs.insert_jobs([("Acme", f"Go Dev {i}", "go " * 6, f"http://cv/{i}", "Paris", None, None)
                       for i in range(n)])
     uid = make_user("go")
-    asyncio.run(main_analysis.run_analysis(uid))
+    asyncio.run(main_analysis.run_analysis(
+        uid, [r[0] for r in db_analysis.select_jobs_to_analyse(uid)]))
 
     return uid, [r[0] for r in db_analysis.select_analyses(uid)]
 

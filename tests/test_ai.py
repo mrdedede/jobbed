@@ -117,15 +117,18 @@ def _two_jobs():
     ])
 
 
-async def test_run_analysis_grades_and_stores_each_due_posting(
+def _pending(user):
+    return [r[0] for r in db_analysis.select_jobs_to_analyse(user)]
+
+
+async def test_run_analysis_grades_and_stores_each_picked_posting(
         user, fake_chat):
     _two_jobs()
     users.insert_user_cv(user, "my cv")
 
-    stats = await main_analysis.run_analysis(user, model="haiku")
+    stats = await main_analysis.run_analysis(user, _pending(user), model="haiku")
 
-    assert (stats["analysed"], stats["failed"], stats["due"],
-            stats["filtered_out"]) == (2, 0, 2, 0)
+    assert (stats["analysed"], stats["failed"], stats["skipped"]) == (2, 0, 0)
     assert set(stats["job_ids"]) == {r[0] for r in db_analysis.select_analyses(user)}
     rows = db_analysis.select_analyses(user)
     assert [r[1] for r in rows] == [77, 77]
@@ -138,21 +141,34 @@ async def test_run_analysis_counts_failures_and_keeps_going(user, fake_chat):
     _, state = fake_chat
     state["answer"] = "garbage"
 
-    stats = await main_analysis.run_analysis(user)
+    stats = await main_analysis.run_analysis(user, _pending(user))
 
-    assert (stats["analysed"], stats["failed"], stats["due"]) == (0, 2, 2)
+    assert (stats["analysed"], stats["failed"]) == (0, 2)
     assert stats["job_ids"] == []
+
+
+async def test_run_analysis_skips_unknown_and_graded_ids(user, fake_chat):
+    _two_jobs()
+    users.insert_user_cv(user, "my cv")
+    first, second = _pending(user)
+    await main_analysis.run_analysis(user, [first])
+
+    stats = await main_analysis.run_analysis(
+        user, [first, second, uuid.uuid4()])
+
+    assert (stats["analysed"], stats["skipped"]) == (1, 2)
+    assert len(fake_chat[0]) == 2
 
 
 async def test_run_analysis_without_a_cv_refuses(user, fake_chat):
     with pytest.raises(ValueError, match="no active CV"):
-        await main_analysis.run_analysis(user)
+        await main_analysis.run_analysis(user, [uuid.uuid4()])
 
 
 async def test_generate_cv_stores_for_this_user(user, fake_chat):
     _two_jobs()
     users.insert_user_cv(user, "my cv")
-    await main_analysis.run_analysis(user)
+    await main_analysis.run_analysis(user, _pending(user))
     job_id = db_analysis.select_analyses(user)[0][0]
     _, state = fake_chat
     state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
@@ -175,7 +191,7 @@ async def test_generate_cv_refuses_an_ungraded_posting(user, fake_chat):
 async def test_generate_cv_without_an_active_cv_refuses(user, fake_chat):
     _two_jobs()
     users.insert_user_cv(user, "my cv")
-    await main_analysis.run_analysis(user)
+    await main_analysis.run_analysis(user, _pending(user))
     job_id = db_analysis.select_analyses(user)[0][0]
     users.delete_user_cv(user, users.select_active_user_cv(user)[0])
 
@@ -187,7 +203,7 @@ async def test_generate_cv_without_an_active_cv_refuses(user, fake_chat):
 async def test_generate_cv_unusable_answer_stores_nothing(user, fake_chat, answer):
     _two_jobs()
     users.insert_user_cv(user, "my cv")
-    await main_analysis.run_analysis(user)
+    await main_analysis.run_analysis(user, _pending(user))
     job_id = db_analysis.select_analyses(user)[0][0]
     fake_chat[1]["answer"] = answer
 
@@ -197,145 +213,102 @@ async def test_generate_cv_unusable_answer_stores_nothing(user, fake_chat, answe
     assert generated_cv.select_generated_cvs(user) == []
 
 
-# per-user filtering inside run_analysis
+# per-user filtering inside list_due
 
 def _posting(n, title, description):
     return ("Acme", title, description, f"http://f/{n}", "Paris", None, None)
 
 
-def _graded_titles(user):
-    return {r[3] for r in db_analysis.select_analyses(user)}
+async def _due_titles(user, window="-24 hours"):
+    return [r[2] for r in await main_analysis.list_due(user, window)]
 
 
-async def test_run_analysis_grades_only_keyword_matches(user, fake_chat):
+async def test_list_due_keeps_only_keyword_matches_without_description(user):
     jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
                       _posting(2, "Py Dev", "python " * 6)])
-    users.insert_user_cv(user, "my cv")
     users.insert_user_keyword(user, "go")
 
-    stats = await main_analysis.run_analysis(user)
+    [row] = await main_analysis.list_due(user)
 
-    assert (stats["analysed"], stats["due"], stats["filtered_out"]) == (1, 1, 1)
-    assert _graded_titles(user) == {"Go Dev"}
+    assert row[1:5] == ("Acme", "Go Dev", "Paris", "http://f/1")
+    assert "go go" not in str(row)
 
 
-async def test_run_analysis_honours_the_blacklist(user, fake_chat):
+async def test_list_due_honours_the_blacklist(user):
     jobs.insert_jobs([_posting(1, "Py Dev", "python " * 6),
                       _posting(2, "Senior Py Dev", "python senior " * 6)])
-    users.insert_user_cv(user, "my cv")
     users.insert_user_keyword(user, "python")
     users.insert_user_blacklist_term(user, "senior")
 
-    await main_analysis.run_analysis(user)
-
-    assert _graded_titles(user) == {"Py Dev"}
+    assert await _due_titles(user) == ["Py Dev"]
 
 
-async def test_run_analysis_diverges_per_user(user, db, fake_chat):
+async def test_list_due_applies_the_blacklist_without_keywords(user):
+    jobs.insert_jobs([_posting(1, "Py Dev", "python " * 6),
+                      _posting(2, "Senior Py Dev", "python senior " * 6)])
+    users.insert_user_blacklist_term(user, "senior")
+
+    assert await _due_titles(user) == ["Py Dev"]
+
+
+async def test_list_due_diverges_per_user(user, db):
     other = users.insert_user(f"{uuid.uuid4()}@example.com", "hashed")
     jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
                       _posting(2, "Py Dev", "python " * 6)])
-    for who, term in ((user, "go"), (other, "python")):
-        users.insert_user_cv(who, "my cv")
-        users.insert_user_keyword(who, term)
-
-    await main_analysis.run_analysis(user)
-    await main_analysis.run_analysis(other)
-
-    assert _graded_titles(user) == {"Go Dev"}
-    assert _graded_titles(other) == {"Py Dev"}
-
-
-async def test_run_analysis_limit_applies_after_filtering_ties_by_hits(
-        user, fake_chat):
-    jobs.insert_jobs([
-        _posting(1, "Noise A", "cooking " * 6),
-        _posting(2, "Weak", "go " * 5),
-        _posting(3, "Strong", "go " * 12),
-        _posting(4, "Noise B", "cooking " * 6),
-    ])
-    users.insert_user_cv(user, "my cv")
     users.insert_user_keyword(user, "go")
+    users.insert_user_keyword(other, "python")
 
-    stats = await main_analysis.run_analysis(user, limit=1)
-
-    assert (stats["analysed"], stats["filtered_out"]) == (1, 2)
-    assert _graded_titles(user) == {"Strong"}
-
-
-async def test_run_analysis_with_nothing_due_calls_no_model(user, fake_chat):
-    users.insert_user_cv(user, "my cv")
-
-    stats = await main_analysis.run_analysis(user)
-
-    assert stats == {"analysed": 0, "failed": 0, "due": 0,
-                     "filtered_out": 0, "remaining": 0, "job_ids": []}
-    assert fake_chat[0] == []
+    assert await _due_titles(user) == ["Go Dev"]
+    assert await _due_titles(other) == ["Py Dev"]
 
 
-async def test_run_analysis_takes_newest_first_then_pages(user, fake_chat):
-    users.insert_user_cv(user, "my cv")
+async def test_list_due_is_newest_first_then_most_hits(user):
     users.insert_user_keyword(user, "go")
     # Separate inserts => distinct scraped_at; the oldest has the most hits.
     jobs.insert_jobs([_posting(1, "Oldest", "go " * 20)])
-    jobs.insert_jobs([_posting(2, "Middle", "go " * 6)])
-    jobs.insert_jobs([_posting(3, "Newest", "go " * 6)])
+    jobs.insert_jobs([_posting(2, "Weak", "go " * 5),
+                      _posting(3, "Strong", "go " * 12),
+                      _posting(4, "Noise", "cooking " * 6)])
 
-    first = await main_analysis.run_analysis(user, limit=2)
-
-    assert _graded_titles(user) == {"Newest", "Middle"}
-    assert (first["due"], first["remaining"]) == (2, 1)
-
-    second = await main_analysis.run_analysis(user, limit=2)
-
-    assert _graded_titles(user) == {"Newest", "Middle", "Oldest"}
-    assert (second["due"], second["remaining"]) == (1, 0)
+    assert await _due_titles(user) == ["Strong", "Weak", "Oldest"]
 
 
-async def test_count_due_applies_the_users_filter_and_matches_a_run(
-        user, fake_chat):
-    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6),
-                      _posting(2, "Py Dev", "python " * 6)])
+async def test_list_due_drops_what_the_user_graded(user, fake_chat):
+    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6)])
     users.insert_user_keyword(user, "go")
-
-    assert await main_analysis.count_due(user) == 1
-
     users.insert_user_cv(user, "my cv")
-    await main_analysis.run_analysis(user)
+    [row] = await main_analysis.list_due(user)
 
-    assert await main_analysis.count_due(user) == 0
+    await main_analysis.run_analysis(user, [row[0]])
+
+    assert await main_analysis.list_due(user) == []
 
 
-def test_cli_passes_model_limit_and_window_to_run_analysis(monkeypatch):
+def test_cli_grades_the_first_limit_due_postings(monkeypatch):
     seen = {}
+    due = [(uuid.uuid4(),) for _ in range(3)]
 
-    async def fake(user_id, **kwargs):
-        seen.update(user_id=user_id, **kwargs)
+    async def fake_due(user_id, window):
+        seen.update(window=window)
 
-        return {"analysed": 0, "failed": 0, "filtered_out": 0,
-                "remaining": 0}
+        return due
 
-    monkeypatch.setattr(main_analysis, "run_analysis", fake)
+    async def fake_run(user_id, job_ids, **kwargs):
+        seen.update(user_id=user_id, job_ids=job_ids, **kwargs)
+
+        return {"analysed": 0, "failed": 0}
+
+    monkeypatch.setattr(main_analysis, "list_due", fake_due)
+    monkeypatch.setattr(main_analysis, "run_analysis", fake_run)
     uid = uuid.uuid4()
 
     assert main_analysis.main(
-        [str(uid), "--model", "ollama-x", "--limit", "3",
+        [str(uid), "--model", "ollama-x", "--limit", "2",
          "--window", "-7 days"]) == 0
-    assert (seen["user_id"], seen["model"], seen["limit"],
-            seen["window"]) == (uid, "ollama-x", 3, "-7 days")
+    assert (seen["user_id"], seen["model"], seen["job_ids"],
+            seen["window"]) == (uid, "ollama-x", [d[0] for d in due[:2]],
+                                "-7 days")
 
-    assert main_analysis.main([str(uid)]) == 0
-    assert (seen["model"], seen["limit"], seen["window"]) == (
-        "haiku", 20, "-24 hours")
-
-
-async def test_run_analysis_applies_the_blacklist_without_keywords(
-        user, fake_chat):
-    jobs.insert_jobs([_posting(1, "Py Dev", "python " * 6),
-                      _posting(2, "Senior Py Dev", "python senior " * 6)])
-    users.insert_user_cv(user, "my cv")
-    users.insert_user_blacklist_term(user, "senior")
-
-    await main_analysis.run_analysis(user)
-
-    assert _graded_titles(user) == {"Py Dev"}
+    assert main_analysis.main([str(uid), "--limit", "0"]) == 0
+    assert (seen["model"], seen["job_ids"], seen["window"]) == (
+        "haiku", [d[0] for d in due], "-24 hours")

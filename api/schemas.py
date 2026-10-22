@@ -119,9 +119,14 @@ def allowed_models() -> List[str]:
 
 
 class AnalyzeRequest(BaseModel):
-    limit: int = Field(20, ge=1, le=50)
-    window_days: int = Field(1, ge=1, le=30)
+    """The postings the user picked to grade, from /analyses/candidates."""
+    job_ids: List[UUID] = Field(min_length=1, max_length=50)
     model: str = "haiku"
+
+    @field_validator("job_ids")
+    @classmethod
+    def _dedupe(cls, value: List[UUID]) -> List[UUID]:
+        return list(dict.fromkeys(value))
 
     @field_validator("model")
     @classmethod
@@ -148,15 +153,22 @@ class AnalysisOut(BaseModel):
 class AnalyzeOut(BaseModel):
     analysed: int
     failed: int
-    due: int
-    filtered_out: int
-    remaining: int
+    skipped: int  # unknown, already graded, or past the daily cap
     results: List[AnalysisOut]
 
 
-class DueOut(BaseModel):
-    """Postings an analysis run could grade right now, filter applied."""
-    due: int
+class CandidateOut(BaseModel):
+    """An ungraded posting the user may pick to grade. No `description`."""
+    job_id: UUID
+    company: str
+    title: str
+    place: Optional[str] = None
+    url: str
+    scraped_at: datetime
+
+
+class JobOut(CandidateOut):
+    description: Optional[str] = None
 
 
 # CV GENERATION

@@ -95,6 +95,52 @@ def select_jobs_to_analyse(
         return conn.execute(stmt).all()
 
 
+def select_ungraded_jobs(
+        user_id: UUID,
+        job_ids: Sequence[UUID]) -> List[Tuple[UUID, str, str, str]]:
+    """Of these postings, the ones that exist and this user has not graded.
+
+    Args:
+        user_id: The user asking for postings to grade.
+        job_ids: The postings the user picked.
+
+    Returns:
+        List of (id, company, title, description), in no particular order.
+    """
+    # SQL: SELECT job_id FROM ai_analysis WHERE user_id = ?
+    graded = select(ai_analysis.c.job_id).where(ai_analysis.c.user_id == user_id)
+    # SQL: SELECT id, company, title, description FROM job_postings
+    #      WHERE id IN (...) AND id NOT IN (<graded subquery above>)
+    stmt = (
+        select(job_postings.c.id, job_postings.c.company,
+               job_postings.c.title, job_postings.c.description)
+        .where(job_postings.c.id.in_(job_ids))
+        .where(job_postings.c.id.notin_(graded))
+    )
+    with engine.connect() as conn:
+        return conn.execute(stmt).all()
+
+
+def select_job(job_id: UUID) -> Optional[Tuple]:
+    """One posting, description included, for a user deciding to grade it.
+
+    Args:
+        job_id: The posting to read.
+
+    Returns:
+        (id, company, title, place, url, scraped_at, description), or None.
+    """
+    # SQL: SELECT id, company, title, place, url, scraped_at, description
+    #      FROM job_postings WHERE id = ?
+    stmt = select(
+        job_postings.c.id, job_postings.c.company, job_postings.c.title,
+        job_postings.c.place, job_postings.c.url, job_postings.c.scraped_at,
+        job_postings.c.description,
+    ).where(job_postings.c.id == job_id)
+    with engine.connect() as conn:
+        return conn.execute(stmt).first()
+
+
 def select_candidates(user_id: UUID, limit: int = 0,
                       window: str = "-24 hours") -> List[Tuple]:
     """Select ungraded recent postings with every column the filter needs.

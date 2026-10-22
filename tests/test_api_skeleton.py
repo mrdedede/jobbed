@@ -22,7 +22,7 @@ def test_docs_and_openapi_list_the_routes(client):
 
     paths = client.get("/openapi.json").json()["paths"]
 
-    for path in ("/v1/auth/signup", "/v1/me/analyze", "/v1/me/analyses/due",
+    for path in ("/v1/auth/signup", "/v1/me/analyze", "/v1/me/analyses/candidates",
                  "/v1/me/cvs/generate", "/v1/me/cvs/generate/{generation_id}",
                  "/v1/me/generated-cvs"):
         assert path in paths

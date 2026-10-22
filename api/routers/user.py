@@ -12,13 +12,13 @@ from fastapi import APIRouter, HTTPException, Query, status
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
 from api.schemas import (allowed_models, AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
-                         CvOut, CvUpdate, DueOut, PasswordChange, TermIn,
+                         CandidateOut, CvOut, CvUpdate, JobOut, PasswordChange, TermIn,
                          TermOut, TermsIn, TermSuggestions, UserOut,
                          GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
                          GenCvUpdate)
 from ai import gateway
 from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
-from ai.main_analysis import count_due, run_analysis
+from ai.main_analysis import list_due, run_analysis
 from ai.cv_generation import generate_cv
 from ai.term_suggestion import suggest_terms
 from db import analysis as db_analysis
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/me", tags=["user"])
 
 # CRUD handlers are plain `def` (FastAPI threads them): db.* is blocking.
-# Only handlers that await ai.* (analyze, due, cvs/generate) are `async def`.
+# Only handlers that await ai.* (analyze, candidates, cvs/generate) are `async def`.
 
 NOT_FOUND = {404: {"description": "No such row for this user"}}
 LIMIT_REACHED = {409: {"description": "Per-user row limit reached"}}
@@ -310,8 +310,9 @@ def _seconds_to_utc_midnight() -> int:
                         409: {"description": "No active CV, or a run is "
                                              "already in flight"},
                         502: {"description": "Every grading call failed"}},
-             description="Grades the next `limit` matching postings, newest "
-                         "first. Call again while `remaining` > 0.")
+             description="Grades the picked postings, in order, up to the "
+                         "daily cap. Unknown, already graded and over-cap "
+                         "ones come back as `skipped`.")
 async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut:
     if user_id in _analysis_in_flight:
         raise HTTPException(status.HTTP_409_CONFLICT,
@@ -323,7 +324,7 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
 
     try:
         granted = await asyncio.to_thread(
-            usage.reserve, user_id, usage.KIND_ANALYSIS, body.limit,
+            usage.reserve, user_id, usage.KIND_ANALYSIS, len(body.job_ids),
             DAILY_ANALYSIS_CAP)
 
         if granted == 0:
@@ -332,11 +333,8 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
                 f"daily limit of {DAILY_ANALYSIS_CAP} analyses reached",
                 headers={"Retry-After": str(_seconds_to_utc_midnight())})
 
-        # The window is built from the validated int, never client text:
-        # text_interval inlines it into SQL.
         stats = await run_analysis(
-            user_id, limit=granted, window=f"-{body.window_days} days",
-            model=body.model)
+            user_id, body.job_ids[:granted], model=body.model)
     except NoActiveCv:
         await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
                                 granted)
@@ -353,11 +351,12 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
     # Only stored verdicts count; failed gateway calls cost the user nothing.
     await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
                             granted - stats["analysed"])
+    skipped = stats["skipped"] + len(body.job_ids) - granted
 
     logger.info(
-        "analyze user=%s limit=%s window_days=%s due=%s analysed=%s "
-        "failed=%s seconds=%.1f", user_id, body.limit, body.window_days,
-        stats["due"], stats["analysed"], stats["failed"],
+        "analyze user=%s asked=%s granted=%s analysed=%s failed=%s "
+        "skipped=%s seconds=%.1f", user_id, len(body.job_ids), granted,
+        stats["analysed"], stats["failed"], skipped,
         time.perf_counter() - started)
 
     if stats["analysed"] == 0 and stats["failed"] > 0:
@@ -372,9 +371,7 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
             len(stats["job_ids"]), 0, stats["job_ids"])
 
     return AnalyzeOut(
-        analysed=stats["analysed"], failed=stats["failed"],
-        due=stats["due"], filtered_out=stats["filtered_out"],
-        remaining=stats["remaining"],
+        analysed=stats["analysed"], failed=stats["failed"], skipped=skipped,
         results=[_analysis_out(r) for r in rows])
 
 
@@ -391,10 +388,28 @@ def get_analyses(
     return [_analysis_out(r) for r in rows]
 
 
-@router.get("/analyses/due", response_model=DueOut)
-async def get_due(user_id: CurrentUser,
-                  window_days: int = Query(1, ge=1, le=30)) -> DueOut:
-    return DueOut(due=await count_due(user_id, f"-{window_days} days"))
+@router.get("/analyses/candidates", response_model=List[CandidateOut],
+            description="Ungraded postings matching the user's keywords and "
+                        "blacklist, newest first: what /analyze picks from.")
+async def get_candidates(user_id: CurrentUser,
+                         window_days: int = Query(1, ge=1, le=30)
+                         ) -> List[CandidateOut]:
+    # The window is built from the validated int, never client text:
+    # text_interval inlines it into SQL.
+    rows = await list_due(user_id, f"-{window_days} days")
+
+    return [CandidateOut(job_id=r[0], company=r[1], title=r[2], place=r[3],
+                         url=r[4], scraped_at=r[5]) for r in rows]
+
+
+@router.get("/jobs/{job_id}", response_model=JobOut,
+            responses={404: {"description": "No such posting"}})
+def get_job(user_id: CurrentUser, job_id: UUID) -> JobOut:
+    row = db_analysis.select_job(job_id)
+    _found(row is not None)
+
+    return JobOut(job_id=row[0], company=row[1], title=row[2], place=row[3],
+                  url=row[4], scraped_at=row[5], description=row[6])
 
 
 @dataclass

@@ -1,10 +1,9 @@
-"""Grade the postings a user has not been graded on yet and store each verdict.
+"""List the postings a user can pick for grading, and grade the ones picked.
 
-One gateway call per posting, run concurrently up to `concurrency` -- see
-`ai.analysis`. Candidates come from `db.analysis.select_candidates`, which
-already excludes anything this user has a row for, so a rerun is idempotent;
-they are then narrowed by the user's own keywords and blacklist before any
-model call is spent.
+`list_due` is the menu: ungraded postings narrowed by the user's keywords and
+blacklist. `run_analysis` grades the job ids the user picked from it, one
+gateway call per posting, run concurrently up to `concurrency` -- see
+`ai.analysis`. Postings already graded are skipped, so a rerun is idempotent.
 """
 
 import argparse
@@ -27,7 +26,7 @@ CANDIDATE_COLUMNS = ["id", "company", "title", "url", "place", "description",
                      "scraped_at"]
 
 
-def _select_due(rows, keywords, blacklist, limit):
+def _select_due(rows, keywords, blacklist):
     """Narrow candidate rows to this user's matches, newest first.
 
     Ties on `scraped_at` -- common, a scrape batch shares one timestamp --
@@ -37,97 +36,70 @@ def _select_due(rows, keywords, blacklist, limit):
         rows: Output of `db.analysis.select_candidates`.
         keywords: The user's keyword terms.
         blacklist: The user's blacklist terms.
-        limit: Cap on postings kept, applied after filtering; 0 means none.
 
     Returns:
-        (jobs, filtered_out, remaining): jobs as (id, company, title,
-        description) tuples, how many candidates the filter rejected, and
-        how many matches `limit` left for a later run.
+        (id, company, title, place, url, scraped_at) tuples -- no
+        description, it is large and the url has it.
     """
     if not rows:
-        return [], 0, 0
+        return []
 
     frame = pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
     kept = filter_frame(frame, keywords, blacklist)
-    filtered_out = len(frame) - len(kept)
 
     by = ["scraped_at"] + (["keyword_hits"] if "keyword_hits" in kept else [])
     kept = kept.sort_values(by, ascending=False, kind="stable")
-    matched = len(kept)
 
-    if limit:
-        kept = kept.head(limit)
-
-    jobs = kept[["id", "company", "title", "description"]].itertuples(
-        index=False, name=None)
-
-    return list(jobs), filtered_out, matched - len(kept)
+    return list(kept[["id", "company", "title", "place", "url",
+                      "scraped_at"]].itertuples(index=False, name=None))
 
 
-async def _load_due(user_id: UUID, limit: int, window: str):
-    """Fetch this user's candidates and narrow them; see `_select_due`."""
+async def list_due(user_id: UUID, window: str = "-24 hours") -> list:
+    """The postings this user can pick from for an analysis run.
+
+    Ungraded postings in the window, narrowed by the user's keywords and
+    blacklist, newest first; see `_select_due`. Needs no CV, calls no model.
+
+    Args:
+        user_id: The user asking.
+        window: Postgres interval string, e.g. "-7 days".
+
+    Returns:
+        (id, company, title, place, url, scraped_at) tuples.
+    """
     keywords = [t for _, t in await asyncio.to_thread(
         users.select_user_keywords, user_id)]
     blacklist = [t for _, t in await asyncio.to_thread(
         users.select_user_blacklist, user_id)]
-    # limit=0 at the query: the cap applies after filtering, or it would
-    # starve the filter.
     # ponytail: loads every ungraded posting in the window; window bounds it.
     rows = await asyncio.to_thread(
         db_analysis.select_candidates, user_id, 0, window)
     # pandas is CPU-bound; keep it off the loop other requests share.
-    return await asyncio.to_thread(
-        _select_due, rows, keywords, blacklist, limit)
+    return await asyncio.to_thread(_select_due, rows, keywords, blacklist)
 
 
-async def count_due(user_id: UUID, window: str = "-24 hours") -> int:
-    """How many postings an analysis run could grade for this user right now.
-
-    Unlike `db.analysis.count_jobs_to_analyse`, this applies the user's
-    keywords and blacklist, so it is the number `run_analysis(limit=0)` would
-    send to the model. Needs no CV and calls no model.
-
-    Args:
-        user_id: The user asking.
-        window: Postgres interval string, as in `run_analysis`.
-
-    Returns:
-        Matching, ungraded postings in the window.
-    """
-    jobs, _, _ = await _load_due(user_id, 0, window)
-
-    return len(jobs)
-
-
-async def run_analysis(user_id: UUID, limit: int = 20,
-                       window: str = "-24 hours",
+async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                        model: str = gateway.HAIKU_MODEL,
                        concurrency: int = 4,
                        on_progress: Optional[Callable[[str], None]] = None
                        ) -> dict:
-    """Grade up to `limit` matching, ungraded postings and store results.
+    """Grade the postings the user picked and store each verdict.
 
-    Postings are filtered by the user's keywords and blacklist first; with
-    no keywords nothing is filtered beyond requiring a description.
+    The user's keywords and blacklist do not apply here: they shape the
+    list the user picks from (`list_due`), not the pick itself.
 
     Args:
         user_id: Whose CV to grade against and whose analyses to write.
-        limit: Cap on postings graded, applied after filtering and keeping
-            the newest (ties: most keyword hits); 0 means every one that
-            matches. To page, call again: graded postings drop out of the
-            candidates, so each run takes the next `limit`. No offset --
-            it would skip postings once earlier pages are graded.
-        window: Postgres interval string; widen it to pick up postings whose
-            grading failed on an earlier run.
+        job_ids: Postings to grade, in order. Unknown ones and ones this user
+            already graded are skipped, so a retry never pays twice.
         model: Which gateway model grades.
         concurrency: Calls in flight at once.
         on_progress: Optional callback given one line per posting.
 
     Returns:
-        Dict with `analysed` and `failed` counts, the number `due` (sent to
-        the model), `filtered_out` (rejected by the filter, before `limit`),
-        `remaining` (matches `limit` left for another run) and `job_ids`
-        (postings whose verdict was stored this run).
+        Dict with `analysed` and `failed` counts, `skipped` (asked for but
+        unknown or already graded) and `job_ids` (postings whose verdict was
+        stored this run).
 
     Raises:
         NoActiveCv: The user has no active CV to grade against.
@@ -138,10 +110,12 @@ async def run_analysis(user_id: UUID, limit: int = 20,
         raise NoActiveCv(f"user {user_id} has no active CV")
 
     cv_md = active[1]
-    jobs, filtered_out, remaining = await _load_due(user_id, limit, window)
+    found = {row[0]: row for row in await asyncio.to_thread(
+        db_analysis.select_ungraded_jobs, user_id, job_ids)}
+    jobs = [found[i] for i in dict.fromkeys(job_ids) if i in found]
     gate = asyncio.Semaphore(concurrency)
     counts = {"analysed": 0, "failed": 0}
-    job_ids = []
+    stored = []
 
     async def grade(index: int, job, client: httpx.AsyncClient) -> None:
         job_id, company, title, _ = job
@@ -154,7 +128,7 @@ async def run_analysis(user_id: UUID, limit: int = 20,
                     verdict["depth_analysis"], model, job_id,
                 ])
                 counts["analysed"] += 1
-                job_ids.append(job_id)
+                stored.append(job_id)
                 note = f"{verdict['adequation_grade']:3}"
             except Exception as exc:
                 counts["failed"] += 1
@@ -163,12 +137,13 @@ async def run_analysis(user_id: UUID, limit: int = 20,
         if on_progress:
             on_progress(f"[{index}/{len(jobs)}] {note}  {company} - {title}")
 
-    async with httpx.AsyncClient(timeout=gateway.TIMEOUT) as client:
-        await asyncio.gather(*(
-            grade(i, job, client) for i, job in enumerate(jobs, start=1)))
+    if jobs:
+        async with httpx.AsyncClient(timeout=gateway.TIMEOUT) as client:
+            await asyncio.gather(*(
+                grade(i, job, client) for i, job in enumerate(jobs, start=1)))
 
-    return {**counts, "due": len(jobs), "filtered_out": filtered_out,
-            "remaining": remaining, "job_ids": job_ids}
+    return {**counts, "skipped": len(set(job_ids)) - len(jobs),
+            "job_ids": stored}
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -185,12 +160,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help='Postgres interval, e.g. "-7 days"')
     args = parser.parse_args(argv)
 
+    due = asyncio.run(list_due(args.user_id, args.window))
+    picked = [row[0] for row in (due[:args.limit] if args.limit else due)]
     stats = asyncio.run(run_analysis(
-        args.user_id, limit=args.limit, window=args.window,
-        model=args.model, on_progress=print))
+        args.user_id, picked, model=args.model, on_progress=print))
     print(f"\n{stats['analysed']} analysed, {stats['failed']} failed, "
-          f"{stats['filtered_out']} filtered out, "
-          f"{stats['remaining']} remaining")
+          f"{len(due) - len(picked)} remaining")
 
     return 0
 

@@ -6,7 +6,7 @@ from api_helpers import as_user, make_user
 
 from api.routers import user as user_router
 from db import usage
-from test_api_analyze import analyze, chat, client, posting  # noqa: F401
+from test_api_analyze import ID, analyze, chat, client, posting  # noqa: F401
 from db import jobs
 
 
@@ -52,7 +52,7 @@ def test_analyze_429_when_cap_reached_and_unused_units_refunded(
                       posting(2, "Go Two", "go " * 6)])
     uid = make_user("go")
 
-    first = analyze(client, uid, limit=5)
+    first = analyze(client, uid)
     second = analyze(client, uid)
 
     assert first.status_code == 200 and first.json()["analysed"] == 1
@@ -62,7 +62,7 @@ def test_analyze_429_when_cap_reached_and_unused_units_refunded(
 
 def test_analyze_refunds_when_nothing_was_graded(client, chat, monkeypatch):  # noqa: F811
     monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 1)
-    uid = make_user("go")  # no postings: nothing due
+    uid = make_user("go")  # an unknown posting: nothing to grade
 
-    assert analyze(client, uid).json()["analysed"] == 0
+    assert analyze(client, uid, [ID]).json()["analysed"] == 0
     assert usage.reserve(uid, usage.KIND_ANALYSIS, 1, 1) == 1

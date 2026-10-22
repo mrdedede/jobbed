@@ -1,4 +1,4 @@
-"""/analyze, /analyses and /analyses/due over the real test DB, no network."""
+"""/analyze, /analyses, /analyses/candidates and /jobs over the real test DB, no network."""
 
 import asyncio
 import json
@@ -17,6 +17,7 @@ from api.routers import user as user_router
 from db import jobs, users
 from db.engine import engine
 
+ID = "00000000-0000-0000-0000-000000000000"
 GOOD = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
 
 
@@ -44,50 +45,144 @@ def posting(n, title, description):
     return ("Acme", title, description, f"http://t7/{n}", "Paris", None, None)
 
 
-def analyze(client, uid, **body):
-    return as_user(uid).post("/v1/me/analyze", json=body)
+def ids(*titles):
+    with engine.connect() as conn:
+        found = dict(conn.execute(text(
+            "SELECT title, id::text FROM job_postings")).all())
+
+    return [found[t] for t in titles]
 
 
-def test_happy_path_returns_this_runs_results_without_description(
+def analyze(client, uid, job_ids=None, **body):
+    """POST /analyze with these ids; by default every posting there is."""
+    if job_ids is None:
+        with engine.connect() as conn:
+            job_ids = [str(i) for i in conn.execute(text(
+                "SELECT id FROM job_postings")).scalars()]
+
+    return as_user(uid).post("/v1/me/analyze",
+                             json={"job_ids": job_ids or [], **body})
+
+
+def candidates(uid, query=""):
+    return as_user(uid).get(f"/v1/me/analyses/candidates{query}")
+
+
+def test_happy_path_grades_only_the_picked_ids_without_description(
         client, chat):
     jobs.insert_jobs([posting(1, "Go Dev", "go " * 6),
                       posting(2, "Py Dev", "python " * 6)])
     uid = make_user("go")
 
-    response = analyze(client, uid)
+    response = analyze(client, uid, ids("Py Dev"))
 
     body = response.json()
     assert response.status_code == 200
-    assert (body["analysed"], body["failed"], body["due"],
-            body["filtered_out"], body["remaining"]) == (1, 0, 1, 1, 0)
+    assert (body["analysed"], body["failed"], body["skipped"]) == (1, 0, 0)
     result = body["results"][0]
-    assert (result["title"], result["adequation_grade"]) == ("Go Dev", 77)
+    # Picked by hand, so the keyword filter does not get a say.
+    assert (result["title"], result["adequation_grade"]) == ("Py Dev", 77)
     assert "description" not in result
-    assert as_user(uid).get("/v1/me/analyses").json()[0]["title"] == (
-        "Go Dev")
+    assert [a["title"] for a in as_user(uid).get("/v1/me/analyses").json()] \
+        == ["Py Dev"]
 
 
-def test_users_with_different_keywords_get_different_results(client, chat):
-    jobs.insert_jobs([posting(1, "Go Dev", "go " * 6),
-                      posting(2, "Py Dev", "python " * 6)])
-    go, py = make_user("go"), make_user("python")
+def test_unknown_and_already_graded_ids_are_skipped_and_free(
+        client, chat, monkeypatch):
+    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 3)
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6),
+                      posting(2, "Go B", "go " * 6),
+                      posting(3, "Go C", "go " * 6)])
+    uid = make_user("go")
+    analyze(client, uid, ids("Go A"))
 
-    titles = {u: [r["title"] for r in analyze(client, u).json()["results"]]
-              for u in (go, py)}
+    body = analyze(client, uid, ids("Go A", "Go B") + [ID]).json()
 
-    assert titles == {go: ["Go Dev"], py: ["Py Dev"]}
+    assert (body["analysed"], body["skipped"]) == (1, 2)
+    assert len(chat[0]) == 2
+    # Two of three units spent: the skipped ones were refunded.
+    assert analyze(client, uid, ids("Go C")).json()["analysed"] == 1
 
 
-def test_limit_pages_through_remaining(client, chat):
+def test_over_the_cap_grades_the_first_and_skips_the_rest(
+        client, chat, monkeypatch):
+    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", 2)
     for n in range(3):
         jobs.insert_jobs([posting(n, f"Go {n}", "go " * 6)])
     uid = make_user("go")
 
-    first = analyze(client, uid, limit=2).json()
-    second = analyze(client, uid, limit=2).json()
+    body = analyze(client, uid, ids("Go 2", "Go 0", "Go 1")).json()
 
-    assert (first["due"], first["remaining"]) == (2, 1)
-    assert (second["due"], second["remaining"]) == (1, 0)
+    assert (body["analysed"], body["skipped"]) == (2, 1)
+    assert {r["title"] for r in body["results"]} == {"Go 2", "Go 0"}
+    assert analyze(client, uid, ids("Go 1")).status_code == 429
+
+
+def test_duplicate_ids_are_graded_once(client, chat):
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
+    uid = make_user("go")
+
+    body = analyze(client, uid, ids("Go A") * 3).json()
+
+    assert (body["analysed"], body["skipped"]) == (1, 0)
+    assert len(chat[0]) == 1
+
+
+def test_candidates_are_filtered_newest_first_and_drop_once_graded(
+        client, chat):
+    jobs.insert_jobs([posting(1, "Py Dev", "python " * 6)])
+    jobs.insert_jobs([posting(2, "Go Old", "go " * 6)])
+    jobs.insert_jobs([posting(3, "Go New", "go " * 6)])
+    uid = make_user("go")
+
+    listed = candidates(uid).json()
+
+    assert [c["title"] for c in listed] == ["Go New", "Go Old"]
+    assert set(listed[0]) == {"job_id", "company", "title", "place", "url",
+                              "scraped_at"}
+
+    analyze(client, uid, [listed[0]["job_id"]])
+
+    assert [c["title"] for c in candidates(uid).json()] == ["Go Old"]
+    assert candidates(uid, "?window_days=31").status_code == 422
+
+
+def test_users_with_different_keywords_get_different_candidates(client):
+    jobs.insert_jobs([posting(1, "Go Dev", "go " * 6),
+                      posting(2, "Py Dev", "python " * 6)])
+    go, py = make_user("go"), make_user("python")
+
+    titles = {u: [c["title"] for c in candidates(u).json()] for u in (go, py)}
+
+    assert titles == {go: ["Go Dev"], py: ["Py Dev"]}
+
+
+def test_window_reaches_sql_as_an_int_derived_string(client, monkeypatch):
+    seen = []
+    real = main_analysis.db_analysis.select_candidates
+
+    def spy(user_id, limit, window):
+        seen.append(window)
+
+        return real(user_id, limit, window)
+
+    monkeypatch.setattr(main_analysis.db_analysis, "select_candidates", spy)
+
+    candidates(make_user(), "?window_days=3")
+
+    assert seen == ["-3 days"]
+
+
+def test_job_returns_the_description_or_404(client):
+    jobs.insert_jobs([posting(1, "Go Dev", "go " * 6)])
+    uid = make_user()
+    [job_id] = ids("Go Dev")
+
+    job = as_user(uid).get(f"/v1/me/jobs/{job_id}").json()
+
+    assert (job["title"], job["description"]) == ("Go Dev", "go " * 6)
+    assert as_user(uid).get(
+        "/v1/me/jobs/00000000-0000-0000-0000-000000000000").status_code == 404
 
 
 def test_no_cv_is_409_and_calls_no_model(client, chat):
@@ -121,22 +216,15 @@ def test_partial_failure_is_200_with_counts(client, chat, monkeypatch):
     assert (body["analysed"], body["failed"]) == (1, 1)
 
 
-def test_nothing_due_is_200_zeros(client, chat):
-    uid = make_user("go")
-
-    response = analyze(client, uid)
-
-    assert response.status_code == 200
-    assert response.json()["due"] == 0 and response.json()["results"] == []
-    assert chat[0] == []
-
-
 @pytest.mark.parametrize("body", [
-    {"model": "opus"}, {"model": "ollama-llama3.2"},
-    {"limit": 0}, {"limit": 51}, {"window_days": 0}, {"window_days": 31},
+    {"job_ids": [ID], "model": "opus"},
+    {"job_ids": [ID], "model": "ollama-llama3.2"},
+    {"job_ids": []}, {"job_ids": [ID] * 51}, {"job_ids": ["nope"]}, {},
 ])
 def test_validation_is_422(client, chat, body):
-    assert analyze(client, make_user(), **body).status_code == 422
+    response = as_user(make_user()).post("/v1/me/analyze", json=body)
+
+    assert response.status_code == 422
 
 
 def test_in_flight_user_is_409_and_released_after_failure(client, chat):
@@ -151,23 +239,6 @@ def test_in_flight_user_is_409_and_released_after_failure(client, chat):
     chat[1]["answer"] = "garbage"
     assert analyze(client, uid).status_code == 502
     assert uid not in user_router._analysis_in_flight
-
-
-def test_window_reaches_sql_as_an_int_derived_string(
-        client, chat, monkeypatch):
-    seen = []
-    real = main_analysis.db_analysis.select_candidates
-
-    def spy(user_id, limit, window):
-        seen.append(window)
-
-        return real(user_id, limit, window)
-
-    monkeypatch.setattr(main_analysis.db_analysis, "select_candidates", spy)
-
-    analyze(client, make_user(), window_days=3)
-
-    assert seen == ["-3 days"]
 
 
 def test_analyses_filter_order_and_isolation(client, chat):
@@ -191,29 +262,15 @@ def test_analyses_filter_order_and_isolation(client, chat):
     assert as_user(uid).get("/v1/me/analyses?since_days=0").status_code == 422
 
 
-def test_due_counts_the_filtered_backlog_then_zero(client, chat):
-    jobs.insert_jobs([posting(1, "Go Dev", "go " * 6),
-                      posting(2, "Py Dev", "python " * 6)])
-    uid = make_user("go")
-
-    assert as_user(uid).get("/v1/me/analyses/due").json() == {"due": 1}
-
-    analyze(client, uid)
-
-    assert as_user(uid).get("/v1/me/analyses/due").json() == {"due": 0}
-    assert as_user(uid).get(
-        "/v1/me/analyses/due?window_days=31").status_code == 422
-
-
 def test_allowed_models_come_from_the_server_env(client, chat, monkeypatch):
     uid = make_user("go")
 
-    assert analyze(client, uid, model="ollama-qwen2.5:0.5b").status_code == 422
+    assert analyze(client, uid, [ID], model="ollama-qwen2.5:0.5b").status_code == 422
 
     monkeypatch.setenv("ANALYSIS_MODELS", "haiku,ollama-qwen2.5:0.5b")
 
-    assert analyze(client, uid, model="ollama-qwen2.5:0.5b").status_code == 200
-    assert analyze(client, uid, model="sonnet").status_code == 422
+    assert analyze(client, uid, [ID], model="ollama-qwen2.5:0.5b").status_code == 200
+    assert analyze(client, uid, [ID], model="sonnet").status_code == 422
 
 
 # --- audit gaps (T10) ----------------------------------------------------
@@ -285,9 +342,10 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
     async with httpx.AsyncClient(
             transport=transport, base_url="http://t",
             headers=bearer(uid)) as http:
-        first = asyncio.create_task(http.post("/v1/me/analyze", json={}))
+        first = asyncio.create_task(http.post("/v1/me/analyze", json={"job_ids": ids("Go A")}))
         await asyncio.wait_for(started.wait(), 10)
-        second = await http.post("/v1/me/analyze", json={})
+        second = await http.post("/v1/me/analyze",
+                                 json={"job_ids": ids("Go A")})
         release.set()
         finished = await first
 

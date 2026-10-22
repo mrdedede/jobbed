@@ -2,7 +2,7 @@
 
 Signs up users over HTTP, seeds postings, and checks that /analyze grades the
 same postings the CLI would for identical inputs, that a user with other
-keywords gets a different set, and that re-runs and paging behave. Stdlib
+keywords gets a different set, and that re-runs and picking behave. Stdlib
 only; leaves the database as it found it.
 
     E2E_TARGET=compose|k8s   where the stack runs        (default compose)
@@ -109,38 +109,48 @@ def urls(items):
     return {item["url"] for item in items}
 
 
-def analyze(token, **body):
-    return call("POST", "/v1/me/analyze", token, {"model": MODEL, **body})
+def candidates(token):
+    _, body = call("GET", "/v1/me/analyses/candidates?window_days=1", token)
+
+    return body
 
 
-def analyze_settled(token, attempts=4, **body):
+def pick(token):
+    return [c["job_id"] for c in candidates(token) or []]
+
+
+def analyze(token, job_ids, **body):
+    return call("POST", "/v1/me/analyze", token,
+                {"job_ids": job_ids, "model": MODEL, **body})
+
+
+def analyze_settled(token, job_ids, attempts=4, **body):
     """analyze, retried while the model flakes.
 
     A small local model sometimes errors on a posting (the gateway answers
-    502 for it). A failed posting stays due, so asking again is exactly how a
-    client recovers; this makes the script test the API, not the model's
-    reliability. Results accumulate across attempts; due/remaining/failed
-    are the last attempt's.
+    502 for it). A failed posting stays ungraded and graded ones are skipped,
+    so sending the same ids again is exactly how a client recovers; this
+    makes the script test the API, not the model's reliability. Results
+    accumulate across attempts; failed is the last attempt's.
     """
     merged, status = {"analysed": 0, "results": []}, 0
 
     for _ in range(attempts):
-        status, got = analyze(token, **body)
+        status, got = analyze(token, job_ids, **body)
 
         if status == 502:
             continue
         if status != 200:
             return status, got
 
-        merged.update(due=got["due"], remaining=got["remaining"],
-                      failed=got["failed"], filtered_out=got["filtered_out"])
+        merged.update(failed=got["failed"])
         merged["analysed"] += got["analysed"]
         merged["results"] += got["results"]
 
         if got["failed"] == 0:
             break
 
-    return (200, merged) if "due" in merged else (status, got)
+    return (200, merged) if "failed" in merged else (status, got)
 
 
 # --- the check ------------------------------------------------------------
@@ -179,25 +189,27 @@ def scenario(tag):
         tokens[name] = signup(tag, name)
     check("five users signed up", all(tokens.values()))
 
-    status, _ = analyze(tokens["e"])
+    nobody = ["00000000-0000-0000-0000-000000000000"]
+    status, _ = analyze(tokens["e"], nobody)
     check(f"model {MODEL} is allowed (409 no-CV, not 422)", status == 409,
           f"got {status}; set ANALYSIS_MODELS to include it")
-    status, _ = call("POST", "/v1/me/analyze", tokens["e"], {"model": "opus"})
+    status, _ = analyze(tokens["e"], nobody, model="opus")
     check("model opus is refused (422)", status == 422, f"got {status}")
 
     for name in "abd":
         configure(tokens[name], py, blacklist="senior")
     configure(tokens["c"], go)
 
-    print("due before")
-    for name, want in (("a", 2), ("b", 2), ("c", 2)):
-        _, body = call("GET", "/v1/me/analyses/due?window_days=1",
-                       tokens[name])
-        check(f"user {name} has {want} due", body and body["due"] == want,
-              body)
+    print("candidates before")
+    for name, want in (("a", want_py), ("b", want_py), ("c", want_go)):
+        body = candidates(tokens[name])
+        check(f"user {name} is offered exactly its matches",
+              body is not None and urls(body) == want, body)
+        check(f"user {name}'s candidates carry no description",
+              body is not None and all("description" not in c for c in body))
 
     print("API path")
-    status, body = analyze_settled(tokens["a"])
+    status, body = analyze_settled(tokens["a"], pick(tokens["a"]))
     ok = status == 200 and body is not None
     check("A analyze returns 200", ok, (status, body))
     check("A graded exactly the python postings, blacklist honoured",
@@ -213,10 +225,7 @@ def scenario(tag):
     _, me = call("GET", "/v1/me", tokens["b"])
     for _ in range(3):  # same model flake as analyze_settled: ask again
         done = cli(me["id"], "--model", MODEL)
-        _, left = call("GET", "/v1/me/analyses/due?window_days=1",
-                       tokens["b"])
-
-        if done.returncode == 0 and left == {"due": 0}:
+        if done.returncode == 0 and candidates(tokens["b"]) == []:
             break
 
     check("CLI exits 0", done.returncode == 0, done.stderr[-300:])
@@ -226,29 +235,30 @@ def scenario(tag):
           (sorted(urls(listed)), sorted(graded_a)))
 
     print("divergence")
-    status, body = analyze_settled(tokens["c"])
+    status, body = analyze_settled(tokens["c"], pick(tokens["c"]))
     got = urls(body["results"]) if status == 200 else set()
     check("C (go keywords) gets the go postings", got == want_go, got)
     check("C's set is disjoint from A's", not (got & graded_a))
 
     print("idempotence")
-    status, body = analyze(tokens["a"])
-    check("A again grades nothing",
-          status == 200 and body["analysed"] == 0 and body["due"] == 0,
+    _, a_list = call("GET", "/v1/me/analyses?limit=200", tokens["a"])
+    status, body = analyze(tokens["a"], [r["job_id"] for r in a_list])
+    check("A again grades nothing, skips both",
+          status == 200 and body["analysed"] == 0 and body["skipped"] == 2,
           body)
-    _, due = call("GET", "/v1/me/analyses/due?window_days=1", tokens["a"])
-    check("due is 0 after a run", due == {"due": 0}, due)
+    check("no candidates left after a run", candidates(tokens["a"]) == [])
 
-    print("paging")
-    status, first = analyze_settled(tokens["d"], limit=1)
+    print("picking")
+    offered = pick(tokens["d"])
+    status, first = analyze_settled(tokens["d"], offered[:1])
     ok = status == 200
-    check("D limit=1 grades one, one remaining",
-          ok and (first["due"], first["remaining"]) == (1, 1), first)
-    status, second = analyze_settled(tokens["d"], limit=1)
+    check("D picking one grades exactly that one",
+          ok and [r["job_id"] for r in first["results"]] == offered[:1],
+          first)
+    check("the other one is still offered", pick(tokens["d"]) == offered[1:])
+    status, second = analyze_settled(tokens["d"], offered[1:])
     ok = ok and status == 200
-    check("D second call grades the last",
-          ok and (second["due"], second["remaining"]) == (1, 0), second)
-    check("pages together cover both postings",
+    check("picks together cover both postings",
           ok and urls(first["results"]) | urls(second["results"]) == want_py)
 
     print("isolation")

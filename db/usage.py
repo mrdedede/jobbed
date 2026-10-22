@@ -12,6 +12,7 @@ from db.engine import engine
 
 KIND_ANALYSIS = "analysis"
 KIND_CV = "cv_generation"
+KIND_TERMS = "term_suggestion"
 
 
 def reserve(user_id: UUID, kind: str, wanted: int, cap: int) -> int:

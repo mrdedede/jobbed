@@ -28,6 +28,9 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
 
 - `POST /v1/auth/signup` / `login` return a JWT; everything else is under `/v1/me`.
 - Manage **keywords**, **blacklist terms** and **CVs** (Markdown, one active).
+- `POST /v1/me/cvs/{cv_id}/suggest-terms` asks the first model in
+  `ANALYSIS_MODELS` for keywords and blacklist terms fitting a CV (stores nothing; at most `DAILY_TERMS_CAP` per
+  day); `POST /v1/me/terms` adds the ones the user keeps in one call.
 - `POST /v1/me/analyze` filters the recent postings by your keywords and
   blacklist, sends each survivor with your active CV to the LLM gateway, and
   stores a 0-100 grade plus a written analysis in `ai_analysis`.
@@ -76,9 +79,10 @@ Only these are still files; everything per-user is an API resource.
 | `DATABASE_URL` | everything | `postgresql+psycopg://jobbed:jobbed@localhost:5432/jobbed` |
 | `JWT_SECRET` | API | Required, at least 32 characters; the API refuses to start otherwise. |
 | `GATEWAY_URL` | API | `http://localhost:8000` |
-| `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. |
+| `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. The first one also writes keyword suggestions. |
 | `DAILY_ANALYSIS_CAP` | API | `10` postings per user per UTC day. |
 | `DAILY_CV_CAP` | API | `2` CV generations per user per UTC day. |
+| `DAILY_TERMS_CAP` | API | `5` keyword/blacklist suggestions per user per UTC day. |
 | `ANTHROPIC_API_KEY` | gateway | Empty means Claude models answer 502. |
 | `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT` | gateway | `http://localhost:11434`, `180` s |
 | `CLAUDE_MODEL_HAIKU` / `_SONNET` / `_OPUS` | gateway | Override the model ids behind the short names. |

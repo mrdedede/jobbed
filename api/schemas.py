@@ -76,6 +76,18 @@ class TermOut(BaseModel):
     term: str
 
 
+class TermsIn(BaseModel):
+    """Several keywords and blacklist terms at once (accepted suggestions)."""
+    keywords: List[Term] = Field(default_factory=list, max_length=50)
+    blacklist: List[Term] = Field(default_factory=list, max_length=50)
+
+
+class TermSuggestions(BaseModel):
+    """Terms the model suggests for a CV, minus those the user already has."""
+    keywords: List[str]
+    blacklist: List[str]
+
+
 # CVS
 
 class CvCreate(BaseModel):

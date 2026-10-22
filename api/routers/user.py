@@ -11,14 +11,16 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
-from api.schemas import (AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
+from api.schemas import (allowed_models, AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
                          CvOut, CvUpdate, DueOut, PasswordChange, TermIn,
-                         TermOut, UserOut, GenCvRequest, GenCvOut,
-                         GenCvStarted, GenCvStatus, GenCvUpdate)
+                         TermOut, TermsIn, TermSuggestions, UserOut,
+                         GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
+                         GenCvUpdate)
 from ai import gateway
 from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
 from ai.main_analysis import count_due, run_analysis
 from ai.cv_generation import generate_cv
+from ai.term_suggestion import suggest_terms
 from db import analysis as db_analysis
 from db import generated_cv as db_cvs
 from db import usage, users
@@ -51,6 +53,8 @@ MAX_TERMS = 200
 DAILY_ANALYSIS_CAP = int(os.environ.get("DAILY_ANALYSIS_CAP", "10"))
 #: CVs generated per user per UTC day (Sonnet, the expensive call).
 DAILY_CV_CAP = int(os.environ.get("DAILY_CV_CAP", "2"))
+#: Term suggestions per user per UTC day (one Haiku call each).
+DAILY_TERMS_CAP = int(os.environ.get("DAILY_TERMS_CAP", "5"))
 
 
 def _found(matched: bool) -> None:
@@ -183,6 +187,24 @@ def delete_blacklist(user_id: CurrentUser, blacklist_id: UUID) -> None:
     _found(users.delete_user_blacklist_term(user_id, blacklist_id))
 
 
+@router.post("/terms", status_code=status.HTTP_204_NO_CONTENT,
+             responses=LIMIT_REACHED,
+             description="Adds several keywords and blacklist terms at once "
+                         "(accepted suggestions). Idempotent per term.")
+def create_terms(user_id: CurrentUser, body: TermsIn) -> None:
+    keywords = {t for _, t in users.select_user_keywords(user_id)}
+    blacklist = {t for _, t in users.select_user_blacklist(user_id)}
+
+    if (len(keywords | set(body.keywords)) > MAX_TERMS
+            or len(blacklist | set(body.blacklist)) > MAX_TERMS):
+        raise HTTPException(status.HTTP_409_CONFLICT, "limit reached")
+
+    for term in body.keywords:
+        users.insert_user_keyword(user_id, term)
+    for term in body.blacklist:
+        users.insert_user_blacklist_term(user_id, term)
+
+
 # CVs
 
 @router.get("/cvs", response_model=List[CvOut])
@@ -222,6 +244,48 @@ def activate_cv(user_id: CurrentUser, cv_id: UUID) -> CvOut:
                            "activate another before analysing.")
 def delete_cv(user_id: CurrentUser, cv_id: UUID) -> None:
     _found(users.delete_user_cv(user_id, cv_id))
+
+
+@router.post("/cvs/{cv_id}/suggest-terms", response_model=TermSuggestions,
+             responses={**NOT_FOUND,
+                        429: {"description": "Daily suggestion cap reached"},
+                        502: {"description": "The model call failed"}},
+             description="Asks the model for keywords and blacklist terms "
+                         "fitting this CV. Stores nothing: add the ones to "
+                         "keep with POST /terms. Uses the first model in "
+                         "ANALYSIS_MODELS. Takes 5 s to a few minutes.")
+async def suggest_cv_terms(user_id: CurrentUser, cv_id: UUID) -> TermSuggestions:
+    cv = await asyncio.to_thread(_cv, user_id, cv_id)
+    granted = await asyncio.to_thread(
+        usage.reserve, user_id, usage.KIND_TERMS, 1, DAILY_TERMS_CAP)
+
+    if granted == 0:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"daily limit of {DAILY_TERMS_CAP} term suggestions reached",
+            headers={"Retry-After": str(_seconds_to_utc_midnight())})
+
+    try:
+        # The operator's first model: haiku by default, the local model on
+        # an Ollama-only install (ANALYSIS_MODELS=ollama-...).
+        suggested = await suggest_terms(cv.content_md, allowed_models()[0])
+    except (gateway.GatewayError, UnusableAnswer) as exc:
+        logger.warning("term suggestion failed for cv %s: %s", cv_id, exc)
+        await asyncio.to_thread(usage.refund, user_id, usage.KIND_TERMS, 1)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
+                            "the AI model call failed")
+    except BaseException:
+        await asyncio.to_thread(usage.refund, user_id, usage.KIND_TERMS, 1)
+        raise
+
+    keywords = {t for _, t in await asyncio.to_thread(
+        users.select_user_keywords, user_id)}
+    blacklist = {t for _, t in await asyncio.to_thread(
+        users.select_user_blacklist, user_id)}
+
+    return TermSuggestions(
+        keywords=[t for t in suggested["keywords"] if t not in keywords],
+        blacklist=[t for t in suggested["blacklist"] if t not in blacklist])
 
 
 # ANALYSIS

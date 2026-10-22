@@ -24,6 +24,7 @@ class OllamaAdapter:
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            "options": {"num_ctx": settings.ollama_num_ctx},
         }
         if response_schema is not None:
             payload["format"] = response_schema

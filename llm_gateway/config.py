@@ -13,6 +13,11 @@ class Settings:
         "OLLAMA_BASE_URL", "http://ollama:11434")
     #: A local model grading a long posting can take well over a minute.
     ollama_timeout: float = float(os.environ.get("OLLAMA_TIMEOUT", "180"))
+    #: Context window per request, in tokens. Ollama's default is a few
+    #: thousand and it silently cuts whatever does not fit, so a grading
+    #: prompt (instructions + CV + posting) lost its posting. Costs RAM per
+    #: token: lower it if the pod is OOM-killed, raise it for longer prompts.
+    ollama_num_ctx: int = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 
 
 settings = Settings()

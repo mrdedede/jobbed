@@ -85,6 +85,7 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
     model, prompt, schema = calls[0]
     assert model == "ollama-x"
     assert "my cv" in prompt and "write python" in prompt
+    assert "## Dev -- Acme" in prompt
     assert schema is analysis.ANALYSIS_SCHEMA
 
 

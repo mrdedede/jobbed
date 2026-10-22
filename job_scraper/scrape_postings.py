@@ -85,7 +85,21 @@ DEFAULT_WORKERS = 50
 CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
                "aside", "form", "svg")
 
+_SPACES = re.compile(r"[^\S\n]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def _tidy(text: str) -> str:
+    """Collapse whitespace runs and blank-line runs, then cap the length.
+
+    get_text(strip=True) trims each text node's ends only, so a node holding
+    "a\\n    \\n    \\nb" kept its padding, and "\\n{3,}" alone never matched
+    it. Collapsing before capping keeps padding from eating MAX_DESCRIPTION.
+    """
+    text = _SPACES.sub(" ", text or "")
+    text = "\n".join(line.strip() for line in text.split("\n"))
+
+    return _BLANK_LINES.sub("\n\n", text).strip()[:MAX_DESCRIPTION]
 
 
 def _clean(fragment: object) -> str:
@@ -103,11 +117,9 @@ def _clean(fragment: object) -> str:
     if not isinstance(fragment, str) or not fragment.strip():
         return ""
 
-    text = BeautifulSoup(unescape(fragment), "html.parser").get_text(
+    return _tidy(BeautifulSoup(unescape(fragment), "html.parser").get_text(
         "\n", strip=True
-    )
-
-    return _BLANK_LINES.sub("\n\n", text)[:MAX_DESCRIPTION]
+    ))
 
 
 def _workday_api(url: str) -> Optional[str]:
@@ -196,9 +208,7 @@ def _from_jsonld(soup: BeautifulSoup) -> Optional[dict]:
 
 def _text(node) -> str:
     """One element's text, blank runs collapsed and capped."""
-    return _BLANK_LINES.sub(
-        "\n\n", node.get_text("\n", strip=True)
-    )[:MAX_DESCRIPTION]
+    return _tidy(node.get_text("\n", strip=True))
 
 
 def _page_title(soup: BeautifulSoup) -> Optional[str]:
@@ -344,7 +354,8 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
     return Job(
         company=pick("company"),
         title=pick("title"),
-        description=found.get("description", ""),
+        # Tidied here too: WTTJ and API-source text skips _clean/_text.
+        description=_tidy(found.get("description", "")),
         url=url,
         place=pick("place") or None,
         via=found.get("via", "none"),

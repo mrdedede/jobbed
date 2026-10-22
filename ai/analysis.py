@@ -25,9 +25,12 @@ ANALYSIS_SCHEMA = {
 }
 
 
-def build_prompt(cv_md: str, job_description: str) -> str:
+def build_prompt(cv_md: str, job: Tuple) -> str:
+    """The grading prompt. `job` is (id, company, title, description)."""
+    _, company, title, description = job
+
     return (f"{grade_job}\n--------\n# User CV\n{cv_md}\n--------\n"
-            f"# JOB POST\n\n{job_description}")
+            f"# JOB POST\n\n## {title} -- {company}\n\n{description}")
 
 
 async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
@@ -49,7 +52,7 @@ async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
         ValueError: The answer was not JSON of the expected shape.
     """
     raw = await gateway.chat(
-        model, build_prompt(cv_md, job[3]), ANALYSIS_SCHEMA, client)
+        model, build_prompt(cv_md, job), ANALYSIS_SCHEMA, client)
 
     try:
         verdict = json.loads(raw)

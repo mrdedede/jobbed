@@ -263,6 +263,12 @@ def test_clean_ignores_non_strings():
     assert _clean("   ") == ""
 
 
+def test_clean_collapses_padded_blank_lines():
+    # One text node padded with indented blank lines: strip=True kept it all.
+    padded = "<p>Missions\n      \n   \n\t\n  Build    APIs  now</p>"
+    assert _clean(padded) == "Missions\n\nBuild APIs now"
+
+
 # ======================================================================
 # Resume
 # ======================================================================

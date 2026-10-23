@@ -112,6 +112,35 @@ async def test_description_is_capped(fake):
     assert len((await fetch_job(row(), fake)).description) == MAX_DESCRIPTION
 
 
+async def test_jsonld_teaser_takes_the_full_text_from_main(fake):
+    full = "Nous recherchons un développeur Go.\n" + "Missions: du Go. " * 30
+    node = {"@type": "JobPosting", "title": "Dev Go",
+            "description": "Nous recherchons un développeur Go…",
+            "hiringOrganization": {"name": "Acme SA"},
+            "jobLocation": {"address": {"addressLocality": "Lille"}}}
+    fake.pages[row()["url"]] = page(
+        f"<main>{full}</main>",
+        head=f'<script type="application/ld+json">{json.dumps(node)}</script>',
+    )
+
+    job = (await fetch_job(row(), fake))
+
+    assert job.via == "jsonld"
+    assert job.description.startswith("Nous recherchons un développeur Go.")
+    assert len(job.description) > 300
+    assert (job.title, job.company, job.place) == ("Dev Go", "Acme SA", "Lille")
+
+
+async def test_short_jsonld_is_kept_when_main_is_another_text(fake):
+    node = {"@type": "JobPosting", "title": "Dev", "description": "Build things."}
+    fake.pages[row()["url"]] = page(
+        "<main>Accept cookies to continue. " * 20 + "</main>",
+        head=f'<script type="application/ld+json">{json.dumps(node)}</script>',
+    )
+
+    assert (await fetch_job(row(), fake)).description == "Build things."
+
+
 async def test_jsonld_without_description_falls_through_to_main(fake):
     fake.pages[row()["url"]] = page(
         "<main>The real posting body.</main>",

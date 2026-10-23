@@ -214,6 +214,22 @@ def _from_jsonld(soup: BeautifulSoup) -> Optional[dict]:
     return None
 
 
+#: Some boards' JSON-LD carries only a teaser of the posting the page shows.
+TEASER_LENGTH = 300
+TEASER_END = ("…", "...", "[…]")
+
+
+def _squash(text: str) -> str:
+    """All whitespace runs collapsed to one space, for containment checks."""
+    return " ".join(text.split())
+
+
+def _is_teaser(description: str) -> bool:
+    """Whether a JSON-LD description may be a cut-down copy of the page's."""
+    return (len(description) < TEASER_LENGTH
+            or description.rstrip().endswith(TEASER_END))
+
+
 def _text(node) -> str:
     """One element's text, blank runs collapsed and capped."""
     return _tidy(node.get_text("\n", strip=True))
@@ -303,10 +319,10 @@ def _from_html(html: str) -> Optional[dict]:
     Synchronous and CPU-bound -- fetch_job runs it off the event loop.
     """
     soup = BeautifulSoup(html, "html.parser")
-    found = _from_jsonld(soup)
+    teaser = _from_jsonld(soup)
 
-    if found:
-        return found
+    if teaser and not _is_teaser(teaser["description"]):
+        return teaser
 
     # After the JSON-LD rung, never before: de-chroming drops the
     # <script> tags the ld+json blocks live in.
@@ -317,6 +333,19 @@ def _from_html(html: str) -> Optional[dict]:
         tag.decompose()
 
     found = _from_main(soup, title) or _from_body(soup, title)
+
+    if teaser:
+        # Swap in the page text only when it provably holds the same
+        # posting; title, company and place stay JSON-LD's.
+        head = _squash(teaser["description"].rstrip(".…[] "))[:60]
+
+        if found and len(found["description"]) > len(teaser["description"]) \
+                and head in _squash(found["description"]):
+            teaser["description"] = found["description"]
+
+        teaser["place"] = teaser.get("place") or place
+
+        return teaser
 
     if found and place:
         found["place"] = place

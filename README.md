@@ -48,6 +48,13 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
   (default 2) per user per UTC day. Details in
   [docs/cv-generation.md](docs/cv-generation.md).
 
+- `GET /v1/me/applications` is the application-tracking board: one card per
+  posting you generated a CV for, `status` `cv_generated` until you move it.
+  `PUT /v1/me/applications/{job_id}` with `{"status": ...}` moves it
+  (`applied`, `interviews`, `jobbed`, `rejected`, or back to `cv_generated`).
+  Rejecting records the stage in `rejected_from` and takes an optional
+  `rejection_reason` and `feedback`.
+
 ## Data flow and privacy
 
 - **Scraped:** company, title, URL, location, description, detected ATS, and

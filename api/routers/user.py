@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
-from api.schemas import (allowed_models, AnalysisOut, AnalyzeOut, AnalyzeRequest, CvCreate,
+from api.schemas import (allowed_models, AnalysisOut, ApplicationOut, ApplicationUpdate, AnalyzeOut, AnalyzeRequest, CvCreate,
                          CandidateOut, CvOut, CvUpdate, JobOut, PasswordChange, TermIn,
                          TermOut, TermsIn, TermSuggestions, UserOut,
                          GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
@@ -22,6 +22,7 @@ from ai.main_analysis import list_due, run_analysis
 from ai.cv_generation import generate_cv
 from ai.term_suggestion import suggest_terms
 from db import analysis as db_analysis
+from db import applications as db_applications
 from db import generated_cv as db_cvs
 from db import usage, users
 
@@ -559,3 +560,36 @@ def change_gen_cv(user_id: CurrentUser, cv_id: UUID,
     _found(db_cvs.update_generated_cv(user_id, cv_id, body.cv.model_dump()))
 
     return _gen_cv_out(db_cvs.select_generated_cv(user_id, cv_id))
+
+
+# APPLICATION TRACKING
+
+def _application_out(row) -> ApplicationOut:
+    return ApplicationOut(
+        cv_id=row[0], job_id=row[1], title=row[2], company=row[3], place=row[4],
+        url=row[5], adequation_grade=row[6], cv_created_at=row[7], status=row[8],
+        rejected_from=row[9], rejection_reason=row[10], feedback=row[11],
+        updated_at=row[12])
+
+
+@router.get("/applications", response_model=List[ApplicationOut],
+            description="One card per posting the user generated a CV for, "
+                        "rejected ones included.")
+def list_applications(user_id: CurrentUser) -> List[ApplicationOut]:
+    return [_application_out(r) for r in db_applications.select_board(user_id)]
+
+
+@router.put("/applications/{job_id}", response_model=ApplicationOut,
+            responses=NOT_FOUND,
+            description="Moves a card. Rejecting records the stage it was at; "
+                        "any other status clears the rejection.")
+def move_application(user_id: CurrentUser, job_id: UUID,
+                     body: ApplicationUpdate) -> ApplicationOut:
+    if body.status == db_applications.CV_GENERATED:
+        _found(db_applications.select_card(user_id, job_id) is not None)
+        db_applications.delete_application(user_id, job_id)
+    else:
+        _found(db_applications.upsert_status(
+            user_id, job_id, body.status, body.rejection_reason, body.feedback))
+
+    return _application_out(db_applications.select_card(user_id, job_id))

@@ -185,6 +185,8 @@ class GenCvOut(BaseModel):
     locale: str
     cv: dict
     job_id: UUID
+    created_at: datetime  # when it was generated; edits keep it
+    url: str  # the posting
 
 
 # A user's edit of a generated CV: same shape as the `cv` object of

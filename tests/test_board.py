@@ -147,6 +147,12 @@ def test_job_urls_from_sitemap_keeps_only_postings():
     ]
 
 
+def test_job_urls_from_sitemap_unescapes_entities():
+    """XML escapes `&` inside <loc>; bel and lactalis were stored with `&amp;`."""
+    xml = "<urlset><url><loc>https://acme.fr/jobs/842306?a=1&amp;b=2</loc></url></urlset>"
+    assert job_urls_from_sitemap(xml) == ["https://acme.fr/jobs/842306?a=1&b=2"]
+
+
 def test_nested_sitemaps_follows_only_job_children():
     assert _nested_sitemaps(SITEMAP_INDEX) == [
         "https://acme.fr/sitemap-jobs.xml"

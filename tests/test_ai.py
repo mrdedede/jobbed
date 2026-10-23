@@ -299,6 +299,39 @@ async def test_list_due_is_newest_first_then_most_hits(user):
     assert await _due_titles(user) == ["Strong", "Weak", "Oldest"]
 
 
+async def test_list_due_filters_in_chunks_like_one_pass(user, monkeypatch):
+    monkeypatch.setattr(main_analysis, "CHUNK", 1)
+    users.insert_user_keyword(user, "go")
+    jobs.insert_jobs([_posting(1, "Oldest", "go " * 20)])
+    jobs.insert_jobs([_posting(2, "Weak", "go " * 5),
+                      _posting(3, "Strong", "go " * 12),
+                      _posting(4, "Noise", "cooking " * 6)])
+
+    assert await _due_titles(user) == ["Strong", "Weak", "Oldest"]
+
+
+async def test_list_due_refilters_only_when_postings_or_terms_change(
+        user, fake_chat, monkeypatch):
+    passes = []
+    real = main_analysis._select_due
+    monkeypatch.setattr(main_analysis, "_select_due",
+                        lambda *a: passes.append(1) or real(*a))
+    users.insert_user_keyword(user, "go")
+    users.insert_user_cv(user, "my cv")
+    jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6)])
+
+    [row] = await main_analysis.list_due(user)
+    await main_analysis.run_analysis(user, [row[0]])
+    assert await main_analysis.list_due(user) == []        # graded: cached
+    assert len(passes) == 1
+
+    jobs.insert_jobs([_posting(2, "Go Lead", "go " * 6)])   # new postings
+    assert await _due_titles(user) == ["Go Lead"]
+    users.insert_user_blacklist_term(user, "lead")          # new terms
+    assert await _due_titles(user) == []
+    assert len(passes) == 3
+
+
 async def test_list_due_drops_what_the_user_graded(user, fake_chat):
     jobs.insert_jobs([_posting(1, "Go Dev", "go " * 6)])
     users.insert_user_keyword(user, "go")

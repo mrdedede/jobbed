@@ -9,7 +9,8 @@ gateway call per posting, run concurrently up to `concurrency` -- see
 import argparse
 import asyncio
 import sys
-from typing import Callable, Optional, Sequence
+from collections import defaultdict
+from typing import Callable, Iterable, Optional, Sequence
 from uuid import UUID
 
 import httpx
@@ -26,15 +27,29 @@ from ai.exceptions import NoActiveCv
 CANDIDATE_COLUMNS = ["id", "company", "title", "url", "place", "description",
                      "scraped_at"]
 
+#: Candidate rows filtered at a time: bounds memory to one chunk's
+#: descriptions instead of the whole window's (3.6 GB at 84k postings).
+CHUNK = 2000
 
-def _select_due(rows, keywords, blacklist):
+#: (user_id, window) -> (key, filtered rows). Filtering every ungraded posting
+#: takes ~90 s on a phone CPU with an 84k-posting backlog, so the result is
+#: reused until the postings or the user's terms change (see `list_due`).
+#: Process-local: the api runs one worker on purpose (api/Dockerfile).
+# ponytail: unbounded, one entry per user and window asked for; small rows.
+_due_cache: dict = {}
+_due_locks: defaultdict = defaultdict(asyncio.Lock)
+
+
+def _select_due(chunks: Iterable, keywords, blacklist):
     """Narrow candidate rows to this user's matches, newest first.
 
+    Filters chunk by chunk (`filter_frame` is row-wise, so the result is the
+    same as one pass) and keeps no description, so memory stays at one chunk.
     Ties on `scraped_at` -- common, a scrape batch shares one timestamp --
     fall back to keyword hits, strongest first.
 
     Args:
-        rows: Output of `db.analysis.select_candidates`.
+        chunks: Lists of `db.analysis.select_candidates` rows.
         keywords: The user's keyword terms.
         blacklist: The user's blacklist terms.
 
@@ -42,12 +57,14 @@ def _select_due(rows, keywords, blacklist):
         (id, company, title, place, url, scraped_at) tuples -- no
         description, it is large and the url has it.
     """
-    if not rows:
+    kept = [filter_frame(pd.DataFrame(rows, columns=CANDIDATE_COLUMNS),
+                         keywords, blacklist).drop(columns="description")
+            for rows in chunks if rows]
+
+    if not kept:
         return []
 
-    frame = pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
-    kept = filter_frame(frame, keywords, blacklist)
-
+    kept = pd.concat(kept, ignore_index=True)
     by = ["scraped_at"] + (["keyword_hits"] if "keyword_hits" in kept else [])
     kept = kept.sort_values(by, ascending=False, kind="stable")
 
@@ -61,6 +78,11 @@ async def list_due(user_id: UUID, window: str = "-24 hours") -> list:
     Ungraded postings in the window, narrowed by the user's keywords and
     blacklist, newest first; see `_select_due`. Needs no CV, calls no model.
 
+    The filtered list is cached per user and window, keyed on the user's
+    terms and on the posting count and newest scrape, so it is recomputed only
+    when an ingest adds postings or the terms change. Grading and the window
+    sliding forward are applied to the cached list on every call, cheaply.
+
     Args:
         user_id: The user asking.
         window: Postgres interval string, e.g. "-7 days".
@@ -72,11 +94,25 @@ async def list_due(user_id: UUID, window: str = "-24 hours") -> list:
         users.select_user_keywords, user_id)]
     blacklist = [t for _, t in await asyncio.to_thread(
         users.select_user_blacklist, user_id)]
-    # ponytail: loads every ungraded posting in the window; window bounds it.
-    rows = await asyncio.to_thread(
-        db_analysis.select_candidates, user_id, 0, window)
-    # pandas is CPU-bound; keep it off the loop other requests share.
-    return await asyncio.to_thread(_select_due, rows, keywords, blacklist)
+    count, newest, start = await asyncio.to_thread(
+        db_analysis.candidates_state, window)
+    key = (tuple(keywords), tuple(blacklist), count, newest)
+
+    # One computation per user and window at a time: the page asks several
+    # times at once, and each would otherwise redo the whole filter.
+    async with _due_locks[(user_id, window)]:
+        hit = _due_cache.get((user_id, window))
+
+        if hit is None or hit[0] != key:
+            # Streaming, filtering and pandas are blocking; off the loop.
+            rows = await asyncio.to_thread(lambda: _select_due(
+                db_analysis.iter_candidates(user_id, window, CHUNK),
+                keywords, blacklist))
+            hit = _due_cache[(user_id, window)] = (key, rows)
+
+    graded = await asyncio.to_thread(db_analysis.select_graded_ids, user_id)
+
+    return [row for row in hit[1] if row[0] not in graded and row[5] >= start]
 
 
 async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],

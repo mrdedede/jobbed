@@ -159,14 +159,14 @@ def test_users_with_different_keywords_get_different_candidates(client):
 
 def test_window_reaches_sql_as_an_int_derived_string(client, monkeypatch):
     seen = []
-    real = main_analysis.db_analysis.select_candidates
+    real = main_analysis.db_analysis.iter_candidates
 
-    def spy(user_id, limit, window):
+    def spy(user_id, window, chunk):
         seen.append(window)
 
-        return real(user_id, limit, window)
+        return real(user_id, window, chunk)
 
-    monkeypatch.setattr(main_analysis.db_analysis, "select_candidates", spy)
+    monkeypatch.setattr(main_analysis.db_analysis, "iter_candidates", spy)
 
     candidates(make_user(), "?window_days=3")
 

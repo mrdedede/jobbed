@@ -76,6 +76,16 @@ def test_insert_jobs_leaves_out_dead_pages(db):
     assert jobs.select_job_urls() == {"http://x/1"}
 
 
+def test_insert_jobs_chunks_past_the_param_cap(db, monkeypatch):
+    """Postgres rejects >65535 params per statement; big batches split."""
+    monkeypatch.setattr(jobs, "_INSERT_CHUNK", 2)
+    rows = [("a", "t", "text", f"http://x/{i}", "", "jsonld", None)
+            for i in range(5)] + [("a", "t", "text", "http://x/0", "", "jsonld", None)]
+
+    assert jobs.insert_jobs(rows) == (5, 1)
+    assert len(jobs.select_job_urls()) == 5
+
+
 def test_insert_jobs_with_an_explicit_empty_list_reads_no_file(
         tmp_path, monkeypatch):
     """[] is "nothing to store", not "go read the detail CSV"."""

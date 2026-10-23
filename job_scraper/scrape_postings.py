@@ -85,6 +85,14 @@ DEFAULT_WORKERS = 50
 CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
                "aside", "form", "svg")
 
+#: Search, category and location listings that boards link like postings
+#: (veolia, mercato-emploi, loreal, bnpparibas). Rejected, not stored: a
+#: listing given a place would pass for a real job.
+LISTING_URL = re.compile(
+    r"/location/|/cabinet-recrutement/"
+    r"|/toutes-offres-emploi/[^/?#]+/?(?:[?#]|$)", re.I)
+LISTING_TITLE = re.compile(r"^\s*nos offres d.emploi|\bjobs at\b", re.I)
+
 _SPACES = re.compile(r"[^\S\n]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
@@ -268,6 +276,27 @@ def _from_body(soup: BeautifulSoup, title: Optional[str]) -> Optional[dict]:
     return {"title": title, "description": _text(body), "via": "body"}
 
 
+def _markup_place(soup: BeautifulSoup) -> Optional[str]:
+    """The location SuccessFactors-style markup names, if any.
+
+    Read before de-chroming: jobGeoLocation often sits in the <header>.
+    Blank values are skipped (EY's propertyid="city" is empty).
+    """
+    for node in (soup.find(class_="jobGeoLocation"),
+                 soup.find(attrs={"data-careersite-propertyid": "location"})):
+        text = node.get_text(" ", strip=True) if node else ""
+
+        if text:
+            return text
+
+    parts = [node.get("content") or node.get_text(" ", strip=True)
+             for node in soup.find_all(
+                 attrs={"itemprop": ["addressLocality", "addressRegion"]})]
+
+    return ", ".join(dict.fromkeys(p.strip() for p in parts if p.strip())) \
+        or None
+
+
 def _from_html(html: str) -> Optional[dict]:
     """The page ladder: JSON-LD, then <main>, then the de-chromed <body>.
 
@@ -282,11 +311,17 @@ def _from_html(html: str) -> Optional[dict]:
     # After the JSON-LD rung, never before: de-chroming drops the
     # <script> tags the ld+json blocks live in.
     title = _page_title(soup)
+    place = _markup_place(soup)
 
     for tag in soup.find_all(CHROME_TAGS):
         tag.decompose()
 
-    return _from_main(soup, title) or _from_body(soup, title)
+    found = _from_main(soup, title) or _from_body(soup, title)
+
+    if found and place:
+        found["place"] = place
+
+    return found
 
 
 async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
@@ -327,6 +362,8 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
             "description": row.get("description", ""),
             "via": row.get("ats", ""),
         }
+    elif LISTING_URL.search(url):
+        error = "listing"
     else:
         if render is not None:
             html = await render(url)
@@ -338,6 +375,11 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
         if html:
             found = await asyncio.to_thread(_from_html, html)
             error = None if found else "parse-miss"
+
+            # ponytail: a listing is not stored, so its URL is refetched
+            # nightly; keep rejected URLs in a table if that ever costs.
+            if found and LISTING_TITLE.search(found.get("title") or ""):
+                found, error = None, "listing"
 
     found = found or {}
 

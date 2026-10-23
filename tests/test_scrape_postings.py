@@ -154,6 +154,51 @@ async def test_main_prefers_og_title_over_h1(fake):
     assert (await fetch_job(row(), fake)).title == "Data Engineer F/H"
 
 
+async def test_listing_url_is_rejected_without_a_fetch(fake):
+    url = "https://mercato-emploi.com/toutes-offres-emploi/informatique/"
+
+    job = await fetch_job(row(url=url), fake)
+
+    assert (job.error, job.via, job.description) == ("listing", "none", "")
+    assert fake.requested == []
+
+
+async def test_listing_title_is_rejected(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>France Jobs at Acme</h1><main>42 offres</main>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via) == ("listing", "none")
+
+
+async def test_successfactors_place_is_read_before_dechroming(fake):
+    fake.pages[row()["url"]] = page(
+        '<header><span class="jobGeoLocation">Lyon, FR</span></header>'
+        "<main>Missions.</main>")
+
+    job = await fetch_job(row(place="France"), fake)
+
+    assert (job.via, job.place) == ("main", "Lyon, FR")
+
+
+async def test_blank_place_markup_keeps_the_row_place(fake):
+    fake.pages[row()["url"]] = page(
+        '<span data-careersite-propertyid="city"> </span>'
+        '<span class="jobGeoLocation"></span><main>Missions.</main>')
+
+    assert (await fetch_job(row(place="Paris"), fake)).place == "Paris"
+
+
+async def test_address_itemprops_are_joined(fake):
+    fake.pages[row()["url"]] = page(
+        '<span itemprop="addressLocality">Bezons</span>'
+        '<meta itemprop="addressRegion" content="Île-de-France">'
+        "<main>Missions.</main>")
+
+    assert (await fetch_job(row(), fake)).place == "Bezons, Île-de-France"
+
+
 async def test_role_main_is_accepted(fake):
     fake.pages[row()["url"]] = page('<div role="main">Body text.</div>')
 

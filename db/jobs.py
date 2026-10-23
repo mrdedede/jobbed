@@ -10,7 +10,7 @@ import csv
 from typing import List, Optional, Tuple
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 
 from db.engine import engine
 from db.tables import job_postings
@@ -80,6 +80,27 @@ def insert_jobs(rows: Optional[List[Tuple]] = None) -> Tuple[int, int]:
         raise RuntimeError(f"Database insert failed: {exc}") from exc
 
     return inserted, total - inserted
+
+
+def fill_place(job_id, place: str) -> None:
+    """Set a posting's place, only if it has none yet.
+
+    The grading LLM's guess must never overwrite what the page stated.
+
+    Args:
+        job_id: The posting.
+        place: Location the model read from the posting.
+    """
+    # SQL: UPDATE job_postings SET place = ?
+    #      WHERE id = ? AND (place IS NULL OR place = '')
+    stmt = (
+        update(job_postings)
+        .where(job_postings.c.id == job_id)
+        .where(or_(job_postings.c.place.is_(None), job_postings.c.place == ""))
+        .values(place=place)
+    )
+    with engine.begin() as conn:
+        conn.execute(stmt)
 
 
 # SELECTIONS

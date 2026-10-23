@@ -19,6 +19,8 @@ ANALYSIS_SCHEMA = {
     "properties": {
         "adequation_grade": {"type": "integer"},
         "depth_analysis": {"type": "string"},
+        # Optional: the job's location, for postings the scraper found none on.
+        "place": {"type": "string"},
     },
     "required": ["adequation_grade", "depth_analysis"],
     "additionalProperties": False,
@@ -45,7 +47,8 @@ async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
         client: Shared AsyncClient for a batch, optional.
 
     Returns:
-        {"adequation_grade": int 0-100, "depth_analysis": str}.
+        {"adequation_grade": int 0-100, "depth_analysis": str,
+        "place": str or None}.
 
     Raises:
         gateway.GatewayError: The model call failed.
@@ -68,4 +71,8 @@ async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
     if not isinstance(analysis, str):
         raise ValueError("depth_analysis is not text")
 
-    return {"adequation_grade": grade, "depth_analysis": analysis}
+    place = verdict.get("place")
+    place = place.strip() if isinstance(place, str) else ""
+
+    return {"adequation_grade": grade, "depth_analysis": analysis,
+            "place": place or None}

@@ -17,6 +17,7 @@ import pandas as pd
 
 from ai import analysis, gateway
 from db import analysis as db_analysis
+from db import jobs as db_jobs
 from db import users
 from job_scraper.filters import filter_frame
 from ai.exceptions import NoActiveCv
@@ -127,6 +128,11 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                     user_id, verdict["adequation_grade"],
                     verdict["depth_analysis"], model, job_id,
                 ])
+
+                if verdict["place"]:
+                    await asyncio.to_thread(
+                        db_jobs.fill_place, job_id, verdict["place"])
+
                 counts["analysed"] += 1
                 stored.append(job_id)
                 note = f"{verdict['adequation_grade']:3}"

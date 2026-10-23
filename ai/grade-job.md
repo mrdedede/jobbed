@@ -20,6 +20,7 @@ The shape is enforced by a JSON schema on the call; you only need to fill it:
 
 - `adequation_grade` — integer, 0 to 100.
 - `depth_analysis` — the whole write-up, `\n\n` between paragraphs.
+- `place` — optional. Where the job itself is done, as a city or region ("Gent", "Toulouse", "Île-de-France"). Read it from the body or the title — here, unlike for grading, the title counts ("Ingénieur (Gent)", "Développeur à Toulouse"). Never the company's head office or postal address. Leave the field out if the posting does not say; do not guess.
 
 ## When you cannot grade
 

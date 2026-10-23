@@ -201,6 +201,25 @@ async def test_listing_title_is_rejected(fake):
     assert (job.error, job.via) == ("listing", "none")
 
 
+async def test_captcha_wall_is_a_parse_miss(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>Just a moment...</h1><p>Verify you are human.</p>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via, job.description) == ("parse-miss", "none", "")
+
+
+async def test_expired_posting_is_rejected(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>Data Engineer</h1><main>Cette offre n'est plus disponible."
+        "</main>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via, job.description) == ("expired", "none", "")
+
+
 async def test_successfactors_place_is_read_before_dechroming(fake):
     fake.pages[row()["url"]] = page(
         '<header><span class="jobGeoLocation">Lyon, FR</span></header>'

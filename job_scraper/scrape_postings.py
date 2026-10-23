@@ -92,6 +92,18 @@ LISTING_URL = re.compile(
     r"/location/|/cabinet-recrutement/"
     r"|/toutes-offres-emploi/[^/?#]+/?(?:[?#]|$)", re.I)
 LISTING_TITLE = re.compile(r"^\s*nos offres d.emploi|\bjobs at\b", re.I)
+#: A posting page that says the posting is gone. Rejected, not stored.
+DEAD_PAGE = re.compile(
+    r"no longer (?:available|accepting|open)|n.est plus (?:disponible|en ligne)"
+    r"|(?:offre|poste) (?:a été )?pourvue?|position has been filled", re.I)
+#: A CAPTCHA/WAF wall instead of the page. A parse-miss, so RenderPostings
+#: retries it in a browser and the next ingest refetches it.
+BLOCKED_PAGE = re.compile(
+    r"captcha|just a moment|attention required"
+    r"|verify (?:you are|you're) (?:a )?human|access denied"
+    r"|enable javascript and cookies|vérifi\w+ que vous", re.I)
+#: How much of the description the two checks above read.
+HEAD_LENGTH = 500
 
 _SPACES = re.compile(r"[^\S\n]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -409,6 +421,18 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
             # nightly; keep rejected URLs in a table if that ever costs.
             if found and LISTING_TITLE.search(found.get("title") or ""):
                 found, error = None, "listing"
+
+            # The extracted text, not the raw HTML: real postings embed
+            # reCAPTCHA scripts. ponytail: only the head is read, so a banner
+            # past HEAD_LENGTH characters is missed; widen it if that happens.
+            if found:
+                head = (f"{found.get('title') or ''}\n"
+                        f"{(found.get('description') or '')[:HEAD_LENGTH]}")
+
+                if BLOCKED_PAGE.search(head):
+                    found, error = None, "parse-miss"
+                elif DEAD_PAGE.search(head):
+                    found, error = None, "expired"
 
     found = found or {}
 

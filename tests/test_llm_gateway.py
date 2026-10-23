@@ -127,6 +127,7 @@ async def test_ollama_adapter_maps_the_request_and_response(monkeypatch):
     assert seen["json"] == {
         "model": "llama3.2", "stream": False, "format": schema,
         "messages": [{"role": "user", "content": "prompt"}],
+        "options": {"num_ctx": 16384},
     }
 
 

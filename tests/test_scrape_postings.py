@@ -112,6 +112,35 @@ async def test_description_is_capped(fake):
     assert len((await fetch_job(row(), fake)).description) == MAX_DESCRIPTION
 
 
+async def test_jsonld_teaser_takes_the_full_text_from_main(fake):
+    full = "Nous recherchons un développeur Go.\n" + "Missions: du Go. " * 30
+    node = {"@type": "JobPosting", "title": "Dev Go",
+            "description": "Nous recherchons un développeur Go…",
+            "hiringOrganization": {"name": "Acme SA"},
+            "jobLocation": {"address": {"addressLocality": "Lille"}}}
+    fake.pages[row()["url"]] = page(
+        f"<main>{full}</main>",
+        head=f'<script type="application/ld+json">{json.dumps(node)}</script>',
+    )
+
+    job = (await fetch_job(row(), fake))
+
+    assert job.via == "jsonld"
+    assert job.description.startswith("Nous recherchons un développeur Go.")
+    assert len(job.description) > 300
+    assert (job.title, job.company, job.place) == ("Dev Go", "Acme SA", "Lille")
+
+
+async def test_short_jsonld_is_kept_when_main_is_another_text(fake):
+    node = {"@type": "JobPosting", "title": "Dev", "description": "Build things."}
+    fake.pages[row()["url"]] = page(
+        "<main>Accept cookies to continue. " * 20 + "</main>",
+        head=f'<script type="application/ld+json">{json.dumps(node)}</script>',
+    )
+
+    assert (await fetch_job(row(), fake)).description == "Build things."
+
+
 async def test_jsonld_without_description_falls_through_to_main(fake):
     fake.pages[row()["url"]] = page(
         "<main>The real posting body.</main>",
@@ -152,6 +181,70 @@ async def test_main_prefers_og_title_over_h1(fake):
     )
 
     assert (await fetch_job(row(), fake)).title == "Data Engineer F/H"
+
+
+async def test_listing_url_is_rejected_without_a_fetch(fake):
+    url = "https://mercato-emploi.com/toutes-offres-emploi/informatique/"
+
+    job = await fetch_job(row(url=url), fake)
+
+    assert (job.error, job.via, job.description) == ("listing", "none", "")
+    assert fake.requested == []
+
+
+async def test_listing_title_is_rejected(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>France Jobs at Acme</h1><main>42 offres</main>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via) == ("listing", "none")
+
+
+async def test_captcha_wall_is_a_parse_miss(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>Just a moment...</h1><p>Verify you are human.</p>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via, job.description) == ("parse-miss", "none", "")
+
+
+async def test_expired_posting_is_rejected(fake):
+    fake.pages[row()["url"]] = page(
+        "<h1>Data Engineer</h1><main>Cette offre n'est plus disponible."
+        "</main>")
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.error, job.via, job.description) == ("expired", "none", "")
+
+
+async def test_successfactors_place_is_read_before_dechroming(fake):
+    fake.pages[row()["url"]] = page(
+        '<header><span class="jobGeoLocation">Lyon, FR</span></header>'
+        "<main>Missions.</main>")
+
+    job = await fetch_job(row(place="France"), fake)
+
+    assert (job.via, job.place) == ("main", "Lyon, FR")
+
+
+async def test_blank_place_markup_keeps_the_row_place(fake):
+    fake.pages[row()["url"]] = page(
+        '<span data-careersite-propertyid="city"> </span>'
+        '<span class="jobGeoLocation"></span><main>Missions.</main>')
+
+    assert (await fetch_job(row(place="Paris"), fake)).place == "Paris"
+
+
+async def test_address_itemprops_are_joined(fake):
+    fake.pages[row()["url"]] = page(
+        '<span itemprop="addressLocality">Bezons</span>'
+        '<meta itemprop="addressRegion" content="Île-de-France">'
+        "<main>Missions.</main>")
+
+    assert (await fetch_job(row(), fake)).place == "Bezons, Île-de-France"
 
 
 async def test_role_main_is_accepted(fake):
@@ -261,6 +354,12 @@ def test_clean_ignores_non_strings():
     assert _clean(None) == ""
     assert _clean({"@type": "Text"}) == ""
     assert _clean("   ") == ""
+
+
+def test_clean_collapses_padded_blank_lines():
+    # One text node padded with indented blank lines: strip=True kept it all.
+    padded = "<p>Missions\n      \n   \n\t\n  Build    APIs  now</p>"
+    assert _clean(padded) == "Missions\n\nBuild APIs now"
 
 
 # ======================================================================

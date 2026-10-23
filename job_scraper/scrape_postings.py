@@ -85,7 +85,41 @@ DEFAULT_WORKERS = 50
 CHROME_TAGS = ("script", "style", "noscript", "nav", "header", "footer",
                "aside", "form", "svg")
 
+#: Search, category and location listings that boards link like postings
+#: (veolia, mercato-emploi, loreal, bnpparibas). Rejected, not stored: a
+#: listing given a place would pass for a real job.
+LISTING_URL = re.compile(
+    r"/location/|/cabinet-recrutement/"
+    r"|/toutes-offres-emploi/[^/?#]+/?(?:[?#]|$)", re.I)
+LISTING_TITLE = re.compile(r"^\s*nos offres d.emploi|\bjobs at\b", re.I)
+#: A posting page that says the posting is gone. Rejected, not stored.
+DEAD_PAGE = re.compile(
+    r"no longer (?:available|accepting|open)|n.est plus (?:disponible|en ligne)"
+    r"|(?:offre|poste) (?:a été )?pourvue?|position has been filled", re.I)
+#: A CAPTCHA/WAF wall instead of the page. A parse-miss, so RenderPostings
+#: retries it in a browser and the next ingest refetches it.
+BLOCKED_PAGE = re.compile(
+    r"captcha|just a moment|attention required"
+    r"|verify (?:you are|you're) (?:a )?human|access denied"
+    r"|enable javascript and cookies|vérifi\w+ que vous", re.I)
+#: How much of the description the two checks above read.
+HEAD_LENGTH = 500
+
+_SPACES = re.compile(r"[^\S\n]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def _tidy(text: str) -> str:
+    """Collapse whitespace runs and blank-line runs, then cap the length.
+
+    get_text(strip=True) trims each text node's ends only, so a node holding
+    "a\\n    \\n    \\nb" kept its padding, and "\\n{3,}" alone never matched
+    it. Collapsing before capping keeps padding from eating MAX_DESCRIPTION.
+    """
+    text = _SPACES.sub(" ", text or "")
+    text = "\n".join(line.strip() for line in text.split("\n"))
+
+    return _BLANK_LINES.sub("\n\n", text).strip()[:MAX_DESCRIPTION]
 
 
 def _clean(fragment: object) -> str:
@@ -103,11 +137,9 @@ def _clean(fragment: object) -> str:
     if not isinstance(fragment, str) or not fragment.strip():
         return ""
 
-    text = BeautifulSoup(unescape(fragment), "html.parser").get_text(
+    return _tidy(BeautifulSoup(unescape(fragment), "html.parser").get_text(
         "\n", strip=True
-    )
-
-    return _BLANK_LINES.sub("\n\n", text)[:MAX_DESCRIPTION]
+    ))
 
 
 def _workday_api(url: str) -> Optional[str]:
@@ -194,11 +226,25 @@ def _from_jsonld(soup: BeautifulSoup) -> Optional[dict]:
     return None
 
 
+#: Some boards' JSON-LD carries only a teaser of the posting the page shows.
+TEASER_LENGTH = 300
+TEASER_END = ("…", "...", "[…]")
+
+
+def _squash(text: str) -> str:
+    """All whitespace runs collapsed to one space, for containment checks."""
+    return " ".join(text.split())
+
+
+def _is_teaser(description: str) -> bool:
+    """Whether a JSON-LD description may be a cut-down copy of the page's."""
+    return (len(description) < TEASER_LENGTH
+            or description.rstrip().endswith(TEASER_END))
+
+
 def _text(node) -> str:
     """One element's text, blank runs collapsed and capped."""
-    return _BLANK_LINES.sub(
-        "\n\n", node.get_text("\n", strip=True)
-    )[:MAX_DESCRIPTION]
+    return _tidy(node.get_text("\n", strip=True))
 
 
 def _page_title(soup: BeautifulSoup) -> Optional[str]:
@@ -258,25 +304,65 @@ def _from_body(soup: BeautifulSoup, title: Optional[str]) -> Optional[dict]:
     return {"title": title, "description": _text(body), "via": "body"}
 
 
+def _markup_place(soup: BeautifulSoup) -> Optional[str]:
+    """The location SuccessFactors-style markup names, if any.
+
+    Read before de-chroming: jobGeoLocation often sits in the <header>.
+    Blank values are skipped (EY's propertyid="city" is empty).
+    """
+    for node in (soup.find(class_="jobGeoLocation"),
+                 soup.find(attrs={"data-careersite-propertyid": "location"})):
+        text = node.get_text(" ", strip=True) if node else ""
+
+        if text:
+            return text
+
+    parts = [node.get("content") or node.get_text(" ", strip=True)
+             for node in soup.find_all(
+                 attrs={"itemprop": ["addressLocality", "addressRegion"]})]
+
+    return ", ".join(dict.fromkeys(p.strip() for p in parts if p.strip())) \
+        or None
+
+
 def _from_html(html: str) -> Optional[dict]:
     """The page ladder: JSON-LD, then <main>, then the de-chromed <body>.
 
     Synchronous and CPU-bound -- fetch_job runs it off the event loop.
     """
     soup = BeautifulSoup(html, "html.parser")
-    found = _from_jsonld(soup)
+    teaser = _from_jsonld(soup)
 
-    if found:
-        return found
+    if teaser and not _is_teaser(teaser["description"]):
+        return teaser
 
     # After the JSON-LD rung, never before: de-chroming drops the
     # <script> tags the ld+json blocks live in.
     title = _page_title(soup)
+    place = _markup_place(soup)
 
     for tag in soup.find_all(CHROME_TAGS):
         tag.decompose()
 
-    return _from_main(soup, title) or _from_body(soup, title)
+    found = _from_main(soup, title) or _from_body(soup, title)
+
+    if teaser:
+        # Swap in the page text only when it provably holds the same
+        # posting; title, company and place stay JSON-LD's.
+        head = _squash(teaser["description"].rstrip(".…[] "))[:60]
+
+        if found and len(found["description"]) > len(teaser["description"]) \
+                and head in _squash(found["description"]):
+            teaser["description"] = found["description"]
+
+        teaser["place"] = teaser.get("place") or place
+
+        return teaser
+
+    if found and place:
+        found["place"] = place
+
+    return found
 
 
 async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
@@ -317,6 +403,8 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
             "description": row.get("description", ""),
             "via": row.get("ats", ""),
         }
+    elif LISTING_URL.search(url):
+        error = "listing"
     else:
         if render is not None:
             html = await render(url)
@@ -328,6 +416,23 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
         if html:
             found = await asyncio.to_thread(_from_html, html)
             error = None if found else "parse-miss"
+
+            # ponytail: a listing is not stored, so its URL is refetched
+            # nightly; keep rejected URLs in a table if that ever costs.
+            if found and LISTING_TITLE.search(found.get("title") or ""):
+                found, error = None, "listing"
+
+            # The extracted text, not the raw HTML: real postings embed
+            # reCAPTCHA scripts. ponytail: only the head is read, so a banner
+            # past HEAD_LENGTH characters is missed; widen it if that happens.
+            if found:
+                head = (f"{found.get('title') or ''}\n"
+                        f"{(found.get('description') or '')[:HEAD_LENGTH]}")
+
+                if BLOCKED_PAGE.search(head):
+                    found, error = None, "parse-miss"
+                elif DEAD_PAGE.search(head):
+                    found, error = None, "expired"
 
     found = found or {}
 
@@ -344,7 +449,8 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
     return Job(
         company=pick("company"),
         title=pick("title"),
-        description=found.get("description", ""),
+        # Tidied here too: WTTJ and API-source text skips _clean/_text.
+        description=_tidy(found.get("description", "")),
         url=url,
         place=pick("place") or None,
         via=found.get("via", "none"),

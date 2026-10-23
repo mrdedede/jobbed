@@ -19,15 +19,20 @@ ANALYSIS_SCHEMA = {
     "properties": {
         "adequation_grade": {"type": "integer"},
         "depth_analysis": {"type": "string"},
+        # Optional: the job's location, for postings the scraper found none on.
+        "place": {"type": "string"},
     },
     "required": ["adequation_grade", "depth_analysis"],
     "additionalProperties": False,
 }
 
 
-def build_prompt(cv_md: str, job_description: str) -> str:
+def build_prompt(cv_md: str, job: Tuple) -> str:
+    """The grading prompt. `job` is (id, company, title, description)."""
+    _, company, title, description = job
+
     return (f"{grade_job}\n--------\n# User CV\n{cv_md}\n--------\n"
-            f"# JOB POST\n\n{job_description}")
+            f"# JOB POST\n\n## {title} -- {company}\n\n{description}")
 
 
 async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
@@ -42,14 +47,15 @@ async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
         client: Shared AsyncClient for a batch, optional.
 
     Returns:
-        {"adequation_grade": int 0-100, "depth_analysis": str}.
+        {"adequation_grade": int 0-100, "depth_analysis": str,
+        "place": str or None}.
 
     Raises:
         gateway.GatewayError: The model call failed.
         ValueError: The answer was not JSON of the expected shape.
     """
     raw = await gateway.chat(
-        model, build_prompt(cv_md, job[3]), ANALYSIS_SCHEMA, client)
+        model, build_prompt(cv_md, job), ANALYSIS_SCHEMA, client)
 
     try:
         verdict = json.loads(raw)
@@ -65,4 +71,8 @@ async def analyze(job: Tuple, cv_md: str, model: str = gateway.HAIKU_MODEL,
     if not isinstance(analysis, str):
         raise ValueError("depth_analysis is not text")
 
-    return {"adequation_grade": grade, "depth_analysis": analysis}
+    place = verdict.get("place")
+    place = place.strip() if isinstance(place, str) else ""
+
+    return {"adequation_grade": grade, "depth_analysis": analysis,
+            "place": place or None}

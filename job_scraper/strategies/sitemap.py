@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from html import unescape
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -49,7 +50,8 @@ def job_urls_from_sitemap(xml: str) -> List[str]:
     """
     seen: Dict[str, None] = {}
 
-    for url in LOC_RE.findall(xml):
+    # XML escapes `&` as `&amp;` inside <loc>; the regex doesn't decode it.
+    for url in map(unescape, LOC_RE.findall(xml)):
         if JOB_URL_RE.search(urlparse(url).path or ""):
             seen.setdefault(url, None)
 
@@ -67,7 +69,7 @@ def _nested_sitemaps(xml: str) -> List[str]:
     """
     return [
         url
-        for url in LOC_RE.findall(xml)
+        for url in map(unescape, LOC_RE.findall(xml))
         if url.lower().endswith(".xml")
         and re.search(r"job|offre|emploi|vacanc|career|stellen", url, re.I)
     ]

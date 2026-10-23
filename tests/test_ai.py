@@ -81,11 +81,21 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
 
     verdict = await analysis.analyze(JOB, "my cv", model="ollama-x")
 
-    assert verdict == {"adequation_grade": 77, "depth_analysis": "solid fit"}
+    assert verdict == {"adequation_grade": 77, "depth_analysis": "solid fit",
+                       "place": None}
     model, prompt, schema = calls[0]
     assert model == "ollama-x"
     assert "my cv" in prompt and "write python" in prompt
+    assert "## Dev -- Acme" in prompt
     assert schema is analysis.ANALYSIS_SCHEMA
+
+
+async def test_analyze_returns_the_place_the_model_read(fake_chat):
+    _, state = fake_chat
+    state["answer"] = json.dumps({"adequation_grade": 5, "depth_analysis": "x",
+                                  "place": " Toulouse "})
+
+    assert (await analysis.analyze(JOB, "cv"))["place"] == "Toulouse"
 
 
 @pytest.mark.parametrize("answer", [
@@ -133,6 +143,22 @@ async def test_run_analysis_grades_and_stores_each_picked_posting(
     rows = db_analysis.select_analyses(user)
     assert [r[1] for r in rows] == [77, 77]
     assert {r[6] for r in rows} == {"haiku"}
+
+
+async def test_run_analysis_fills_only_an_empty_place(user, fake_chat):
+    jobs.insert_jobs([
+        ("Acme", "Go Dev", "write go", "http://x/1", "Paris", None, None),
+        ("Globex", "Py Dev", "write python", "http://x/2", None, None, None),
+    ])
+    users.insert_user_cv(user, "my cv")
+    _, state = fake_chat
+    state["answer"] = json.dumps({"adequation_grade": 50, "depth_analysis": "x",
+                                  "place": "Gent"})
+
+    await main_analysis.run_analysis(user, _pending(user))
+
+    assert {(r[3], r[4]) for r in db_analysis.select_analyses(user)} == {
+        ("Go Dev", "Paris"), ("Py Dev", "Gent")}
 
 
 async def test_run_analysis_counts_failures_and_keeps_going(user, fake_chat):

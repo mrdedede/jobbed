@@ -7,11 +7,12 @@ MetaData — no ORM mapped classes, no Session. Alembic's autogenerate reads
 an ORM session, to keep query cost equal to the SQL it actually runs.
 
 Tables: users, user_keywords, user_blacklist, user_cvs, job_boards,
-job_postings, ai_analysis, generated_cv, cover_letters, llm_usage.
+job_postings, ai_analysis, generated_cv, cover_letters, llm_usage, applications.
 """
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     Column,
     ForeignKey,
@@ -162,4 +163,33 @@ llm_usage = Table(
     Column("kind", String, nullable=False),
     Column("count", Integer, nullable=False, server_default=text("0")),
     PrimaryKeyConstraint("user_id", "day", "kind"),
+)
+
+
+# A user's application to a posting they generated a CV for. No row means the
+# card is still in "CV generated": the board is generated_cv LEFT JOIN this.
+applications = Table(
+    "applications",
+    metadata,
+    UUID_PK(),
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("job_id", UUID(as_uuid=True), ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False),
+    # The CV sent; kept null rather than losing the application if it goes.
+    Column("generated_cv_id", UUID(as_uuid=True), ForeignKey("generated_cv.id", ondelete="SET NULL")),
+    Column("status", String, nullable=False),
+    # The stage a rejected application died at, for stats.
+    Column("rejected_from", String),
+    Column("rejection_reason", String),
+    Column("feedback", Text),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Column("updated_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    UniqueConstraint("user_id", "job_id", name="uq_applications_user_job"),
+    CheckConstraint("status IN ('applied', 'interviews', 'jobbed', 'rejected')",
+                    name="ck_applications_status"),
+    CheckConstraint("rejected_from IN ('cv_generated', 'applied', 'interviews')",
+                    name="ck_applications_rejected_from"),
+    CheckConstraint("rejection_reason IN ('no_reply', 'rejected', 'withdrew', 'other')",
+                    name="ck_applications_rejection_reason"),
+    CheckConstraint("(status = 'rejected') = (rejected_from IS NOT NULL)",
+                    name="ck_applications_rejected_has_stage"),
 )

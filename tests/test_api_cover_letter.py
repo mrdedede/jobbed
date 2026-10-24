@@ -105,7 +105,7 @@ def test_letter_is_written_stored_and_listed_with_its_analysis(as_user, chat):
     assert (letter["letter"], letter["locale"], letter["cv_id"]) == (LETTER, "fr", cv_id)
     assert letter["answers"] == ANSWERS
     assert letter["depth_analysis"] == "lead with Go"
-    assert [l["letter_id"] for l in c.get("/v1/me/cover-letters").json()] == [letter["letter_id"]]
+    assert [l["letter_id"] for l in c.get("/v1/me/cover-letters").json()["items"]] == [letter["letter_id"]]
     assert used(uid) == 1
 
 
@@ -129,7 +129,7 @@ def test_put_replaces_the_letter(as_user, chat):
     edited = c.put(f"/v1/me/cover-letters/{letter_id}", json={"letter": "  Edited.  "})
 
     assert edited.status_code == 200 and edited.json()["letter"] == "Edited."
-    assert c.get("/v1/me/cover-letters").json()[0]["letter"] == "Edited."
+    assert c.get("/v1/me/cover-letters").json()["items"][0]["letter"] == "Edited."
 
 
 def test_another_users_letter_and_cv_are_404(as_user, chat):
@@ -140,7 +140,7 @@ def test_another_users_letter_and_cv_are_404(as_user, chat):
 
     assert start(other, cv_id).status_code == 404
     assert other.put(f"/v1/me/cover-letters/{letter_id}", json={"letter": "x"}).status_code == 404
-    assert other.get("/v1/me/cover-letters").json() == []
+    assert other.get("/v1/me/cover-letters").json()["items"] == []
     assert used(intruder) == 0
     assert intruder not in user_router._letter_in_flight
 

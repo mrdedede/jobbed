@@ -285,10 +285,28 @@ def select_analyses(user_id: UUID) -> List[Tuple]:
         return conn.execute(stmt).all()
 
 
+def _analysis_where(user_id: UUID, min_grade: int = 0,
+                    job_ids: Optional[Sequence[UUID]] = None,
+                    since_days: Optional[int] = None) -> list:
+    """The WHERE conditions shared by the analysis page, its count and stats."""
+    where = [ai_analysis.c.user_id == user_id]
+    if job_ids is not None:
+        where.append(ai_analysis.c.job_id.in_(job_ids))
+    if min_grade > 0:
+        where.append(ai_analysis.c.adequation_grade >= min_grade)
+    if since_days is not None:
+        # since_days is a validated int, never client text: text_interval
+        # inlines it into SQL.
+        where.append(ai_analysis.c.created_at
+                     >= func.now() + text_interval(f"-{since_days} days"))
+
+    return where
+
+
 def select_analysis_page(
         user_id: UUID, limit: int, min_grade: int = 0,
         job_ids: Optional[Sequence[UUID]] = None,
-        since_days: Optional[int] = None) -> List[Tuple]:
+        since_days: Optional[int] = None, offset: int = 0) -> List[Tuple]:
     """A user's graded postings, best fit first, without the description.
 
     The description is large and the url has it, so unlike `select_analyses`
@@ -300,6 +318,7 @@ def select_analysis_page(
         min_grade: Only grades at or above this; 0 keeps ungraded (NULL) rows.
         job_ids: Restrict to these postings (e.g. one run's results).
         since_days: Only analyses made within this many days.
+        offset: Rows to skip, for paging.
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
@@ -310,10 +329,9 @@ def select_analysis_page(
     #      job_postings.url, ai_analysis.ai_model, ai_analysis.depth_analysis,
     #      ai_analysis.created_at
     #      FROM ai_analysis JOIN job_postings ON job_postings.id = ai_analysis.job_id
-    #      WHERE ai_analysis.user_id = ? [AND job_id IN (...)]
-    #      [AND adequation_grade >= ?]
-    #      [AND ai_analysis.created_at >= now() + INTERVAL '-<since_days> days']
-    #      ORDER BY adequation_grade DESC NULLS LAST, created_at DESC LIMIT ?
+    #      WHERE <_analysis_where>
+    #      ORDER BY adequation_grade DESC NULLS LAST, created_at DESC, id
+    #      LIMIT ? OFFSET ?
     stmt = (
         select(
             job_postings.c.id, ai_analysis.c.adequation_grade,
@@ -323,23 +341,71 @@ def select_analysis_page(
         )
         .select_from(ai_analysis)
         .join(job_postings, job_postings.c.id == ai_analysis.c.job_id)
-        .where(ai_analysis.c.user_id == user_id)
+        .where(*_analysis_where(user_id, min_grade, job_ids, since_days))
+        # The id makes the order total, so pages neither repeat nor skip rows.
         .order_by(ai_analysis.c.adequation_grade.desc().nulls_last(),
-                  ai_analysis.c.created_at.desc())
+                  ai_analysis.c.created_at.desc(), ai_analysis.c.id)
         .limit(limit)
+        .offset(offset)
     )
-    if job_ids is not None:
-        stmt = stmt.where(ai_analysis.c.job_id.in_(job_ids))
-    if min_grade > 0:
-        stmt = stmt.where(ai_analysis.c.adequation_grade >= min_grade)
-    if since_days is not None:
-        # since_days is a validated int, never client text: text_interval
-        # inlines it into SQL.
-        stmt = stmt.where(ai_analysis.c.created_at
-                          >= func.now() + text_interval(f"-{since_days} days"))
-
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def count_analyses(user_id: UUID, min_grade: int = 0,
+                   since_days: Optional[int] = None) -> int:
+    """How many rows `select_analysis_page` pages through with these filters."""
+    # SQL: SELECT count(*) FROM ai_analysis WHERE <_analysis_where>
+    stmt = (select(func.count()).select_from(ai_analysis)
+            .where(*_analysis_where(user_id, min_grade,
+                                    since_days=since_days)))
+    with engine.connect() as conn:
+        return conn.execute(stmt).scalar_one()
+
+
+def analysis_stats(user_id: UUID, min_grade: int = 0,
+                   since_days: Optional[int] = None) -> dict:
+    """Count, average grade, grade histogram and average per day, in SQL.
+
+    Ungraded (NULL) rows count towards `count` but not the averages or
+    the histogram.
+
+    Returns:
+        {"count": int, "average": Optional[int],
+         "buckets": {bucket 0-4: count}, "per_day": [(date, average)]},
+        a bucket being the grade // 20, 100 falling in bucket 4.
+    """
+    where = _analysis_where(user_id, min_grade, since_days=since_days)
+    grade = ai_analysis.c.adequation_grade
+    bucket = func.least(grade // 20, 4)
+    day = func.date(func.timezone("UTC", ai_analysis.c.created_at))
+
+    # SQL: SELECT count(*), round(avg(adequation_grade)) FROM ai_analysis
+    #      WHERE <_analysis_where>
+    totals = select(func.count(), func.round(func.avg(grade))).where(*where)
+    # SQL: SELECT least(adequation_grade / 20, 4), count(*) FROM ai_analysis
+    #      WHERE <_analysis_where> AND adequation_grade IS NOT NULL GROUP BY 1
+    histogram = (select(bucket, func.count()).where(*where, grade.isnot(None))
+                 .group_by(bucket))
+    # SQL: SELECT date(created_at AT TIME ZONE 'UTC'),
+    #      round(avg(adequation_grade)) FROM ai_analysis
+    #      WHERE <_analysis_where> AND adequation_grade IS NOT NULL
+    #      GROUP BY 1 ORDER BY 1
+    per_day = (select(day, func.round(func.avg(grade)))
+               .where(*where, grade.isnot(None))
+               .group_by(day).order_by(day))
+
+    with engine.connect() as conn:
+        count, average = conn.execute(totals).one()
+        buckets = dict(conn.execute(histogram).all())
+        days = conn.execute(per_day).all()
+
+    return {
+        "count": count,
+        "average": None if average is None else int(average),
+        "buckets": buckets,
+        "per_day": [(d, int(a)) for d, a in days],
+    }
 
 
 def select_job_state(user_id: UUID, job_id: UUID) -> Tuple[bool, bool]:

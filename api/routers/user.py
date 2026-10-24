@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
-from api.schemas import (allowed_models, AnalysisOut, ApplicationOut, ApplicationUpdate, AnalyzeOut, AnalyzeRequest, CvCreate,
+from api.schemas import (allowed_models, AnalysisOut, AnalysisStats, DayAverage, GradeBucket, Page, ApplicationOut, ApplicationUpdate, AnalyzeOut, AnalyzeRequest, CvCreate,
                          CandidateOut, CvOut, CvUpdate, JobOut, PasswordChange, TermIn,
                          TermOut, TermsIn, TermSuggestions, UserOut,
                          GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
@@ -49,6 +49,12 @@ DUPLICATE = {409: {"description": "The user already has this term"}}
 _analysis_in_flight: Set[UUID] = set()
 _cv_in_flight: Set[UUID] = set()
 _letter_in_flight: Set[UUID] = set()
+
+#: Page size bounds for every paged listing.
+Limit = Query(20, ge=1, le=100)
+Offset = Query(0, ge=0)
+
+GRADE_BUCKETS = ("0-19", "20-39", "40-59", "60-79", "80-100")
 
 # Bound unbounded rows (100 kB x N CVs is the real concern). Check-then-insert
 # can overshoot by a few under concurrency; the spend quota is db.usage.
@@ -383,31 +389,71 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
         results=[_analysis_out(r) for r in rows])
 
 
-@router.get("/analyses", response_model=List[AnalysisOut])
+@router.get("/analyses", response_model=Page[AnalysisOut])
 def get_analyses(
         user_id: CurrentUser,
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Limit,
+        offset: int = Offset,
         min_grade: int = Query(0, ge=0, le=100),
         since_days: Optional[int] = Query(None, ge=1, le=365)
-) -> List[AnalysisOut]:
+) -> Page[AnalysisOut]:
     rows = db_analysis.select_analysis_page(
-        user_id, limit, min_grade, since_days=since_days)
+        user_id, limit, min_grade, since_days=since_days, offset=offset)
 
-    return [_analysis_out(r) for r in rows]
+    return Page(items=[_analysis_out(r) for r in rows],
+                total=db_analysis.count_analyses(user_id, min_grade, since_days))
 
 
-@router.get("/analyses/candidates", response_model=List[CandidateOut],
+@router.get("/analyses/stats", response_model=AnalysisStats,
+            description="Count, average grade, grade histogram and average "
+                        "grade per UTC day, over the same filters as "
+                        "GET /analyses.")
+def get_analysis_stats(
+        user_id: CurrentUser,
+        min_grade: int = Query(0, ge=0, le=100),
+        since_days: Optional[int] = Query(None, ge=1, le=365)
+) -> AnalysisStats:
+    stats = db_analysis.analysis_stats(user_id, min_grade, since_days)
+
+    return AnalysisStats(
+        count=stats["count"], average=stats["average"],
+        histogram=[GradeBucket(range=label, count=stats["buckets"].get(i, 0))
+                   for i, label in enumerate(GRADE_BUCKETS)],
+        per_day=[DayAverage(day=d, average=a) for d, a in stats["per_day"]])
+
+
+@router.get("/analyses/without-cv", response_model=Page[AnalysisOut],
+            description="Graded postings the user has no generated CV for "
+                        "yet, best fit first.")
+def get_analyses_without_cv(
+        user_id: CurrentUser,
+        limit: int = Limit,
+        offset: int = Offset,
+        min_grade: int = Query(0, ge=0, le=100)
+) -> Page[AnalysisOut]:
+    rows = db_cvs.select_jobs_for_cv(user_id, min_grade, limit, offset)
+
+    return Page(items=[_analysis_out(r) for r in rows],
+                total=db_cvs.count_jobs_for_cv(user_id, min_grade))
+
+
+@router.get("/analyses/candidates", response_model=Page[CandidateOut],
             description="Ungraded postings matching the user's keywords and "
                         "blacklist, newest first: what /analyze picks from.")
 async def get_candidates(user_id: CurrentUser,
-                         window_days: int = Query(1, ge=1, le=30)
-                         ) -> List[CandidateOut]:
+                         window_days: int = Query(1, ge=1, le=30),
+                         limit: int = Limit,
+                         offset: int = Offset
+                         ) -> Page[CandidateOut]:
     # The window is built from the validated int, never client text:
     # text_interval inlines it into SQL.
+    # list_due caches the filtered list, so paging slices it in memory.
     rows = await list_due(user_id, f"-{window_days} days")
 
-    return [CandidateOut(job_id=r[0], company=r[1], title=r[2], place=r[3],
-                         url=r[4], scraped_at=r[5]) for r in rows]
+    return Page(items=[CandidateOut(job_id=r[0], company=r[1], title=r[2],
+                                    place=r[3], url=r[4], scraped_at=r[5])
+                       for r in rows[offset:offset + limit]],
+                total=len(rows))
 
 
 @router.get("/jobs/{job_id}", response_model=JobOut,
@@ -595,9 +641,13 @@ def get_cv_generation(user_id: CurrentUser, generation_id: UUID) -> GenCvStatus:
     return GenCvStatus(status=gen.status, cv=gen.result, error=gen.error)
 
 
-@router.get("/generated-cvs", response_model=List[GenCvOut])
-def list_gen_cvs(user_id: CurrentUser) -> List[GenCvOut]:
-    return [_gen_cv_out(r) for r in db_cvs.select_generated_cvs(user_id)]
+@router.get("/generated-cvs", response_model=Page[GenCvOut])
+def list_gen_cvs(user_id: CurrentUser, limit: int = Limit,
+                 offset: int = Offset) -> Page[GenCvOut]:
+    rows = db_cvs.select_generated_cvs(user_id, limit, offset)
+
+    return Page(items=[_gen_cv_out(r) for r in rows],
+                total=db_cvs.count_generated_cvs(user_id))
 
 
 @router.put("/generated-cvs/{cv_id}", response_model=GenCvOut,
@@ -652,9 +702,13 @@ def get_letter_generation(user_id: CurrentUser,
     return LetterStatus(status=gen.status, letter=gen.result, error=gen.error)
 
 
-@router.get("/cover-letters", response_model=List[LetterOut])
-def list_letters(user_id: CurrentUser) -> List[LetterOut]:
-    return [_letter_out(r) for r in db_letters.select_cover_letters(user_id)]
+@router.get("/cover-letters", response_model=Page[LetterOut])
+def list_letters(user_id: CurrentUser, limit: int = Limit,
+                 offset: int = Offset) -> Page[LetterOut]:
+    rows = db_letters.select_cover_letters(user_id, limit, offset)
+
+    return Page(items=[_letter_out(r) for r in rows],
+                total=db_letters.count_cover_letters(user_id))
 
 
 @router.put("/cover-letters/{letter_id}", response_model=LetterOut,

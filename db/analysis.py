@@ -6,7 +6,7 @@ ORM Session, no mapped objects. Schema lives in db.tables, versioned by
 Alembic, not created here.
 """
 
-from typing import List, Optional, Sequence, Tuple
+from typing import Iterator, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -157,6 +157,57 @@ def select_candidates(user_id: UUID, limit: int = 0,
     Returns:
         List of (id, company, title, url, place, description, scraped_at).
     """
+    stmt = _candidates(user_id, window)
+    if limit:
+        stmt = stmt.limit(limit)
+
+    with engine.connect() as conn:
+        return conn.execute(stmt).all()
+
+
+def iter_candidates(user_id: UUID, window: str = "-24 hours",
+                    chunk: int = 2000) -> Iterator[List[Tuple]]:
+    """`select_candidates` in chunks, streamed from a server-side cursor.
+
+    For callers that filter as they go: the full candidate set with its
+    descriptions is hundreds of MB once the table holds a backlog.
+
+    Yields:
+        Lists of up to `chunk` rows, shaped like `select_candidates`'.
+    """
+    with engine.connect() as conn:
+        result = conn.execution_options(yield_per=chunk).execute(
+            _candidates(user_id, window))
+
+        for part in result.partitions():
+            yield part
+
+
+def candidates_state(window: str = "-24 hours") -> Tuple:
+    """(posting count, newest scraped_at, window start), in one round trip.
+
+    The first two change whenever postings are added or removed, so a cache
+    of filtered candidates can key on them; the third is `now() + window`.
+    """
+    # SQL: SELECT count(*), max(scraped_at), now() + INTERVAL '<window>'
+    #      FROM job_postings
+    stmt = select(func.count(), func.max(job_postings.c.scraped_at),
+                  func.now() + text_interval(window))
+
+    with engine.connect() as conn:
+        return tuple(conn.execute(stmt).one())
+
+
+def select_graded_ids(user_id: UUID) -> set:
+    """Ids of the postings this user has graded."""
+    # SQL: SELECT job_id FROM ai_analysis WHERE user_id = ?
+    stmt = select(ai_analysis.c.job_id).where(ai_analysis.c.user_id == user_id)
+
+    with engine.connect() as conn:
+        return set(conn.execute(stmt).scalars())
+
+
+def _candidates(user_id: UUID, window: str):
     # SQL: SELECT job_id FROM ai_analysis WHERE user_id = ?
     graded = select(ai_analysis.c.job_id).where(ai_analysis.c.user_id == user_id)
     # SQL: SELECT id, company, title, url, place, description, scraped_at
@@ -164,7 +215,7 @@ def select_candidates(user_id: UUID, limit: int = 0,
     #      WHERE id NOT IN (<graded subquery above>)
     #      AND scraped_at >= now() + INTERVAL '<window>'
     #      ORDER BY id
-    stmt = (
+    return (
         select(job_postings.c.id, job_postings.c.company,
                job_postings.c.title, job_postings.c.url,
                job_postings.c.place, job_postings.c.description,
@@ -173,11 +224,6 @@ def select_candidates(user_id: UUID, limit: int = 0,
         .where(job_postings.c.scraped_at >= func.now() + text_interval(window))
         .order_by(job_postings.c.id)
     )
-    if limit:
-        stmt = stmt.limit(limit)
-
-    with engine.connect() as conn:
-        return conn.execute(stmt).all()
 
 
 def count_jobs_to_analyse(user_id: UUID, window: str = "-24 hours") -> int:

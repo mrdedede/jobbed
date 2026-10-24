@@ -548,9 +548,11 @@ def _own_generation(user_id: UUID, generation_id: UUID) -> _Generation:
 
 
 async def cancel_generations() -> None:
-    """Shutdown hook: cancel running generations so they refund their unit."""
-    # Only this loop's tasks: one per app in prod, but each TestClient runs
-    # its own loop, and gathering another loop's task raises.
+    """Shutdown hook: cancel running generations so they refund their unit.
+
+    Only this loop's: a task can be awaited only on the loop that runs it, and
+    tests run one loop per TestClient against the same module state.
+    """
     loop = asyncio.get_running_loop()
     tasks = [g.task for g in _generations.values()
              if g.task and not g.task.done() and g.task.get_loop() is loop]
@@ -561,7 +563,8 @@ async def cancel_generations() -> None:
 
 def _gen_cv_out(row) -> GenCvOut:
     return GenCvOut(cv_id=row[0], title=row[1], company=row[2], adequation_grade=row[3],
-                    locale=row[4], cv=row[5], job_id=row[6], depth_analysis=row[7])
+                    locale=row[4], cv=row[5], job_id=row[6], depth_analysis=row[7], created_at=row[8],
+                    url=row[9])
 
 
 @router.post("/cvs/generate", response_model=GenCvStarted,

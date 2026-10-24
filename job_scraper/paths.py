@@ -58,6 +58,7 @@ AI = ROOT / "ai"
 GRADE_JOB_MD = AI / "grade-job.md"
 GENERATE_CV_MD = AI / "generate-cv.md"
 SUGGEST_TERMS_MD = AI / "suggest-terms.md"
+COVER_LETTER_MD = AI / "write-cover-letter.md"
 
 #: Section titles and language names, one file per supported locale. The docx
 #: renderer reads these; nothing else does.

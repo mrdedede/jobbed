@@ -7,7 +7,7 @@ MetaData — no ORM mapped classes, no Session. Alembic's autogenerate reads
 an ORM session, to keep query cost equal to the SQL it actually runs.
 
 Tables: users, user_keywords, user_blacklist, user_cvs, job_boards,
-job_postings, ai_analysis, generated_cv.
+job_postings, ai_analysis, generated_cv, cover_letters, llm_usage.
 """
 
 from sqlalchemy import (
@@ -135,6 +135,21 @@ generated_cv = Table(
     Column("ai_analysis_id", UUID(as_uuid=True), ForeignKey("ai_analysis.id", ondelete="CASCADE"), nullable=False),
     Column("locale", String),
     Column("cv", JSONB, nullable=False),
+    Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+)
+
+# Several letters per generated CV: regenerating adds a row. `answers` keeps
+# what the user told the model, so the editor can show it next to the letter.
+cover_letters = Table(
+    "cover_letters",
+    metadata,
+    UUID_PK(),
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("generated_cv_id", UUID(as_uuid=True), ForeignKey("generated_cv.id", ondelete="CASCADE"), nullable=False),
+    Column("job_id", UUID(as_uuid=True), ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False),
+    Column("locale", String),
+    Column("answers", JSONB, nullable=False),
+    Column("letter", Text, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
 )
 

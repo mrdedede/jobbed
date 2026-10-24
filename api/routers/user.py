@@ -4,10 +4,11 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Awaitable, Callable, Dict, List, Optional, Set
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
 
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
@@ -15,13 +16,16 @@ from api.schemas import (allowed_models, AnalysisOut, AnalyzeOut, AnalyzeRequest
                          CandidateOut, CvOut, CvUpdate, JobOut, PasswordChange, TermIn,
                          TermOut, TermsIn, TermSuggestions, UserOut,
                          GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
-                         GenCvUpdate)
+                         GenCvUpdate, LetterOut, LetterRequest, LetterStarted,
+                         LetterStatus, LetterUpdate)
 from ai import gateway
-from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
+from ai.cover_letter import generate_cover_letter
+from ai.exceptions import NoActiveCv, NoAnalysisForJob, NoGeneratedCv, UnusableAnswer
 from ai.main_analysis import list_due, run_analysis
 from ai.cv_generation import generate_cv
 from ai.term_suggestion import suggest_terms
 from db import analysis as db_analysis
+from db import cover_letters as db_letters
 from db import generated_cv as db_cvs
 from db import usage, users
 
@@ -30,7 +34,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/me", tags=["user"])
 
 # CRUD handlers are plain `def` (FastAPI threads them): db.* is blocking.
-# Only handlers that await ai.* (analyze, candidates, cvs/generate) are `async def`.
+# Only handlers that await ai.* (analyze, candidates, */generate) are `async def`.
 
 NOT_FOUND = {404: {"description": "No such row for this user"}}
 LIMIT_REACHED = {409: {"description": "Per-user row limit reached"}}
@@ -43,6 +47,7 @@ DUPLICATE = {409: {"description": "The user already has this term"}}
 # Double runs are already correct (upsert); this only prevents double spend.
 _analysis_in_flight: Set[UUID] = set()
 _cv_in_flight: Set[UUID] = set()
+_letter_in_flight: Set[UUID] = set()
 
 # Bound unbounded rows (100 kB x N CVs is the real concern). Check-then-insert
 # can overshoot by a few under concurrency; the spend quota is db.usage.
@@ -55,6 +60,8 @@ DAILY_ANALYSIS_CAP = int(os.environ.get("DAILY_ANALYSIS_CAP", "10"))
 DAILY_CV_CAP = int(os.environ.get("DAILY_CV_CAP", "2"))
 #: Term suggestions per user per UTC day (one Haiku call each).
 DAILY_TERMS_CAP = int(os.environ.get("DAILY_TERMS_CAP", "5"))
+#: Cover letters per user per UTC day (Sonnet too); defaults to the CV cap.
+DAILY_LETTER_CAP = int(os.environ.get("DAILY_LETTER_CAP", str(DAILY_CV_CAP)))
 
 
 def _found(matched: bool) -> None:
@@ -416,18 +423,27 @@ def get_job(user_id: CurrentUser, job_id: UUID) -> JobOut:
 class _Generation:
     user_id: UUID
     status: str = "running"
-    cv: Optional[GenCvOut] = None
+    result: Optional[BaseModel] = None  # GenCvOut or LetterOut
     error: Optional[dict] = None
     finished: float = 0.0
     task: Optional[asyncio.Task] = field(default=None, repr=False)
 
 
-# Generation runs in a background task; the client polls this registry.
+# Generations (CVs and cover letters) run in a background task; the client
+# polls this registry.
 # ponytail: process-local like _cv_in_flight (one API worker). A restart
 # mid-run makes the poll 404 -- the client treats that as "interrupted".
 # Move to a table if the API scales out.
 _generations: Dict[UUID, _Generation] = {}
 _GENERATION_TTL_S = 3600
+
+_KNOWN_FAILURES = {
+    NoAnalysisForJob: (status.HTTP_409_CONFLICT, "no analysis for job"),
+    NoActiveCv: (status.HTTP_409_CONFLICT, "no active CV"),
+    NoGeneratedCv: (status.HTTP_404_NOT_FOUND, "no such generated CV"),
+    UnusableAnswer: (status.HTTP_502_BAD_GATEWAY, "the model's answer was unusable"),
+    gateway.GatewayError: (status.HTTP_502_BAD_GATEWAY, "the AI model call failed"),
+}
 
 
 def _prune_generations() -> None:
@@ -436,60 +452,108 @@ def _prune_generations() -> None:
         del _generations[key]
 
 
-async def _refund_cv(user_id: UUID) -> None:
+async def _refund(user_id: UUID, kind: str) -> None:
     try:
-        await asyncio.to_thread(usage.refund, user_id, usage.KIND_CV, 1)
+        await asyncio.to_thread(usage.refund, user_id, kind, 1)
     except Exception:
-        logger.exception("cv generation refund failed for %s", user_id)
+        logger.exception("%s refund failed for %s", kind, user_id)
 
 
-async def _run_generation(gen: _Generation, job_id: UUID) -> None:
-    """Generate one CV, record the outcome, refund the reserved unit on failure.
+async def _run_generation(gen: _Generation, make: Callable[[], Awaitable[UUID]],
+                          read_back: Callable[[UUID], BaseModel], kind: str,
+                          in_flight: Set[UUID]) -> None:
+    """Run one generation, record the outcome, refund the reserved unit on failure.
 
     Once the row is stored the unit is spent: a failure reading it back still
-    reports done (cv=None, the client lists /generated-cvs instead).
+    reports done (result None, the client lists the stored rows instead).
     """
-    cv_id = None
+    row_id = None
     try:
-        cv_id = await generate_cv(gen.user_id, job_id)
-        row = await asyncio.to_thread(db_cvs.select_generated_cv, gen.user_id, cv_id)
-        gen.cv = _gen_cv_out(row)
+        row_id = await make()
+        gen.result = await asyncio.to_thread(read_back, row_id)
         gen.status = "done"
     except asyncio.CancelledError:
         # Shutdown mid-run: give the unit back before the loop goes away.
         gen.status, gen.error = "failed", {"status": 503, "detail": "interrupted"}
-        if cv_id is None:
-            await _refund_cv(gen.user_id)
+        if row_id is None:
+            await _refund(gen.user_id, kind)
         raise
     except Exception as exc:
-        if cv_id is not None:
-            logger.exception("generated cv %s stored but not readable", cv_id)
+        if row_id is not None:
+            logger.exception("%s %s stored but not readable", kind, row_id)
             gen.status = "done"
             return
 
-        known = {
-            NoAnalysisForJob: (status.HTTP_409_CONFLICT, "no analysis for job"),
-            NoActiveCv: (status.HTTP_409_CONFLICT, "no active CV"),
-            UnusableAnswer: (status.HTTP_502_BAD_GATEWAY, "the model's answer was unusable"),
-            gateway.GatewayError: (status.HTTP_502_BAD_GATEWAY, "the AI model call failed"),
-        }
-        code, detail = next((v for k, v in known.items() if isinstance(exc, k)),
+        code, detail = next((v for k, v in _KNOWN_FAILURES.items() if isinstance(exc, k)),
                             (status.HTTP_500_INTERNAL_SERVER_ERROR, "generation failed"))
         if code == status.HTTP_500_INTERNAL_SERVER_ERROR:
-            logger.exception("cv generation crashed")
+            logger.exception("%s crashed", kind)
         else:
-            logger.warning("cv generation failed for job %s: %s (%s)",
-                           job_id, detail, exc)
+            logger.warning("%s failed: %s (%s)", kind, detail, exc)
         gen.status, gen.error = "failed", {"status": code, "detail": detail}
-        await _refund_cv(gen.user_id)
+        await _refund(gen.user_id, kind)
     finally:
         gen.finished = time.monotonic()
-        _cv_in_flight.discard(gen.user_id)
+        in_flight.discard(gen.user_id)
+
+
+async def _start_generation(
+        user_id: UUID, in_flight: Set[UUID], kind: str, cap: int, label: str,
+        make: Callable[[], Awaitable[UUID]],
+        read_back: Callable[[UUID], BaseModel],
+        precheck: Optional[Callable[[], None]] = None) -> UUID:
+    """Take the user's running slot and a daily unit, then start the task.
+
+    Raises:
+        HTTPException: 409 already running, 429 at the daily cap, or whatever
+            `precheck` (run before any unit is reserved) raises.
+    """
+    if user_id in in_flight:
+        raise HTTPException(status.HTTP_409_CONFLICT, "generation already running")
+
+    # No await between the check above and this add: atomic on the event loop.
+    in_flight.add(user_id)
+    try:
+        if precheck is not None:
+            await asyncio.to_thread(precheck)
+
+        granted = await asyncio.to_thread(usage.reserve, user_id, kind, 1, cap)
+
+        if granted == 0:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"daily limit of {cap} {label} reached",
+                headers={"Retry-After": str(_seconds_to_utc_midnight())})
+    except BaseException:
+        in_flight.discard(user_id)
+        raise
+
+    _prune_generations()
+    generation_id = uuid4()
+    gen = _generations[generation_id] = _Generation(user_id)
+    # Held so the loop cannot garbage-collect the task mid-run.
+    gen.task = asyncio.create_task(
+        _run_generation(gen, make, read_back, kind, in_flight))
+
+    return generation_id
+
+
+def _own_generation(user_id: UUID, generation_id: UUID) -> _Generation:
+    gen = _generations.get(generation_id)
+
+    if gen is None or gen.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such generation")
+
+    return gen
 
 
 async def cancel_generations() -> None:
     """Shutdown hook: cancel running generations so they refund their unit."""
-    tasks = [g.task for g in _generations.values() if g.task and not g.task.done()]
+    # Only this loop's tasks: one per app in prod, but each TestClient runs
+    # its own loop, and gathering another loop's task raises.
+    loop = asyncio.get_running_loop()
+    tasks = [g.task for g in _generations.values()
+             if g.task and not g.task.done() and g.task.get_loop() is loop]
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -497,7 +561,7 @@ async def cancel_generations() -> None:
 
 def _gen_cv_out(row) -> GenCvOut:
     return GenCvOut(cv_id=row[0], title=row[1], company=row[2], adequation_grade=row[3],
-                    locale=row[4], cv=row[5], job_id=row[6])
+                    locale=row[4], cv=row[5], job_id=row[6], depth_analysis=row[7])
 
 
 @router.post("/cvs/generate", response_model=GenCvStarted,
@@ -509,29 +573,12 @@ def _gen_cv_out(row) -> GenCvOut:
                          "failures inside the run (no analysis, no active CV, "
                          "model errors) arrive in the poll body.")
 async def start_cv_generation(user_id: CurrentUser, body: GenCvRequest) -> GenCvStarted:
-    if user_id in _cv_in_flight:
-        raise HTTPException(status.HTTP_409_CONFLICT, "generation already running")
-
-    # No await between the check above and this add: atomic on the event loop.
-    _cv_in_flight.add(user_id)
-    try:
-        granted = await asyncio.to_thread(
-            usage.reserve, user_id, usage.KIND_CV, 1, DAILY_CV_CAP)
-
-        if granted == 0:
-            raise HTTPException(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                f"daily limit of {DAILY_CV_CAP} CV generations reached",
-                headers={"Retry-After": str(_seconds_to_utc_midnight())})
-    except BaseException:
-        _cv_in_flight.discard(user_id)
-        raise
-
-    _prune_generations()
-    generation_id = uuid4()
-    gen = _generations[generation_id] = _Generation(user_id)
-    # Held so the loop cannot garbage-collect the task mid-run.
-    gen.task = asyncio.create_task(_run_generation(gen, body.job_id))
+    generation_id = await _start_generation(
+        user_id, _cv_in_flight, usage.KIND_CV, DAILY_CV_CAP, "CV generations",
+        make=lambda: generate_cv(user_id, body.job_id),
+        # Looked up at call time, not bound here: tests patch db_cvs.
+        read_back=lambda cv_id: _gen_cv_out(
+            db_cvs.select_generated_cv(user_id, cv_id)))
 
     return GenCvStarted(generation_id=generation_id)
 
@@ -539,12 +586,9 @@ async def start_cv_generation(user_id: CurrentUser, body: GenCvRequest) -> GenCv
 @router.get("/cvs/generate/{generation_id}", response_model=GenCvStatus,
             responses=NOT_FOUND)
 def get_cv_generation(user_id: CurrentUser, generation_id: UUID) -> GenCvStatus:
-    gen = _generations.get(generation_id)
+    gen = _own_generation(user_id, generation_id)
 
-    if gen is None or gen.user_id != user_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such generation")
-
-    return GenCvStatus(status=gen.status, cv=gen.cv, error=gen.error)
+    return GenCvStatus(status=gen.status, cv=gen.result, error=gen.error)
 
 
 @router.get("/generated-cvs", response_model=List[GenCvOut])
@@ -559,3 +603,60 @@ def change_gen_cv(user_id: CurrentUser, cv_id: UUID,
     _found(db_cvs.update_generated_cv(user_id, cv_id, body.cv.model_dump()))
 
     return _gen_cv_out(db_cvs.select_generated_cv(user_id, cv_id))
+
+
+# COVER LETTERS
+
+def _letter_out(row) -> LetterOut:
+    return LetterOut(
+        letter_id=row[0], cv_id=row[1], job_id=row[2], title=row[3],
+        company=row[4], adequation_grade=row[5], depth_analysis=row[6],
+        locale=row[7], answers=row[8], letter=row[9], created_at=row[10])
+
+
+@router.post("/cover-letters/generate", response_model=LetterStarted,
+             status_code=status.HTTP_202_ACCEPTED,
+             responses={**NOT_FOUND,
+                        429: {"description": "Daily cover letter cap reached"},
+                        409: {"description": "A letter is already being written"}},
+             description="Starts writing a cover letter from a generated CV, "
+                         "its posting, the posting's analysis and the user's "
+                         "answers. Poll GET /cover-letters/generate/"
+                         "{generation_id} for the result.")
+async def start_letter_generation(user_id: CurrentUser,
+                                  body: LetterRequest) -> LetterStarted:
+    def owned() -> None:
+        _found(db_letters.select_cv_for_letter(user_id, body.cv_id) is not None)
+
+    generation_id = await _start_generation(
+        user_id, _letter_in_flight, usage.KIND_LETTER, DAILY_LETTER_CAP,
+        "cover letters", precheck=owned,
+        make=lambda: generate_cover_letter(
+            user_id, body.cv_id, body.answers.model_dump()),
+        read_back=lambda letter_id: _letter_out(
+            db_letters.select_cover_letter(user_id, letter_id)))
+
+    return LetterStarted(generation_id=generation_id)
+
+
+@router.get("/cover-letters/generate/{generation_id}",
+            response_model=LetterStatus, responses=NOT_FOUND)
+def get_letter_generation(user_id: CurrentUser,
+                          generation_id: UUID) -> LetterStatus:
+    gen = _own_generation(user_id, generation_id)
+
+    return LetterStatus(status=gen.status, letter=gen.result, error=gen.error)
+
+
+@router.get("/cover-letters", response_model=List[LetterOut])
+def list_letters(user_id: CurrentUser) -> List[LetterOut]:
+    return [_letter_out(r) for r in db_letters.select_cover_letters(user_id)]
+
+
+@router.put("/cover-letters/{letter_id}", response_model=LetterOut,
+            responses=NOT_FOUND)
+def change_letter(user_id: CurrentUser, letter_id: UUID,
+                  body: LetterUpdate) -> LetterOut:
+    _found(db_letters.update_cover_letter(user_id, letter_id, body.letter))
+
+    return _letter_out(db_letters.select_cover_letter(user_id, letter_id))

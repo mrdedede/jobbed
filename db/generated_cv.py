@@ -171,7 +171,7 @@ def select_jobs_for_cv(
 
 # SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
 #      ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-#      generated_cv.job_id
+#      generated_cv.job_id, ai_analysis.depth_analysis
 #      FROM generated_cv
 #      JOIN job_postings ON job_postings.id = generated_cv.job_id
 #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
@@ -179,7 +179,7 @@ _CV_COLUMNS = (
     select(
         generated_cv.c.id, job_postings.c.title, job_postings.c.company,
         ai_analysis.c.adequation_grade, generated_cv.c.locale,
-        generated_cv.c.cv, generated_cv.c.job_id,
+        generated_cv.c.cv, generated_cv.c.job_id, ai_analysis.c.depth_analysis,
     )
     .select_from(generated_cv)
     .join(job_postings, job_postings.c.id == generated_cv.c.job_id)
@@ -194,12 +194,12 @@ def select_generated_cvs(user_id: UUID) -> List[Tuple]:
         user_id: The user whose generated CVs to return.
 
     Returns:
-        List of (cv_id, title, company, adequation_grade, locale, cv, job_id),
-        `cv` being the CV as a dict (decoded from jsonb).
+        List of (cv_id, title, company, adequation_grade, locale, cv, job_id,
+        depth_analysis), `cv` being the CV as a dict (decoded from jsonb).
     """
     # SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
     #      ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-    #      generated_cv.job_id
+    #      generated_cv.job_id, ai_analysis.depth_analysis
     #      FROM generated_cv
     #      JOIN job_postings ON job_postings.id = generated_cv.job_id
     #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id

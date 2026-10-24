@@ -21,17 +21,36 @@ reorder experiences and bullets so the relevant ones come first, group skills un
 
 A CV that gets the candidate an interview they cannot survive is worse than one that gets no call.
 
+## The language rule — MANDATORY
+
+**The CV is written in the language of the JOB POST. Not the language of the
+candidate's CV, not the language of the analysis, not the language of these
+instructions.** Those are usually English; the job post often is not. Ignore
+their language completely.
+
+1. Read the job post and decide its language first. That is `locale`.
+2. Write every text field — `cv_introduction`, `profile_text`, skill group
+   labels, `role`, every bullet, `diploma`, `degree`, `details`, month names in
+   dates, "Present" — in that language. Translate everything you carry over
+   from the source CV.
+3. Only proper nouns (company, university, product and tool names) stay as
+   they are.
+
+A job post in French gets a CV fully in French. A job post in Spanish gets a
+CV fully in Spanish. An English CV for a French posting is a failed answer,
+even if everything else is perfect.
+
 ## The fields
 
-**`locale`** — the language the posting is written in, as `en`, `es`, `fr`, or `pt`. Nothing else is supported; when the posting is in another language, or you cannot tell, use `en`. The whole CV body is written in that language, including experiences carried over from a CV written in a different one. Proper nouns (companies, universities, product names) stay as they are.
+**`locale`** — the language the JOB POST is written in, as `en` (English), `es` (Spanish), `fr` (French), or `pt` (Portuguese). Use `en` only when the job post is actually in English, or in a language outside these four. Never pick `en` because the candidate's CV or the analysis is in English. Everything below is written in this language (see the language rule).
 
 **`cv_introduction`** — the line under the candidate's name. The role, as this posting names it, plus location. One line, no sentence.
 
-**`profile_text`** — one paragraph, three to five sentences. Who the candidate is in terms of this posting's hard requirements: years, the core stack, the domain. No adjectives that carry no information ("passionate", "results-driven"). Write in the same language as pointed out in the locale field.
+**`profile_text`** — one paragraph, three to five sentences. Who the candidate is in terms of this posting's hard requirements: years, the core stack, the domain. No adjectives that carry no information ("passionate", "results-driven"). Written in the `locale` language.
 
 **`skills`** — three to five competence groups, each with three to six entries. Label the groups with the posting's own vocabulary where the CV supports it. The skills the posting asks for come first, inside the group and across groups. Every entry appears somewhere in the source CV.
 
-**`experiences`** — professional experiences, most relevant to this posting first, not necessarily most recent. Each carries `role`, `company`, `location` ("City, Country"), `start_date` and `end_date` as "Month, Year" — `end_date` is "Present" for a current job — and `bullets`. Write in the same language as pointed out in the locale field.
+**`experiences`** — professional experiences, most relevant to this posting first, not necessarily most recent. Each carries `role`, `company`, `location` ("City, Country"), `start_date` and `end_date` as "Month, Year" — `end_date` is "Present" (translated) for a current job — and `bullets`. Role, month names and bullets are written in the `locale` language.
 
 At least four bullets each, unless the source CV has fewer for that job. A
 bullet names the task, the skills used to solve it, and the result, quantified whenever the source CV quantifies it. Rewrite bullets toward this posting; drop the ones it has no use for. An experience with nothing relevant left in it can be cut entirely — but never cut one just because it is old, gaps in a timeline get asked about.

@@ -314,6 +314,8 @@ def test_list_is_per_user_newest_first_with_job_id(as_user, chat):
 
     assert [g["locale"] for g in listed] == ["pt", "en"]
     assert {g["job_id"] for g in listed} == {str(job_id)}
+    # ISO timestamps from one server compare as strings: newest first.
+    assert listed[0]["created_at"] >= listed[1]["created_at"]
     assert as_user(make_user()).get("/v1/me/generated-cvs").json() == []
 
 

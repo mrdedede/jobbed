@@ -186,6 +186,8 @@ class GenCvOut(BaseModel):
     cv: dict
     job_id: UUID
     depth_analysis: Optional[str] = None  # the posting's analysis, for the job drawer
+    created_at: datetime  # when it was generated; edits keep it
+    url: str  # the posting
 
 
 # A user's edit of a generated CV: same shape as the `cv` object of

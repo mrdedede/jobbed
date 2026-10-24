@@ -138,7 +138,7 @@ def test_select_generated_cvs_returns_this_users_cvs_newest_first(
     generated_cv.insert_generated_cv(
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
-    (cv_id, title, company, grade, locale, cv, job_id_, analysis), = \
+    (cv_id, title, company, grade, locale, cv, job_id_, analysis, created_at, url), = \
         generated_cv.select_generated_cvs(user)
 
     assert (title, company, grade, locale) == (
@@ -146,6 +146,8 @@ def test_select_generated_cvs_returns_this_users_cvs_newest_first(
     assert cv == {"profile_text": "perfil"}
     assert job_id_ == job_id
     assert analysis == "the write-up"
+    assert created_at is not None
+    assert url == "http://x/1"
 
 
 def test_insert_generated_cv_returns_the_new_id(user, graded_job):

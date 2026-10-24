@@ -110,9 +110,10 @@ def urls(items):
 
 
 def candidates(token):
-    _, body = call("GET", "/v1/me/analyses/candidates?window_days=1", token)
+    _, body = call("GET",
+                   "/v1/me/analyses/candidates?window_days=1&limit=100", token)
 
-    return body
+    return body["items"] if body else body
 
 
 def pick(token):
@@ -229,7 +230,8 @@ def scenario(tag):
             break
 
     check("CLI exits 0", done.returncode == 0, done.stderr[-300:])
-    _, listed = call("GET", "/v1/me/analyses?limit=200", tokens["b"])
+    _, listed = call("GET", "/v1/me/analyses?limit=100", tokens["b"])
+    listed = listed["items"]
     check("CLI graded the same set as the API (the checkpoint)",
           urls(listed) == graded_a and graded_a == want_py,
           (sorted(urls(listed)), sorted(graded_a)))
@@ -241,7 +243,8 @@ def scenario(tag):
     check("C's set is disjoint from A's", not (got & graded_a))
 
     print("idempotence")
-    _, a_list = call("GET", "/v1/me/analyses?limit=200", tokens["a"])
+    _, a_list = call("GET", "/v1/me/analyses?limit=100", tokens["a"])
+    a_list = a_list["items"]
     status, body = analyze(tokens["a"], [r["job_id"] for r in a_list])
     check("A again grades nothing, skips both",
           status == 200 and body["analysed"] == 0 and body["skipped"] == 2,
@@ -262,7 +265,8 @@ def scenario(tag):
           ok and urls(first["results"]) | urls(second["results"]) == want_py)
 
     print("isolation")
-    _, a_list = call("GET", "/v1/me/analyses?limit=200", tokens["a"])
+    _, a_list = call("GET", "/v1/me/analyses?limit=100", tokens["a"])
+    a_list = a_list["items"]
     check("A sees none of C's rows", not (urls(a_list) & want_go))
     _, cvs = call("GET", "/v1/me/cvs", tokens["a"])
     status, _ = call("PUT", f"/v1/me/cvs/{cvs[0]['id']}/activate",

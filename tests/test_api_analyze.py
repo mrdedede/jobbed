@@ -83,7 +83,7 @@ def test_happy_path_grades_only_the_picked_ids_without_description(
     # Picked by hand, so the keyword filter does not get a say.
     assert (result["title"], result["adequation_grade"]) == ("Py Dev", 77)
     assert "description" not in result
-    assert [a["title"] for a in as_user(uid).get("/v1/me/analyses").json()] \
+    assert [a["title"] for a in as_user(uid).get("/v1/me/analyses").json()["items"]] \
         == ["Py Dev"]
 
 
@@ -135,7 +135,7 @@ def test_candidates_are_filtered_newest_first_and_drop_once_graded(
     jobs.insert_jobs([posting(3, "Go New", "go " * 6)])
     uid = make_user("go")
 
-    listed = candidates(uid).json()
+    listed = candidates(uid).json()["items"]
 
     assert [c["title"] for c in listed] == ["Go New", "Go Old"]
     assert set(listed[0]) == {"job_id", "company", "title", "place", "url",
@@ -143,7 +143,7 @@ def test_candidates_are_filtered_newest_first_and_drop_once_graded(
 
     analyze(client, uid, [listed[0]["job_id"]])
 
-    assert [c["title"] for c in candidates(uid).json()] == ["Go Old"]
+    assert [c["title"] for c in candidates(uid).json()["items"]] == ["Go Old"]
     assert candidates(uid, "?window_days=31").status_code == 422
 
 
@@ -152,7 +152,7 @@ def test_users_with_different_keywords_get_different_candidates(client):
                       posting(2, "Py Dev", "python " * 6)])
     go, py = make_user("go"), make_user("python")
 
-    titles = {u: [c["title"] for c in candidates(u).json()] for u in (go, py)}
+    titles = {u: [c["title"] for c in candidates(u).json()["items"]] for u in (go, py)}
 
     assert titles == {go: ["Go Dev"], py: ["Py Dev"]}
 
@@ -247,19 +247,85 @@ def test_analyses_filter_order_and_isolation(client, chat):
     uid, other = make_user("go"), make_user("go")
     analyze(client, uid)
 
-    listed = as_user(uid).get("/v1/me/analyses?limit=1").json()
+    listed = as_user(uid).get("/v1/me/analyses?limit=1").json()["items"]
 
     assert len(listed) == 1 and "description" not in listed[0]
-    assert as_user(uid).get("/v1/me/analyses?min_grade=90").json() == []
-    assert as_user(other).get("/v1/me/analyses").json() == []
+    assert as_user(uid).get("/v1/me/analyses?min_grade=90").json()["items"] == []
+    assert as_user(other).get("/v1/me/analyses").json()["items"] == []
     with engine.begin() as conn:
         conn.execute(text(
             "UPDATE ai_analysis SET created_at = now() - interval '3 days' "
             "WHERE user_id = :u AND job_id = (SELECT id FROM job_postings "
             "WHERE title = 'Go A')"), dict(u=uid))
-    recent = as_user(uid).get("/v1/me/analyses?since_days=1").json()
+    recent = as_user(uid).get("/v1/me/analyses?since_days=1").json()["items"]
     assert [a["title"] for a in recent] == ["Go B"]
     assert as_user(uid).get("/v1/me/analyses?since_days=0").status_code == 422
+
+
+def set_grades(uid, grades):
+    """Set this user's grades by posting title; None leaves one ungraded."""
+    with engine.begin() as conn:
+        for title, grade in grades.items():
+            conn.execute(text(
+                "UPDATE ai_analysis SET adequation_grade = :g WHERE user_id = :u "
+                "AND job_id = (SELECT id FROM job_postings WHERE title = :t)"),
+                dict(g=grade, u=uid, t=title))
+
+
+def test_analyses_pages_are_disjoint_ordered_and_counted(client, chat):
+    jobs.insert_jobs([posting(i, f"Go {i}", "go " * 6) for i in range(5)])
+    uid = make_user("go")
+    analyze(client, uid)
+    set_grades(uid, {"Go 0": 10, "Go 1": 90, "Go 2": 50, "Go 3": 50,
+                     "Go 4": None})
+
+    pages = [as_user(uid).get(f"/v1/me/analyses?limit=2&offset={o}").json()
+             for o in (0, 2, 4, 6)]
+
+    assert [p["total"] for p in pages] == [5, 5, 5, 5]
+    titles = [a["title"] for p in pages for a in p["items"]]
+    assert titles[0] == "Go 1" and titles[3:] == ["Go 0", "Go 4"]
+    assert sorted(titles) == [f"Go {i}" for i in range(5)]
+    assert pages[3]["items"] == []
+    assert as_user(uid).get("/v1/me/analyses?min_grade=50").json()["total"] == 3
+    assert as_user(uid).get("/v1/me/analyses?limit=101").status_code == 422
+    assert as_user(uid).get("/v1/me/analyses?offset=-1").status_code == 422
+
+
+def test_analysis_stats_are_computed_in_sql(client, chat):
+    jobs.insert_jobs([posting(i, f"Go {i}", "go " * 6) for i in range(4)])
+    uid, other = make_user("go"), make_user("go")
+    analyze(client, uid)
+    set_grades(uid, {"Go 0": 10, "Go 1": 100, "Go 2": 41, "Go 3": None})
+
+    stats = as_user(uid).get("/v1/me/analyses/stats").json()
+
+    assert stats["count"] == 4
+    assert stats["average"] == 50  # (10 + 100 + 41) / 3, the NULL left out
+    assert stats["histogram"] == [
+        {"range": "0-19", "count": 1}, {"range": "20-39", "count": 0},
+        {"range": "40-59", "count": 1}, {"range": "60-79", "count": 0},
+        {"range": "80-100", "count": 1}]
+    assert [d["average"] for d in stats["per_day"]] == [50]
+    assert as_user(uid).get(
+        "/v1/me/analyses/stats?min_grade=40").json()["average"] == 71
+    assert as_user(other).get("/v1/me/analyses/stats").json() == {
+        "count": 0, "average": None, "per_day": [],
+        "histogram": [{"range": r, "count": 0} for r in
+                      ("0-19", "20-39", "40-59", "60-79", "80-100")]}
+
+
+def test_candidates_are_paged_from_the_filtered_list(client):
+    jobs.insert_jobs([posting(i, f"Go {i}", "go " * 6) for i in range(3)])
+    uid = make_user("go")
+
+    first = candidates(uid, "?limit=2").json()
+    rest = candidates(uid, "?limit=2&offset=2").json()
+
+    assert first["total"] == rest["total"] == 3
+    assert len(first["items"]) == 2 and len(rest["items"]) == 1
+    assert {c["job_id"] for c in first["items"] + rest["items"]} \
+        == set(ids("Go 0", "Go 1", "Go 2"))
 
 
 def test_allowed_models_come_from_the_server_env(client, chat, monkeypatch):

@@ -310,13 +310,40 @@ def test_list_is_per_user_newest_first_with_job_id(as_user, chat):
     chat["answer"] = json.dumps({"locale": "pt", "cv": {"profile_text": "b"}})
     finish(c, job_id)
 
-    listed = c.get("/v1/me/generated-cvs").json()
+    listed = c.get("/v1/me/generated-cvs").json()["items"]
 
     assert [g["locale"] for g in listed] == ["pt", "en"]
     assert {g["job_id"] for g in listed} == {str(job_id)}
     # ISO timestamps from one server compare as strings: newest first.
     assert listed[0]["created_at"] >= listed[1]["created_at"]
-    assert as_user(make_user()).get("/v1/me/generated-cvs").json() == []
+    assert as_user(make_user()).get("/v1/me/generated-cvs").json()["items"] == []
+
+
+def test_list_is_paged_with_a_total(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    finish(c, job_id)
+    finish(c, job_id)  # the daily cap is 2
+
+    first = c.get("/v1/me/generated-cvs?limit=1").json()
+    rest = c.get("/v1/me/generated-cvs?limit=1&offset=1").json()
+
+    assert first["total"] == rest["total"] == 2
+    assert len({g["cv_id"] for g in first["items"] + rest["items"]}) == 2
+
+
+def test_without_cv_lists_graded_postings_still_missing_one(as_user, chat):
+    uid, job_ids = graded_user(3)
+    c = as_user(uid)
+    finish(c, job_ids[0])
+
+    listed = c.get("/v1/me/analyses/without-cv").json()
+
+    assert listed["total"] == 2
+    assert {a["job_id"] for a in listed["items"]} == {str(j) for j in job_ids[1:]}
+    assert all(a["depth_analysis"] for a in listed["items"])
+    assert c.get("/v1/me/analyses/without-cv?min_grade=100").json() \
+        == {"items": [], "total": 0}
 
 
 @pytest.mark.parametrize("ext", ["docx", "pdf"])
@@ -371,7 +398,7 @@ def test_a_cv_with_no_grade_is_still_listed(as_user, chat):
     listed = c.get("/v1/me/generated-cvs")
 
     assert listed.status_code == 200
-    assert listed.json()[0]["adequation_grade"] is None
+    assert listed.json()["items"][0]["adequation_grade"] is None
 
 
 def test_shutdown_mid_run_refunds_the_unit(as_user, chat):
@@ -392,7 +419,7 @@ def test_shutdown_mid_run_refunds_the_unit(as_user, chat):
 
 def generated(c, job_id):
     finish(c, job_id)
-    return c.get("/v1/me/generated-cvs").json()[0]["cv_id"]
+    return c.get("/v1/me/generated-cvs").json()["items"][0]["cv_id"]
 
 
 def test_put_replaces_the_cv_and_the_list_shows_it(as_user, chat):
@@ -405,7 +432,7 @@ def test_put_replaces_the_cv_and_the_list_shows_it(as_user, chat):
     assert put.status_code == 200
     assert put.json()["cv"] == EDITED
     assert put.json()["locale"] == "fr"
-    assert c.get("/v1/me/generated-cvs").json()[0]["cv"] == EDITED
+    assert c.get("/v1/me/generated-cvs").json()["items"][0]["cv"] == EDITED
 
 
 def test_put_on_another_users_or_unknown_cv_is_404(as_user, chat):
@@ -415,7 +442,7 @@ def test_put_on_another_users_or_unknown_cv_is_404(as_user, chat):
 
     assert other.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": EDITED}).status_code == 404
     assert other.put(f"/v1/me/generated-cvs/{uuid.uuid4()}", json={"cv": EDITED}).status_code == 404
-    assert as_user(uid).get("/v1/me/generated-cvs").json()[0]["cv"] == CV
+    assert as_user(uid).get("/v1/me/generated-cvs").json()["items"][0]["cv"] == CV
 
 
 @pytest.mark.parametrize("bad", [

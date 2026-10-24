@@ -9,7 +9,7 @@ versioned by Alembic, not created here.
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from db.engine import engine
 from db.tables import ai_analysis, cover_letters, generated_cv, job_postings
@@ -148,8 +148,14 @@ _LETTER_COLUMNS = (
 )
 
 
-def select_cover_letters(user_id: UUID) -> List[Tuple]:
-    """Every cover letter stored for this user, newest first.
+def select_cover_letters(user_id: UUID, limit: Optional[int] = None,
+                         offset: int = 0) -> List[Tuple]:
+    """The cover letters stored for this user, newest first.
+
+    Args:
+        user_id: The user whose letters to return.
+        limit: Cap on rows returned; None means no cap.
+        offset: Rows to skip, for paging.
 
     Returns:
         List of (letter_id, cv_id, job_id, title, company, adequation_grade,
@@ -157,9 +163,20 @@ def select_cover_letters(user_id: UUID) -> List[Tuple]:
     """
     stmt = (_LETTER_COLUMNS
             .where(cover_letters.c.user_id == user_id)
-            .order_by(cover_letters.c.created_at.desc()))
+            .order_by(cover_letters.c.created_at.desc(), cover_letters.c.id)
+            .limit(limit)
+            .offset(offset))
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def count_cover_letters(user_id: UUID) -> int:
+    """How many cover letters are stored for this user."""
+    # SQL: SELECT count(*) FROM cover_letters WHERE user_id = ?
+    stmt = (select(func.count()).select_from(cover_letters)
+            .where(cover_letters.c.user_id == user_id))
+    with engine.connect() as conn:
+        return conn.execute(stmt).scalar_one()
 
 
 def select_cover_letter(user_id: UUID, letter_id: UUID) -> Optional[Tuple]:

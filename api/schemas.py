@@ -6,8 +6,8 @@ capped, and the model a client may ask for is a closed set.
 """
 
 import os
-from datetime import datetime
-from typing import Annotated, List, Literal, Optional
+from datetime import date, datetime
+from typing import Annotated, Generic, List, Literal, Optional, TypeVar
 from uuid import UUID
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field,
@@ -148,6 +148,32 @@ class AnalysisOut(BaseModel):
     ai_model: Optional[str] = None
     depth_analysis: Optional[str] = None
     analysed_at: datetime
+
+
+T = TypeVar("T")
+
+
+class Page(BaseModel, Generic[T]):
+    """One page of a listing; `total` counts every row the filters match."""
+    items: List[T]
+    total: int
+
+
+class GradeBucket(BaseModel):
+    range: str  # "0-19" ... "80-100"
+    count: int
+
+
+class DayAverage(BaseModel):
+    day: date  # UTC
+    average: int
+
+
+class AnalysisStats(BaseModel):
+    count: int  # ungraded rows included
+    average: Optional[int] = None  # None when nothing is graded
+    histogram: List[GradeBucket]
+    per_day: List[DayAverage]
 
 
 class AnalyzeOut(BaseModel):

@@ -11,7 +11,6 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
-from db._sql_utils import text_interval
 from db.engine import engine
 from db.tables import ai_analysis, generated_cv, job_postings
 
@@ -123,50 +122,66 @@ def select_job_for_generation(
         return conn.execute(stmt).first()
 
 
-def select_jobs_for_cv(
-        user_id: UUID, min_grade: int = 0,
-        window: str = "-100 years") -> List[Tuple]:
+def _without_cv_where(user_id: UUID, min_grade: int) -> list:
+    # SQL: SELECT job_id FROM generated_cv WHERE user_id = ?
+    has_cv = select(generated_cv.c.job_id).where(
+        generated_cv.c.user_id == user_id)
+
+    return [ai_analysis.c.user_id == user_id,
+            ai_analysis.c.job_id.notin_(has_cv),
+            ai_analysis.c.adequation_grade >= min_grade]
+
+
+def select_jobs_for_cv(user_id: UUID, min_grade: int = 0,
+                       limit: Optional[int] = None,
+                       offset: int = 0) -> List[Tuple]:
     """This user's graded postings still missing a CV, best fit first.
 
     Args:
         user_id: The user whose graded postings to consider.
         min_grade: Lowest adequation grade worth writing a CV for.
-        window: Postgres interval string, as in db.analysis.select_jobs_to_analyse.
-            Defaults to effectively no floor.
+        limit: Cap on rows returned; None means no cap.
+        offset: Rows to skip, for paging.
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
-        analysed_at).
+        ai_model, depth_analysis, analysed_at), shaped like
+        db.analysis.select_analysis_page.
     """
-    # SQL: SELECT job_id FROM generated_cv WHERE user_id = ?
-    has_cv = select(generated_cv.c.job_id).where(
-        generated_cv.c.user_id == user_id)
     # SQL: SELECT job_postings.id, ai_analysis.adequation_grade,
     #      job_postings.company, job_postings.title, job_postings.place,
-    #      job_postings.url, ai_analysis.created_at
+    #      job_postings.url, ai_analysis.ai_model, ai_analysis.depth_analysis,
+    #      ai_analysis.created_at
     #      FROM ai_analysis JOIN job_postings ON job_postings.id = ai_analysis.job_id
     #      WHERE ai_analysis.user_id = ?
-    #      AND job_postings.id NOT IN (<has_cv subquery above>)
+    #      AND ai_analysis.job_id NOT IN (<has_cv subquery>)
     #      AND ai_analysis.adequation_grade >= ?
-    #      AND ai_analysis.created_at >= now() + INTERVAL '<window>'
-    #      ORDER BY ai_analysis.adequation_grade DESC
+    #      ORDER BY adequation_grade DESC, created_at DESC, id LIMIT ? OFFSET ?
     stmt = (
         select(
             job_postings.c.id, ai_analysis.c.adequation_grade,
             job_postings.c.company, job_postings.c.title,
-            job_postings.c.place, job_postings.c.url,
-            ai_analysis.c.created_at,
+            job_postings.c.place, job_postings.c.url, ai_analysis.c.ai_model,
+            ai_analysis.c.depth_analysis, ai_analysis.c.created_at,
         )
         .select_from(ai_analysis)
         .join(job_postings, job_postings.c.id == ai_analysis.c.job_id)
-        .where(ai_analysis.c.user_id == user_id)
-        .where(job_postings.c.id.notin_(has_cv))
-        .where(ai_analysis.c.adequation_grade >= min_grade)
-        .where(ai_analysis.c.created_at >= func.now() + text_interval(window))
-        .order_by(ai_analysis.c.adequation_grade.desc())
+        .where(*_without_cv_where(user_id, min_grade))
+        .order_by(ai_analysis.c.adequation_grade.desc(),
+                  ai_analysis.c.created_at.desc(), ai_analysis.c.id)
+        .limit(limit)
+        .offset(offset)
     )
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def count_jobs_for_cv(user_id: UUID, min_grade: int = 0) -> int:
+    """How many rows `select_jobs_for_cv` pages through."""
+    stmt = (select(func.count()).select_from(ai_analysis)
+            .where(*_without_cv_where(user_id, min_grade)))
+    with engine.connect() as conn:
+        return conn.execute(stmt).scalar_one()
 
 
 # SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
@@ -188,11 +203,14 @@ _CV_COLUMNS = (
 )
 
 
-def select_generated_cvs(user_id: UUID) -> List[Tuple]:
-    """Every CV stored for this user, newest first, then best fit.
+def select_generated_cvs(user_id: UUID, limit: Optional[int] = None,
+                         offset: int = 0) -> List[Tuple]:
+    """The CVs stored for this user, newest first, then best fit.
 
     Args:
         user_id: The user whose generated CVs to return.
+        limit: Cap on rows returned; None means no cap.
+        offset: Rows to skip, for paging.
 
     Returns:
         List of (cv_id, title, company, adequation_grade, locale, cv, job_id,
@@ -206,15 +224,27 @@ def select_generated_cvs(user_id: UUID) -> List[Tuple]:
     #      JOIN job_postings ON job_postings.id = generated_cv.job_id
     #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
     #      WHERE generated_cv.user_id = ?
-    #      ORDER BY generated_cv.created_at DESC, ai_analysis.adequation_grade DESC
+    #      ORDER BY generated_cv.created_at DESC,
+    #      ai_analysis.adequation_grade DESC, generated_cv.id LIMIT ? OFFSET ?
     stmt = (
         _CV_COLUMNS
         .where(generated_cv.c.user_id == user_id)
         .order_by(generated_cv.c.created_at.desc(),
-                  ai_analysis.c.adequation_grade.desc())
+                  ai_analysis.c.adequation_grade.desc(), generated_cv.c.id)
+        .limit(limit)
+        .offset(offset)
     )
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def count_generated_cvs(user_id: UUID) -> int:
+    """How many CVs are stored for this user."""
+    # SQL: SELECT count(*) FROM generated_cv WHERE user_id = ?
+    stmt = (select(func.count()).select_from(generated_cv)
+            .where(generated_cv.c.user_id == user_id))
+    with engine.connect() as conn:
+        return conn.execute(stmt).scalar_one()
 
 
 def select_generated_cv(user_id: UUID, cv_id: UUID) -> Optional[Tuple]:

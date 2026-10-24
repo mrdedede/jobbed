@@ -137,6 +137,7 @@ generated_cv = Table(
     Column("locale", String),
     Column("cv", JSONB, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Index("ix_generated_cv_user_created", "user_id", text("created_at DESC")),
 )
 
 # Several letters per generated CV: regenerating adds a row. `answers` keeps
@@ -152,6 +153,7 @@ cover_letters = Table(
     Column("answers", JSONB, nullable=False),
     Column("letter", Text, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
+    Index("ix_cover_letters_user_created", "user_id", text("created_at DESC")),
 )
 
 # Per-user daily LLM spend, one counter per (day, kind). Days are UTC dates.

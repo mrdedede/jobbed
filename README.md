@@ -47,6 +47,13 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
   `GET /v1/me/generated-cvs` lists the results. At most `DAILY_CV_CAP`
   (default 2) per user per UTC day. Details in
   [docs/cv-generation.md](docs/cv-generation.md).
+- `POST /v1/me/cover-letters/generate` (`{"cv_id", "answers"}`) writes a cover
+  letter from a generated CV, its posting, the posting's analysis and the
+  user's answers, in the posting's language (poll
+  `GET /v1/me/cover-letters/generate/{generation_id}`);
+  `GET /v1/me/cover-letters` lists them, `PUT /v1/me/cover-letters/{id}` saves
+  an edit. At most `DAILY_LETTER_CAP` (default: `DAILY_CV_CAP`) per user per
+  UTC day.
 
 ## Data flow and privacy
 
@@ -85,6 +92,7 @@ Only these are still files; everything per-user is an API resource.
 | `ANALYSIS_MODELS` | API | `haiku,sonnet`. Models a client may request; add e.g. `ollama-qwen2.5:0.5b`. The first one also writes keyword suggestions. |
 | `DAILY_ANALYSIS_CAP` | API | `10` postings per user per UTC day. |
 | `DAILY_CV_CAP` | API | `2` CV generations per user per UTC day. |
+| `DAILY_LETTER_CAP` | API | Cover letters per user per UTC day; defaults to `DAILY_CV_CAP`. |
 | `DAILY_TERMS_CAP` | API | `5` keyword/blacklist suggestions per user per UTC day. |
 | `ANTHROPIC_API_KEY` | gateway | Empty means Claude models answer 502. |
 | `OLLAMA_BASE_URL`, `OLLAMA_TIMEOUT` | gateway | `http://localhost:11434`, `180` s |

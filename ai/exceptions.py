@@ -8,3 +8,7 @@ class NoAnalysisForJob(RuntimeError):
 
 class UnusableAnswer(RuntimeError):
     """The model answered, but not with JSON of the expected shape."""
+
+
+class NoGeneratedCv(RuntimeError):
+    """The user has no generated CV with the given id."""

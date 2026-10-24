@@ -185,6 +185,7 @@ class GenCvOut(BaseModel):
     locale: str
     cv: dict
     job_id: UUID
+    depth_analysis: Optional[str] = None  # the posting's analysis, for the job drawer
 
 
 # A user's edit of a generated CV: same shape as the `cv` object of
@@ -239,4 +240,50 @@ class GenCvStarted(BaseModel):
 class GenCvStatus(BaseModel):
     status: Literal["running", "done", "failed"]
     cv: Optional[GenCvOut] = None
+    error: Optional[dict] = None
+
+
+# COVER LETTERS
+
+LetterAnswer = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2_000)]
+
+
+class LetterAnswers(_Strict):
+    """What the user tells the model; each may be left blank."""
+    motivation: LetterAnswer = ""
+    career_fit: LetterAnswer = ""
+    offer_fit: LetterAnswer = ""
+
+
+class LetterRequest(BaseModel):
+    cv_id: UUID  # a generated CV, not an uploaded one
+    answers: LetterAnswers = Field(default_factory=LetterAnswers)
+
+
+class LetterOut(BaseModel):
+    letter_id: UUID
+    cv_id: UUID
+    job_id: UUID
+    title: str
+    company: str
+    adequation_grade: Optional[int] = None
+    depth_analysis: Optional[str] = None
+    locale: Optional[str] = None
+    answers: dict
+    letter: str
+    created_at: datetime
+
+
+class LetterUpdate(_Strict):
+    letter: Annotated[str, StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=20_000)]
+
+
+class LetterStarted(BaseModel):
+    generation_id: UUID
+
+
+class LetterStatus(BaseModel):
+    status: Literal["running", "done", "failed"]
+    letter: Optional[LetterOut] = None
     error: Optional[dict] = None

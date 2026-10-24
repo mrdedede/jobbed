@@ -92,10 +92,20 @@ CV_SCHEMA = {
 }
 
 
+# Repeated after the posting: small local models weight the end of the prompt
+# most, and Ollama truncates from the start when num_ctx overflows.
+_LANGUAGE_REMINDER = (
+    "FINAL REMINDER — MANDATORY: write the entire CV in the language of the "
+    "JOB POST above, not the language of the candidate's CV, the analysis or "
+    "these instructions. Set `locale` to that language and translate every "
+    "text field into it. Only proper nouns stay unchanged.")
+
+
 def _build_prompt(cv_md: str, depth_analysis: Optional[str], description: str) -> str:
     return (f"{generate_cv_prompt}\n--------\n# User CV\n{cv_md}\n"
             f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis or ''}\n"
-            f"--------\n# JOB POST\n\n{description}")
+            f"--------\n# JOB POST\n\n{description}\n"
+            f"--------\n{_LANGUAGE_REMINDER}")
 
 
 async def generate_cv(user_id: UUID, job_id: UUID,

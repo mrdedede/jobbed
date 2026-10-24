@@ -34,6 +34,13 @@ def no_request_delay(monkeypatch):
     monkeypatch.setattr(fetching, "RETRY_BACKOFF", 0)
 
 
+@pytest.fixture(autouse=True)
+def fresh_rate_limits():
+    """Every TestClient is one IP ("testclient"); don't carry hits across."""
+    from api import ratelimit
+    ratelimit._hits.clear()
+
+
 @pytest.fixture
 def filter_files(tmp_path, monkeypatch):
     """Point the pipeline's data paths at writable temp files.

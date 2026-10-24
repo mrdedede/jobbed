@@ -170,3 +170,26 @@ def test_token_with_a_non_uuid_subject_is_401(client):
                        security.jwt_secret())
 
     assert client.get("/v1/me", headers=bearer(token)).status_code == 401
+
+
+def test_login_is_rate_limited_per_email(client):
+    body = creds()
+    client.post("/v1/auth/signup", json=body)
+    wrong = {**body, "password": "wrong-one!"}
+
+    codes = [client.post("/v1/auth/login", json=wrong).status_code
+             for _ in range(11)]
+    blocked = client.post("/v1/auth/login", json=body)
+
+    assert codes == [401] * 10 + [429]
+    assert blocked.status_code == 429  # even the right password, until reset
+    assert int(blocked.headers["Retry-After"]) > 0
+    # Another email from the same IP still gets through.
+    assert client.post("/v1/auth/login", json=creds()).status_code == 401
+
+
+def test_signup_is_rate_limited_per_ip(client):
+    codes = [client.post("/v1/auth/signup", json=creds()).status_code
+             for _ in range(6)]
+
+    assert codes == [201] * 5 + [429]

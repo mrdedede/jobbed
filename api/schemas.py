@@ -11,7 +11,7 @@ from typing import Annotated, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field,
-                      StringConstraints, field_validator)
+                      StringConstraints, field_validator, model_validator)
 
 Email = Annotated[str, StringConstraints(
     strip_whitespace=True, to_lower=True, max_length=254,
@@ -287,3 +287,41 @@ class LetterStatus(BaseModel):
     status: Literal["running", "done", "failed"]
     letter: Optional[LetterOut] = None
     error: Optional[dict] = None
+
+
+# APPLICATIONS
+
+ApplicationStatus = Literal["cv_generated", "applied", "interviews", "jobbed",
+                            "rejected"]
+RejectionReason = Literal["no_reply", "rejected", "withdrew", "other"]
+
+
+class ApplicationOut(BaseModel):
+    """A card on the tracking board: a posting the user generated a CV for."""
+    job_id: UUID
+    cv_id: UUID
+    title: str
+    company: str
+    place: Optional[str] = None
+    url: str
+    adequation_grade: Optional[int] = None
+    cv_created_at: datetime
+    status: ApplicationStatus
+    rejected_from: Optional[ApplicationStatus] = None
+    rejection_reason: Optional[RejectionReason] = None
+    feedback: Optional[str] = None
+    updated_at: Optional[datetime] = None  # null while in "cv_generated"
+
+
+class ApplicationUpdate(_Strict):
+    status: ApplicationStatus
+    rejection_reason: Optional[RejectionReason] = None
+    feedback: Optional[Annotated[str, StringConstraints(
+        strip_whitespace=True, max_length=2_000)]] = None
+
+    @model_validator(mode="after")
+    def _rejection_fields_need_rejected(self):
+        if self.status != "rejected" and (self.rejection_reason or self.feedback):
+            raise ValueError("rejection_reason and feedback need status 'rejected'")
+
+        return self

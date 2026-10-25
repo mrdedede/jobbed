@@ -45,6 +45,21 @@ POLL_MS = 250
 STABLE_POLLS = 3
 SETTLE_MAX_MS = 6_000
 
+#: Listing pages walked per render, first page included.
+MAX_PAGES = 10
+
+#: A pager click that hangs is a missing pager, not a failed render.
+CLICK_TIMEOUT_MS = 2_000
+
+#: Text of a control that advances a listing. Anchored, so a job titled
+#: "NextGen Engineer" is never mistaken for a pager.
+# ponytail: text-matched pager, English/French only; capture the listing's
+# XHR and page it over HTTP if a board defeats this.
+PAGER_TEXT = (r"^\s*(load more|show more|more jobs|next|voir plus"
+              r"|afficher plus|plus d.offres|suivant)\s*[›»>→]?\s*$")
+_PAGER = ('a[rel="next"], [aria-label*="next" i], '
+          f':is(button, a, [role="button"]):text-matches("{PAGER_TEXT}", "i")')
+
 #: Resource types nobody reads the listing from.
 BLOCKED_TYPES = {"image", "font", "media"}
 
@@ -173,14 +188,11 @@ class RenderPool:
                                 timeout=self.timeout)
 
             await _settle(page)
-            await page.mouse.wheel(0, 4000)
-            await _settle(page)
 
-            # TODO(pagination): this reads the first page of results only.
-            # Candidates: follow "next" links, click "load more", or capture
-            # the JSON the page itself fetches and hand it to the feed
-            # strategy. M5's boards stopped at exactly 25 jobs.
-            return await page.content()
+            # Every page read, not just the last: "next" replaces the list
+            # where scroll and "load more" grow it. dedupe() collapses the
+            # overlap the growing kind leaves behind.
+            return "\n".join(await _walk(page))
         finally:
             await context.close()
 
@@ -205,6 +217,46 @@ async def _block_heavy(route) -> None:
         await route.abort()
     else:
         await route.continue_()
+
+
+async def _walk(page) -> list:
+    """Scroll, then click a pager, until the listing stops changing.
+
+    Returns:
+        The HTML of every listing page reached, at most MAX_PAGES. Never
+        raises: a click that navigates away or hits a detached element ends
+        the walk with the pages already read, as render() degrades too.
+    """
+    snapshots = [await page.content()]
+
+    try:
+        last = await page.evaluate(_SIGNATURE_JS)
+
+        for _ in range(MAX_PAGES - 1):
+            await page.mouse.wheel(0, 4000)
+            await _settle(page)
+            signature = await page.evaluate(_SIGNATURE_JS)
+
+            if signature == last:
+                pager = page.locator(_PAGER).first
+
+                if not await pager.is_visible():
+                    break
+
+                await pager.click(timeout=CLICK_TIMEOUT_MS)
+                await _settle(page)
+                signature = await page.evaluate(_SIGNATURE_JS)
+
+                # Covers a disabled "next" on the last page too.
+                if signature == last:
+                    break
+
+            last = signature
+            snapshots.append(await page.content())
+    except Exception:
+        pass
+
+    return snapshots
 
 
 async def _settle(page) -> None:

@@ -197,3 +197,62 @@ def test_sandbox_is_only_disabled_when_the_image_asks(monkeypatch):
 
     monkeypatch.setenv("CHROMIUM_NO_SANDBOX", "1")
     assert "--no-sandbox" in render.launch_args()
+
+
+class FakePager:
+    def __init__(self, page):
+        self.page = page
+        self.first = self
+
+    async def is_visible(self):
+        return self.page.at + 1 < len(self.page.pages)
+
+    async def click(self, **kwargs):
+        if self.page.at + 1 == self.page.fail_at:
+            raise RuntimeError("element detached")
+
+        self.page.at += 1
+
+
+class PagedPage(FakePage):
+    """A listing whose pager advances through `pages` one click at a time."""
+
+    def __init__(self, pages, fail_at=None):
+        super().__init__(FakeBrowser(), None)
+        self.pages, self.fail_at, self.at = pages, fail_at, 0
+
+    def locator(self, selector):
+        return FakePager(self)
+
+    async def evaluate(self, js):
+        return self.at
+
+    async def content(self):
+        return self.pages[self.at]
+
+
+async def test_a_paged_listing_is_walked_until_the_pager_runs_out():
+    assert await render._walk(PagedPage(["p1", "p2", "p3"])) == [
+        "p1", "p2", "p3"]
+
+
+async def test_walking_stops_at_max_pages():
+    pages = [f"p{n}" for n in range(render.MAX_PAGES + 5)]
+
+    assert len(await render._walk(PagedPage(pages))) == render.MAX_PAGES
+
+
+async def test_a_pager_that_raises_keeps_the_pages_already_read():
+    assert await render._walk(PagedPage(["p1", "p2", "p3"], fail_at=2)) == [
+        "p1", "p2"]
+
+
+def test_pager_text_matches_pagers_and_not_job_titles():
+    import re
+
+    def pager(text):
+        return re.search(render.PAGER_TEXT, text, re.I)
+
+    assert pager("Load more") and pager("  Suivant › ") and pager("Next")
+    assert not pager("NextGen Engineer")
+    assert not pager("Load more jobs about Python")

@@ -34,4 +34,7 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=5 CMD python -c \
 
 # One worker on purpose: the per-user in-flight locks and the running CV
 # generations live in this process; a second worker would split them.
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Trust X-Forwarded-For from any peer: only the Ingress reaches this
+# ClusterIP Service, and the auth rate limits key on the real client IP.
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8080", \
+     "--forwarded-allow-ips", "*"]

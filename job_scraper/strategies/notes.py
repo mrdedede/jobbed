@@ -118,12 +118,20 @@ VENDOR_NOTES: Dict[ATSName, str] = {
         "page is otherwise ordinary anchor markup."
     ),
     ATSName.JOBPOSTINGPRO: (
-        "Probed 2026-08-20 (jobposting.pro/societe-ippon+technologies-..."
-        "#jobs): static HTML has no listing markup at all, just page meta "
-        "and social-share links -- this specific board may simply have zero "
-        "open postings right now rather than being JS-rendered. Needs "
-        "checking against a jobposting.pro board with confirmed open "
-        "listings before deciding whether a JOB_PATH row is even needed."
+        "Re-probed 2026-10-26: the company pages (societe-ippon+technologies, "
+        "societe-act+digital+france, careers-meent+life+sciences) do list "
+        "their postings server-side, as /emploi-<id>-<n> anchors (31 on "
+        "Ippon, 46 on act digital) that the generic shape rejected because "
+        "the job word and the id share one segment. No feed found; "
+        "JOB_PATH[JOBPOSTINGPRO] reads them through scrape_links."
+    ),
+    ATSName.GESTMAX: (
+        "Probed 2026-10-26 (recrutement.loire-atlantique.fr/search, "
+        "recrutement.strasbourg.eu/search): server-rendered listing, every "
+        "posting an absolute /<offer id>/<lang id>/<slug> anchor with no job "
+        "word in it. No feed or API seen. JOB_PATH[GESTMAX] reads them; "
+        "detection rests on the gestmax-container markup, since tenants run "
+        "on their own domains."
     ),
     ATSName.KISSMYJOB: (
         "Probed 2026-08-20 (career.kissmyjob.com/1/jobs): plain curl fetch "

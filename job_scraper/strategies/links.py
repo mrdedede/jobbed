@@ -54,6 +54,17 @@ JOB_PATH: Dict[ATSName, str] = {
     # identical for the board and its jobs and only the query tells them
     # apart. Containing "?" is what opts this row into query matching below.
     ATSName.NJOYN: r"xweb\.asp\?.*\bPage=JobDetails\b.*\bJobid=",
+    # The job word and the id share one segment (/emploi-2731999-999), so the
+    # generic shape, which wants a slug segment after the job word, missed
+    # every posting on Ippon, act digital and the other company pages.
+    ATSName.JOBPOSTINGPRO: r"/emploi-\d+-\d+$",
+    # /offre-de-emploi/emploi-<slug>_<id>.aspx (ugap, airfrance). Kept off the
+    # generic shape: the same prefix also files liste-offres.aspx and
+    # ma-selection-offres.aspx, which a generic rule would read as postings.
+    ATSName.TALENTSOFT: r"/offre-de-emploi/emploi-[^/?#]+_\d+\.aspx",
+    # /<offer id>/<lang id>/<slug> with no job word at all (Loire-Atlantique,
+    # Strasbourg). Safe only because it is gated on a detected Gestmax board.
+    ATSName.GESTMAX: r"^/\d+/\d+/[^/?#]+",
 }
 
 #: An anchor label shorter than this is a chevron or a badge, not a job title.

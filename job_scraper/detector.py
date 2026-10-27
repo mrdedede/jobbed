@@ -543,6 +543,7 @@ class ATSName(StrEnum):
     JOBPOSTINGPRO = auto()
     KISSMYJOB = auto()
     HR_MANAGER = auto()
+    GESTMAX = auto()
 
     # Enterprise career-site platforms. These almost always run on the
     # employer's own domain, so they are identified by vendor infrastructure
@@ -902,8 +903,10 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
     ),
     ATS(
         name=ATSName.TALENTSOFT,
-        hosts=("talentsoft.com", "cegid-hr.com"),
-        assets=("talentsoft.com", "cegid.com", "cegid-hr.com"),
+        # talent-soft.com, hyphenated, is the older tenant domain (ugap).
+        hosts=("talentsoft.com", "talent-soft.com", "cegid-hr.com"),
+        assets=("talentsoft.com", "talent-soft.com", "cegid.com",
+                "cegid-hr.com"),
         terms=("talentsoft", "cegid talent"),
         rules=(
             rule(
@@ -1103,6 +1106,21 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("hr-manager.net",),
         assets=("hr-manager.net",),
         terms=("hr-manager",),
+    ),
+    ATS(
+        # French public-sector recruiting, always on the employer's own
+        # domain (recrutement.loire-atlantique.fr, recrutement.strasbourg.eu)
+        # with no vendor host or asset to go on. Its markup is the one thing
+        # every tenant shares.
+        name=ATSName.GESTMAX,
+        terms=("gestmax",),
+        rules=(
+            rule(
+                "gestmax.container", "dom", 45, TIER_DEFINITIVE,
+                "Gestmax container markup",
+                in_text("html", "gestmax-container"),
+            ),
+        ),
     ),
 
     # ------------------------------------------------------------------

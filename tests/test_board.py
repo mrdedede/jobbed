@@ -33,6 +33,8 @@ from job_scraper.strategies import (
     scrape_wttj,
 )
 from job_scraper.strategies.comeet import COMEET_API
+from job_scraper.strategies.links import JOB_PATH
+from job_scraper.urls import job_href_matches
 from job_scraper.strategies.feed import _token
 from job_scraper.strategies.sitemap import (
     _nested_sitemaps,
@@ -255,6 +257,34 @@ async def test_sitemap_falls_back_to_robots_txt():
 ])
 def test_generic_job_url_shape(path, is_posting):
     assert bool(_JOB_URL_RE.search(path)) is is_posting
+
+
+@pytest.mark.parametrize("ats,url,is_posting", [
+    (ATSName.JOBPOSTINGPRO, "https://www.jobposting.pro/emploi-2731999-999",
+     True),
+    (ATSName.JOBPOSTINGPRO,
+     "https://www.jobposting.pro/careers-meent+life+sciences-979513397",
+     False),
+    (ATSName.TALENTSOFT, "https://ugap-recrute.talent-soft.com/"
+     "offre-de-emploi/emploi-acheteur-confirme-h-f_2827.aspx", True),
+    # The listing pages share the posting prefix; the vendor shape is what
+    # keeps them out.
+    (ATSName.TALENTSOFT, "https://ugap-recrute.talent-soft.com/"
+     "offre-de-emploi/liste-offres.aspx", False),
+    (ATSName.GESTMAX, "https://recrutement.loire-atlantique.fr/3334/1/"
+     "medecin-de-pmi?backlink=search", True),
+    (ATSName.GESTMAX, "https://recrutement.loire-atlantique.fr/search", False),
+    # Generic fallback, id in the query string.
+    (None, "https://www.eps.fr/fr/offre.html?annonce=111520", True),
+    (None, "https://www.eps.fr/fr/nos_offres.html?_tabi=I3&_pid=Offres",
+     False),
+    (None, "https://jobs.exoscale.com/recruit/PortalDetail.na?iframe=true"
+     "&digest=eowukki.a85bxd-&jobid=4113640000", True),
+])
+def test_posting_shapes_from_the_no_jobs_corpus(ats, url, is_posting):
+    """Boards whose postings were on the page but whose URLs matched no
+    shape; each one is a real link from no_jobs.csv."""
+    assert job_href_matches(url, ats, JOB_PATH) is is_posting
 
 
 # ======================================================================

@@ -125,6 +125,10 @@ JOB_URL_HITS = [
     ("/careers/data_engineer_h_f", "underscore-joined slug, not just hyphenated"),
     ("/fr/details-doffre/data-engineer-7485457", "French elision 'd'offre' "
      "glued onto the job word with no separating hyphen -- Deezer's shape"),
+    ("/offres/oe00001903", "an id behind a short letter prefix -- vulcain's "
+     "shape, neither hyphenated nor a bare number"),
+    ("/on-recrute/business-analyst-technico-fonctionnel",
+     "French 'recrute' was missing from the vocabulary -- diggers' shape"),
 ]
 
 #: Shapes that must keep missing: a category/listing page, not a posting.
@@ -143,7 +147,15 @@ JOB_URL_MISSES = [
     ("/offre-de-emploi/emploi-ajusteuse-ajusteur-f-h_22660.aspx",
      "known gap: a compound job-word segment with trailing garbage before "
      "the next slash (airfrance's shape) is not solved by this pass -- "
-     "solving it reopened the career-advice/jobs-blog false positives"),
+     "solving it reopened the career-advice/jobs-blog false positives, and "
+     "admitted Talentsoft's liste-offres.aspx; the Talentsoft JOB_PATH "
+     "entry reads it instead"),
+    ("/jobs/v2", "the letter-prefixed id form needs four digits, so a short "
+     "version segment stays a listing"),
+    ("/le-processus-de-recrutement-chez-acme/",
+     "'recrute' must not match inside 'recrutement-...'"),
+    ("/recruitment/team-page", "'recruit' must not match inside "
+     "'recruitment'"),
 ]
 
 

@@ -183,6 +183,18 @@ class AnalyzeOut(BaseModel):
     results: List[AnalysisOut]
 
 
+class AnalyzeStarted(BaseModel):
+    analysis_id: UUID
+
+
+class AnalyzeStatus(BaseModel):
+    status: Literal["running", "done", "failed"]
+    done: int  # postings graded or failed so far
+    total: int  # postings this run will try (granted under the daily cap)
+    result: Optional[AnalyzeOut] = None
+    error: Optional[dict] = None
+
+
 class CandidateOut(BaseModel):
     """An ungraded posting the user may pick to grade. No `description`."""
     job_id: UUID

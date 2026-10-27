@@ -121,8 +121,19 @@ def pick(token):
 
 
 def analyze(token, job_ids, **body):
-    return call("POST", "/v1/me/analyze", token,
-                {"job_ids": job_ids, "model": MODEL, **body})
+    """Start a run and poll it; (status, body) as if the call had blocked."""
+    status, started = call("POST", "/v1/me/analyze", token,
+                           {"job_ids": job_ids, "model": MODEL, **body})
+    if status != 202:
+        return status, started
+
+    while True:
+        _, run = call("GET", f"/v1/me/analyze/{started['analysis_id']}", token)
+        if run["status"] == "done":
+            return 200, run["result"]
+        if run["status"] == "failed":
+            return run["error"]["status"], run["error"]
+        time.sleep(2)
 
 
 def analyze_settled(token, job_ids, attempts=4, **body):

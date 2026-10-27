@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -54,18 +55,49 @@ def ids(*titles):
 
 
 def analyze(client, uid, job_ids=None, **body):
-    """POST /analyze with these ids; by default every posting there is."""
+    """Start a run on these ids (by default every posting there is), poll it
+    to the end, and answer like the old blocking call: the start's response
+    when it was refused, else the result as 200 or the run's error status."""
     if job_ids is None:
         with engine.connect() as conn:
             job_ids = [str(i) for i in conn.execute(text(
                 "SELECT id FROM job_postings")).scalars()]
 
-    return as_user(uid).post("/v1/me/analyze",
-                             json={"job_ids": job_ids or [], **body})
+    # Entered so one event loop outlives the start: the run is a background task.
+    with as_user(uid) as c:
+        started = c.post("/v1/me/analyze", json={"job_ids": job_ids or [], **body})
+        if started.status_code != 202:
+            return started
+
+        url = f"/v1/me/analyze/{started.json()['analysis_id']}"
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            run = c.get(url).json()
+            if run["status"] != "running":
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("analysis never finished")
+
+    assert run["done"] <= run["total"]
+    if run["status"] == "failed":
+        return httpx.Response(run["error"]["status"], json=run["error"])
+
+    return httpx.Response(200, json=run["result"])
 
 
 def candidates(uid, query=""):
     return as_user(uid).get(f"/v1/me/analyses/candidates{query}")
+
+
+def test_another_users_run_is_404(client, chat):
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
+    uid = make_user("go")
+
+    with as_user(uid) as c:
+        run_id = c.post("/v1/me/analyze", json={"job_ids": ids("Go A")}).json()["analysis_id"]
+
+    assert as_user(make_user()).get(f"/v1/me/analyze/{run_id}").status_code == 404
 
 
 def test_happy_path_grades_only_the_picked_ids_without_description(
@@ -408,12 +440,20 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
     async with httpx.AsyncClient(
             transport=transport, base_url="http://t",
             headers=bearer(uid)) as http:
-        first = asyncio.create_task(http.post("/v1/me/analyze", json={"job_ids": ids("Go A")}))
+        first = await http.post("/v1/me/analyze", json={"job_ids": ids("Go A")})
         await asyncio.wait_for(started.wait(), 10)
+        url = f"/v1/me/analyze/{first.json()['analysis_id']}"
+        running = (await http.get(url)).json()
         second = await http.post("/v1/me/analyze",
                                  json={"job_ids": ids("Go A")})
         release.set()
-        finished = await first
+        for _ in range(500):
+            finished = (await http.get(url)).json()
+            if finished["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
 
-    assert (finished.status_code, second.status_code) == (200, 409)
+    assert (first.status_code, second.status_code) == (202, 409)
+    assert (running["status"], running["done"], running["total"]) == ("running", 0, 1)
+    assert (finished["status"], finished["done"]) == ("done", 1)
     assert uid not in user_router._analysis_in_flight

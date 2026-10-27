@@ -91,6 +91,39 @@ SKIP_TITLES = frozenset({
 #: without drifting up into the page banner.
 CARD_DEPTH = 3
 
+#: ARIA roles of page furniture. role=search is in for Capgemini's header
+#: search widget, whose "Job offers" link was the one menu link left standing.
+CHROME_ROLES = frozenset({"navigation", "banner", "contentinfo", "search"})
+
+#: Elements that make a <header>/<footer> local to a card rather than the
+#: page's own -- the HTML spec's rule for when they map to banner and
+#: contentinfo. Without it, boards that file each posting as
+#: <article><header><a>title</a></header> (TOHTEM, proxiad, adentis and the
+#: other 30-a-page boards on one platform) lost every job.
+SECTIONING = ("article", "aside", "main", "nav", "section")
+
+
+def _in_chrome(tag) -> bool:
+    """Report whether an anchor sits in the site's menus, banner or footer.
+
+    Corporate careers sites file their culture pages under the careers path
+    with hyphenated slugs (/careers/why-join-capgemini/), which no URL shape
+    tells apart from a posting (/careers/cloud-engineer on seqone is real).
+    Where the link sits does: measured on the 131 boards the links strategy
+    serves, every anchor dropped here was a menu, filter or pager link, and
+    Capgemini's 41 matches -- all menu -- fell to zero, so the board reaches
+    no_jobs.csv and RenderBoards instead of passing as scraped.
+    """
+    for parent in tag.parents:
+        if parent.name == "nav" or parent.get("role") in CHROME_ROLES:
+            return True
+
+        if (parent.name in ("header", "footer")
+                and parent.find_parent(SECTIONING) is None):
+            return True
+
+    return False
+
 
 def _card_title(tag) -> str:
     """The heading of the card an anchor sits in.
@@ -193,6 +226,9 @@ async def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
             continue
 
         if not job_href_matches(url, board.ats, JOB_PATH):
+            continue
+
+        if _in_chrome(tag):
             continue
 
         jobs.append(Job(

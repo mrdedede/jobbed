@@ -120,6 +120,17 @@ async def test_job_shaped_links_present_but_unread():
     assert "job-shaped links present" in await diagnose.explain(board)
 
 
+async def test_job_shaped_links_in_the_menus_do_not_count_as_present():
+    """Capgemini: its only job-shaped links are menu links scrape_links now
+    skips, and "links present" would keep it out of RenderBoards."""
+    board = FakeBoard(html=page(
+        "<nav>" + links(60, path="/careers/why-join-us") + "</nav>"
+        '<div id="__next"></div>'
+    ))
+
+    assert "likely javascript-rendered" in await diagnose.explain(board)
+
+
 async def test_job_shaped_link_outranks_the_spa_marker():
     """A real match on this fetch disproves the SPA-marker's own prediction
     that postings only arrive after render -- kering's shape: an id="__next"

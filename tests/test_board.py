@@ -1197,6 +1197,45 @@ async def test_links_falls_back_to_the_generic_job_shape_for_an_unknown_ats():
     assert len(jobs) == 2
 
 
+#: Capgemini's page, cut down: every job-shaped link is in the site menus or
+#: the header search widget, and the listing itself is drawn in JS.
+MENU_ONLY_PAGE = page(
+    "<header><div id='navigation'>"
+    "<a href='/careers/why-join-capgemini/'>Why join Capgemini</a></div>"
+    "<div role='search'><a href='/careers/join-us/'>Job offers</a></div>"
+    "</header>"
+    "<nav><a href='/careers/join-capgemini/interview-tips/'>Interview tips</a>"
+    "</nav>"
+    "<div role='navigation'><a href='/careers/life-at-capgemini/'>Life</a>"
+    "</div>"
+    "<footer><a href='/careers/candidate-privacy-notice'>Privacy</a></footer>"
+)
+
+
+async def test_links_ignores_menu_banner_and_footer_links():
+    # Left in, these made Capgemini a 15-job board, so it never reached
+    # no_jobs.csv and RenderBoards never rendered it.
+    assert await scrape_links(board({"https://acme.fr/jobs": MENU_ONLY_PAGE})) == []
+
+
+async def test_links_keeps_postings_in_a_card_s_own_header():
+    # TOHTEM, proxiad and the rest of one platform's boards: a <header>
+    # inside an <article> is the card's, not the page banner.
+    listing = page(
+        "<header><nav><a href='/careers/why-join-us'>Why join us</a></nav>"
+        "</header><main>"
+        "<article><header><a href='/offres/ingenieur-devops-h-f'>"
+        "Ingénieur DevOps H/F</a></header></article>"
+        "<section><footer><a href='/offres/scrum-master-h-f'>Scrum Master"
+        "</a></footer></section></main>"
+    )
+
+    jobs = await scrape_links(board({"https://acme.fr/jobs": listing}))
+
+    assert [job.title for job in jobs] == ["Ingénieur DevOps H/F",
+                                           "Scrum Master"]
+
+
 #: URL shapes taken from real boards in the fixture corpus. Reproduced inline
 #: because the HTML corpus itself is gitignored -- only feeds/ is committed.
 AVATURE_PAGE = page(

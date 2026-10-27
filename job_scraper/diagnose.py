@@ -24,7 +24,7 @@ from bs4 import BeautifulSoup
 from job_scraper.detector import ATS_REGISTRY
 from job_scraper.fetching import decode_response, is_textual, request
 from job_scraper.strategies.feed import FEEDS, _token
-from job_scraper.strategies.links import JOB_PATH, _same_page
+from job_scraper.strategies.links import JOB_PATH, _in_chrome, _same_page
 from job_scraper.urls import _JOB_WORD, job_href_matches
 
 #: SPA bootstraps: the root element or state blob a client-side listing hangs
@@ -130,11 +130,13 @@ def _analyse(html: str, ats=None, base_url: str = "") -> str:
     # Same-page anchors (nav skip-links, empty CTAs) are excluded first --
     # scrape_links already does this, so a diagnosis that skipped it could
     # flag a page as "job-shaped links present" over links no strategy would
-    # ever have read either.
+    # ever have read either. Menu, banner and footer links likewise: left in,
+    # Capgemini's menus read as "links present", a reason RenderBoards skips.
     if anchors and any(
-        job_href_matches(urljoin(base_url, href), ats, JOB_PATH)
-        for href in anchors
-        if not _same_page(urljoin(base_url, href), base_url)
+        job_href_matches(urljoin(base_url, tag["href"]), ats, JOB_PATH)
+        for tag in soup.find_all("a", href=True)
+        if not _same_page(urljoin(base_url, tag["href"]), base_url)
+        and not _in_chrome(tag)
     ):
         return (f"job-shaped links present but no strategy read them ({shape})")
 

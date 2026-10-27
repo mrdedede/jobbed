@@ -320,10 +320,15 @@ async def scrape_boards(input_file: Optional[Path] = None,
 
 
 #: Reasons (the start of a diagnose.explain line) that a browser can fix: the
-#: listing is built in JS, or the page is an empty shell. The others -- 403s,
-#: "job-shaped links present", "no job-shaped links" -- are different problems
-#: and a browser would only burn minutes on them.
-JS_SHELL_REASONS = ("likely javascript-rendered", "no links on the page")
+#: listing is built in JS, or the page is an empty shell. "No job-shaped
+#: links" is in too: the no_jobs analysis found most of those pages load their
+#: listing after the document (Algolia, @@LINK@@ templates, ATS widgets), and
+#: the feed, linked-ATS and URL-shape fixes now take the cheap cases first, so
+#: what is left mostly needs rendering. The others -- 403s, "job-shaped links
+#: present" -- are different problems and a browser would only burn minutes on
+#: them.
+JS_SHELL_REASONS = ("likely javascript-rendered", "no links on the page",
+                    "no job-shaped links")
 
 
 def render_candidates(path: Optional[Path] = None) -> List[dict]:

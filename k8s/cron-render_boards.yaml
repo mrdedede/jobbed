@@ -12,7 +12,10 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 1
-      activeDeadlineSeconds: 900
+      # 181 boards (60 JS shells + 121 "no job-shaped links") at the slowest
+      # rate measured on the phone, 7.6 s/board, is 22.8 min; 30 min leaves
+      # headroom. Ingest starts 30 min after this one.
+      activeDeadlineSeconds: 1800
       ttlSecondsAfterFinished: 86400
       template:
         spec:

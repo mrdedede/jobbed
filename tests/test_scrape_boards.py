@@ -173,7 +173,7 @@ def test_render_candidates_keeps_only_js_shell_reasons(tmp_path):
         "e,http://e,no job-shaped links (40 anchors)\n", encoding="utf-8")
 
     assert [b["company"] for b in scrape_boards.render_candidates(path)] == [
-        "a", "b"]
+        "a", "b", "e"]
 
 
 def test_render_candidates_without_a_file_is_empty(tmp_path):

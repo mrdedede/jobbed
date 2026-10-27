@@ -267,7 +267,7 @@ The CLI takes the same knobs: `python -m ai.main_analysis <user_id> --model
 … --limit … --window "-7 days"`.
 
 **Kubernetes** (manifests in `k8s/`, schedules in Europe/Paris: scrape 00:00,
-render-boards 00:45, ingest 01:00, render-postings 05:00):
+render-boards 00:45, ingest 01:15, render-postings 05:00):
 
 ```bash
 kubectl apply -f k8s/pvc.yaml

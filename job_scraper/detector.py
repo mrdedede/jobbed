@@ -568,6 +568,10 @@ class ATSName(StrEnum):
     WERECRUIT = auto()
     BEETWEEN = auto()
 
+    # Job sites that refuse automated access. Named so their boards are
+    # skipped and reported as such, not scraped (board.REFUSES_BOTS).
+    APEC = auto()
+
 
 @dataclass(frozen=True)
 class ATS:
@@ -1215,6 +1219,12 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("nos-recrutements.fr",),
         assets=("beetween.com",),
         terms=("beetween",),
+    ),
+    # Hostname only: an employer page that links its APEC offers is still
+    # that employer's board.
+    ATS(
+        name=ATSName.APEC,
+        hosts=("apec.fr",),
     ),
 )
 

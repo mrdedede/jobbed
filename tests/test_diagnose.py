@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from job_scraper import diagnose
+from job_scraper.scrape_boards import JS_SHELL_REASONS
 
 pytestmark = pytest.mark.anyio
 
@@ -118,6 +119,15 @@ async def test_job_shaped_links_present_but_unread():
     board = FakeBoard(html=page(links(60, path="/jobs/senior-engineer")))
 
     assert "job-shaped links present" in await diagnose.explain(board)
+
+
+async def test_a_bot_refusing_platform_is_named_and_kept_out_of_rendering():
+    board = FakeBoard(html=page(links(60, path="/jobs/senior-engineer")))
+    board.board_url = "https://www.apec.fr/candidat/recherche-emploi.html"
+    reason = await diagnose.explain(board)
+
+    assert "bot-protected platform (apec)" in reason
+    assert not reason.startswith(JS_SHELL_REASONS)
 
 
 async def test_job_shaped_links_in_the_menus_do_not_count_as_present():

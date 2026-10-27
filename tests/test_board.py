@@ -1212,6 +1212,16 @@ MENU_ONLY_PAGE = page(
 )
 
 
+async def test_a_board_on_a_bot_refusing_host_is_not_scraped():
+    # APEC answers bots with a DataDome captcha: no strategy may touch it,
+    # job-shaped links on the page or not.
+    apec = "https://www.apec.fr/candidat/recherche-emploi.html/emploi?motsCles=x"
+    made = board({apec: BOARD_PAGE}, url=apec)
+
+    assert await made.scrape_board() == []
+    assert made.session.requested == []
+
+
 async def test_links_ignores_menu_banner_and_footer_links():
     # Left in, these made Capgemini a 15-job board, so it never reached
     # no_jobs.csv and RenderBoards never rendered it.

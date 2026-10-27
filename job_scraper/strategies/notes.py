@@ -161,4 +161,14 @@ VENDOR_NOTES: Dict[ATSName, str] = {
         "URL. Needs a captured browser session before any feed/JOB_PATH "
         "work is possible."
     ),
+    ATSName.APEC: (
+        "Probed 2026-10-27: the search page and the JSON search service "
+        "behind it (POST /cms/webservices/rechercheOffre) both answer 403 "
+        "with a DataDome captcha, from curl and from fetching.new_client "
+        "alike. No public API; APEC gives offer access to partners under an "
+        "agreement only. Not scraped by decision, and not to be worked "
+        "around: board.REFUSES_BOTS skips these boards and diagnose reports "
+        "them as bot-protected. A reader needs a partner feed first -- or "
+        "APEC offers via France Travail's API, if it republishes them."
+    ),
 }

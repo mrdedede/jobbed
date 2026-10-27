@@ -21,6 +21,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from job_scraper.board import refuses_bots
 from job_scraper.detector import ATS_REGISTRY
 from job_scraper.fetching import decode_response, is_textual, request
 from job_scraper.strategies.feed import FEEDS, _token
@@ -70,6 +71,13 @@ async def _cause(board, exc: Optional[BaseException]) -> str:
     """The primary reason, before any board-level context is appended."""
     if exc is not None:
         return f"{type(exc).__name__}: {exc}"
+
+    # Before any fetch: the page is a captcha, and this reason is what keeps
+    # the board out of RenderBoards (it is not a JS_SHELL_REASONS prefix).
+    blocked = refuses_bots(board.board_url)
+
+    if blocked:
+        return f"bot-protected platform ({blocked}): not scraped"
 
     html = await board.get_html()
 

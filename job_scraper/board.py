@@ -49,6 +49,23 @@ def dedupe(jobs: List[Job]) -> List[Job]:
     return list(seen.values())
 
 
+#: Platforms whose boards are not scraped at all: they refuse automated
+#: access (notes.VENDOR_NOTES says how), and every strategy would only spend
+#: requests -- and a browser slot in RenderBoards -- on a captcha page.
+REFUSES_BOTS = frozenset({ATSName.APEC})
+
+
+def refuses_bots(board_url: str) -> Optional[ATSName]:
+    """The platform hosting this board if it refuses bots, else None.
+
+    The board's own hostname, not its detected ATS: an employer page that
+    links APEC offers is still the employer's board and is scraped as usual.
+    """
+    ats = ats_from_host(board_url)
+
+    return ats if ats in REFUSES_BOTS else None
+
+
 #: Distinguishes "board page not fetched yet" from "fetched and it failed".
 #: A plain None-check cannot: None is the legitimate cached value for a dead
 #: board, and would send every strategy after the first back out to re-fetch.
@@ -204,8 +221,14 @@ class Board:
 
         Returns:
             The jobs from the first strategy that produced any, deduplicated.
-            Empty if every strategy came back empty.
+            Empty if every strategy came back empty, or if the board's host
+            refuses bots (REFUSES_BOTS).
         """
+        if refuses_bots(self.board_url):
+            self.board_jobs = []
+
+            return self.board_jobs
+
         for strategy in (self._feed, self._wordpress, self._sitemap,
                          self._links, self._inline_json, self._linked_ats,
                          self._rendered):

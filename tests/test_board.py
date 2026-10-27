@@ -1543,6 +1543,17 @@ async def test_a_failed_render_yields_nothing_rather_than_raising():
     made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=FakeRenderer())
 
     assert await made.scrape_board() == []
+    # Kept for diagnose: a failed render must not read like an empty page.
+    assert made.render_ran is True and made.rendered_html is None
+
+
+async def test_the_rendered_page_is_kept_when_it_holds_no_postings():
+    drawn = page("<div id='root'><a href='/about'>About</a></div>")
+    made = board({"https://acme.fr/jobs": SHELL_PAGE},
+                 render=FakeRenderer(drawn))
+
+    assert await made.scrape_board() == []
+    assert made.render_ran is True and made.rendered_html == drawn
 
 
 async def test_the_renderer_reaches_the_detector_too(monkeypatch):

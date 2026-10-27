@@ -146,6 +146,11 @@ class Board:
         self.ats: Optional[ATSName] = None
         self.board_jobs: List[Job] = []
         self._html: object = _UNFETCHED
+        # What the browser pass returned, kept for diagnose: without it a
+        # render that timed out and one that drew a page with no postings
+        # read the same in no_jobs_rendered.csv.
+        self.render_ran = False
+        self.rendered_html: Optional[str] = None
 
         self.session = session
 
@@ -384,6 +389,7 @@ class Board:
             return []
 
         html = await self.render(self.url)
+        self.render_ran, self.rendered_html = True, html
 
         if not html:
             return []

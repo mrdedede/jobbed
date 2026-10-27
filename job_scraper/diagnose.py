@@ -24,6 +24,7 @@ from bs4 import BeautifulSoup
 from job_scraper.board import refuses_bots
 from job_scraper.detector import ATS_REGISTRY
 from job_scraper.fetching import decode_response, is_textual, request
+from job_scraper.scrape_postings import BLOCKED_PAGE, HEAD_LENGTH
 from job_scraper.strategies.feed import FEEDS, _token
 from job_scraper.strategies.links import JOB_PATH, _in_chrome, _same_page
 from job_scraper.urls import _JOB_WORD, job_href_matches
@@ -53,6 +54,17 @@ MANY_SCRIPTS = 10
 #: a human, so the note is cut to a length one still reads as a URL.
 MAX_REDIRECT_LEN = 120
 
+#: Bot checks whose page says nothing a reader would recognise -- DataDome's
+#: is "Please enable JS and disable any ad blocker" -- so they are told by the
+#: script host they load instead. BLOCKED_PAGE covers the ones with words.
+_BOT_WALL = re.compile(
+    r"captcha-delivery\.com|challenges\.cloudflare\.com"
+    r"|/cdn-cgi/challenge-platform|_Incapsula_", re.I)
+
+#: Iframe hosts that never hold a listing; left out of the evidence so the
+#: widget that does (TSE Energy's Jarvi) is not buried under them.
+_TRACKER_HOSTS = ("googletagmanager.com", "doubleclick.net", "google.com")
+
 
 async def explain(board, exc: Optional[BaseException] = None) -> str:
     """Say why this board yielded nothing.
@@ -78,6 +90,15 @@ async def _cause(board, exc: Optional[BaseException]) -> str:
 
     if blocked:
         return f"bot-protected platform ({blocked}): not scraped"
+
+    # What the browser drew, not the served page: the served page is why the
+    # board was rendered, so judging it again says nothing new.
+    if board.render_ran:
+        if board.rendered_html is None:
+            return "render failed: the browser returned no page"
+
+        return await asyncio.to_thread(_after_render, board.rendered_html,
+                                       board.ats, board.url)
 
     html = await board.get_html()
 
@@ -117,8 +138,27 @@ async def _probe(board) -> str:
         return f"fetch failed: {type(err).__name__}"
 
 
-def _analyse(html: str, ats=None, base_url: str = "") -> str:
-    """Judge a page that was fetched fine but yielded no postings."""
+def _after_render(html: str, ats=None, base_url: str = "") -> str:
+    """Judge a page the browser drew that still yielded no postings."""
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    head = f"{title}\n{soup.get_text(' ', strip=True)[:HEAD_LENGTH]}"
+
+    if BLOCKED_PAGE.search(head) or _BOT_WALL.search(html):
+        return f"blocked after render ({title or urlparse(base_url).hostname})"
+
+    return "after render: " + _analyse(html, ats, base_url, rendered=True)
+
+
+def _analyse(html: str, ats=None, base_url: str = "",
+             rendered: bool = False) -> str:
+    """Judge a page that was fetched fine but yielded no postings.
+
+    Args:
+        rendered: The page is a browser's output. Its SPA markers survive
+            the render, so "likely javascript-rendered" would only repeat why
+            it was rendered; that verdict is skipped.
+    """
     if not html.strip():
         return "empty body"
 
@@ -148,7 +188,8 @@ def _analyse(html: str, ats=None, base_url: str = "") -> str:
     ):
         return (f"job-shaped links present but no strategy read them ({shape})")
 
-    if marker or (len(anchors) < FEW_ANCHORS and scripts >= MANY_SCRIPTS):
+    if not rendered and (
+            marker or (len(anchors) < FEW_ANCHORS and scripts >= MANY_SCRIPTS)):
         return f"likely javascript-rendered ({shape})"
 
     if not anchors:
@@ -187,7 +228,9 @@ async def evidence(board) -> str:
     Returns:
         "; "-joined facts, or "" when there is no page or nothing to say.
     """
-    html = board.html
+    # The rendered page when there is one: the near-misses that matter are
+    # the ones the browser drew.
+    html = board.rendered_html or board.html
 
     if not html:
         return ""
@@ -237,6 +280,23 @@ def _evidence(html: str, ats=None, base_url: str = "") -> str:
                      + (f" (+{len(misses) - MAX_NEAR_MISSES})"
                         if len(misses) > MAX_NEAR_MISSES else ""))
 
+    # A listing in an iframe never reaches scrape_links, rendered or not:
+    # page.content() is the top frame only. Naming the host says whose
+    # widget to read instead.
+    frames = []
+
+    for tag in soup.find_all("iframe", src=True):
+        host = urlparse(urljoin(base_url, tag["src"])).hostname or ""
+
+        if (host and host not in frames
+                and not host.endswith(_TRACKER_HOSTS)):
+            frames.append(host)
+
+    if frames:
+        facts.append(f"iframes: {', '.join(frames[:MAX_NEAR_MISSES])}"
+                     + (f" (+{len(frames) - MAX_NEAR_MISSES})"
+                        if len(frames) > MAX_NEAR_MISSES else ""))
+
     # Postings that are on the page but not as web links: no anchor strategy
     # will ever read these, so they need saying apart from a regex gap.
     mailto = sum(href.startswith("mailto:") and "subject=" in href
@@ -266,8 +326,5 @@ def _context(board) -> str:
             url = url[:MAX_REDIRECT_LEN] + "..."
 
         notes.append(f"redirected to {url}")
-
-    if board.render is not None:
-        notes.append("renderer ran and still found nothing")
 
     return f" ({'; '.join(notes)})" if notes else ""

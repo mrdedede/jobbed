@@ -42,8 +42,10 @@ class FakeBoard:
     """A Board reduced to the four attributes `explain` reads."""
 
     def __init__(self, html=None, session=None, final_url=None, render=None,
-                 ats=None):
+                 ats=None, rendered_html=None, render_ran=False):
         self.html = html
+        self.rendered_html = rendered_html
+        self.render_ran = render_ran
         self.session = session or FakeSession(FakeResponse())
         self.board_url = "https://example.test/careers"
         self.final_url = final_url or self.board_url
@@ -163,14 +165,61 @@ async def test_probe_falls_through_to_html_analysis():
     assert "no job-shaped links" in await diagnose.explain(board)
 
 
-async def test_redirect_and_renderer_are_appended_as_context():
+async def test_redirect_is_appended_as_context():
     board = FakeBoard(html=page(links(60)),
                       final_url="https://example.test/elsewhere",
                       render=lambda url: None)
     reason = await diagnose.explain(board)
 
     assert "redirected to https://example.test/elsewhere" in reason
-    assert "renderer ran" in reason
+    # A configured renderer is not a render: only the cause may say one ran.
+    assert "render" not in reason
+
+
+async def test_a_render_that_returned_no_page_says_so():
+    board = FakeBoard(html=page(links(60)), render_ran=True)
+
+    assert (await diagnose.explain(board)).startswith("render failed")
+
+
+async def test_a_rendered_page_is_judged_not_the_served_one():
+    """The served shell had 0 anchors; the browser drew 60, none a posting.
+    Its SPA marker survives the render, so it must not read as JS-built."""
+    board = FakeBoard(html=page('<div id="__next"></div>'), render_ran=True,
+                      rendered_html=page('<div id="__next">' + links(60)
+                                         + "</div>"))
+    reason = await diagnose.explain(board)
+
+    assert reason.startswith("after render: no job-shaped links (60 anchors")
+    assert "javascript-rendered" not in reason
+
+
+#: The body APEC served on 2026-10-27, trimmed: its only words are about
+#: JS and ad blockers, so it is known by the DataDome host it loads.
+DATADOME_PAGE = (
+    '<html lang="en"><head><title>apec.fr</title></head><body>'
+    '<p id="cmsg">Please enable JS and disable any ad blocker</p>'
+    '<script src="https://ct.captcha-delivery.com/c.js"></script>'
+    "</body></html>"
+)
+
+
+async def test_a_bot_check_after_render_is_named_blocked():
+    board = FakeBoard(render_ran=True, rendered_html=DATADOME_PAGE)
+
+    assert (await diagnose.explain(board)
+            == "blocked after render (apec.fr)")
+
+
+async def test_evidence_names_listing_iframes_but_not_trackers():
+    board = FakeBoard(render_ran=True, rendered_html=page(
+        '<iframe src="https://www.googletagmanager.com/ns.html"></iframe>'
+        '<iframe src="https://widget.jarvi.tech/offers?c=tse"></iframe>'))
+
+    facts = await diagnose.evidence(board)
+
+    assert "iframes: widget.jarvi.tech" in facts
+    assert "googletagmanager" not in facts
 
 
 async def test_long_redirect_url_is_truncated():

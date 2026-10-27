@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from api.deps import CurrentUser
 from api.security import hash_password, verify_password
 from api.schemas import (allowed_models, AnalysisOut, AnalysisStats, DayAverage, GradeBucket, Page, ApplicationOut, ApplicationUpdate, AnalyzeOut, AnalyzeRequest, CvCreate,
+                         AnalyzeStarted, AnalyzeStatus,
                          CandidateOut, CvOut, CvUpdate, JobOut, PasswordChange, TermIn,
                          TermOut, TermsIn, TermSuggestions, UserOut,
                          GenCvRequest, GenCvOut, GenCvStarted, GenCvStatus,
@@ -319,24 +320,26 @@ def _seconds_to_utc_midnight() -> int:
     return int((tomorrow - now).total_seconds())
 
 
-@router.post("/analyze", response_model=AnalyzeOut,
+@router.post("/analyze", response_model=AnalyzeStarted,
+             status_code=status.HTTP_202_ACCEPTED,
              responses={429: {"description": "Daily analysis cap reached"},
                         409: {"description": "No active CV, or a run is "
-                                             "already in flight"},
-                        502: {"description": "Every grading call failed"}},
-             description="Grades the picked postings, in order, up to the "
-                         "daily cap. Unknown, already graded and over-cap "
-                         "ones come back as `skipped`.")
-async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut:
+                                             "already in flight"}},
+             description="Starts grading the picked postings, in order, up "
+                         "to the daily cap. Poll GET /analyze/{analysis_id} "
+                         "for progress and the result. Unknown, already "
+                         "graded and over-cap ones come back as `skipped`.")
+async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeStarted:
     if user_id in _analysis_in_flight:
         raise HTTPException(status.HTTP_409_CONFLICT,
                             "analysis already running")
 
+    # No await between the check above and this add: atomic on the event loop.
     _analysis_in_flight.add(user_id)
-    started = time.perf_counter()
-    granted = 0
-
     try:
+        if await asyncio.to_thread(users.select_active_user_cv, user_id) is None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "no active CV")
+
         granted = await asyncio.to_thread(
             usage.reserve, user_id, usage.KIND_ANALYSIS, len(body.job_ids),
             DAILY_ANALYSIS_CAP)
@@ -346,47 +349,89 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeOut
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 f"daily limit of {DAILY_ANALYSIS_CAP} analyses reached",
                 headers={"Retry-After": str(_seconds_to_utc_midnight())})
-
-        stats = await run_analysis(
-            user_id, body.job_ids[:granted], model=body.model)
-    except NoActiveCv:
-        await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
-                                granted)
-        raise HTTPException(status.HTTP_409_CONFLICT, "no active CV")
-    except HTTPException:
-        raise
     except BaseException:
-        await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
-                                granted)
+        _analysis_in_flight.discard(user_id)
         raise
+
+    _prune_generations()
+    analysis_id = uuid4()
+    # ponytail: total counts granted ids, so a run with unknown or already
+    # graded ones ends below it; have run_analysis report its real count if
+    # that confuses anyone.
+    gen = _generations[analysis_id] = _Generation(user_id, total=granted)
+    # Held so the loop cannot garbage-collect the task mid-run.
+    gen.task = asyncio.create_task(
+        _run_analysis(gen, body.job_ids, granted, body.model))
+
+    return AnalyzeStarted(analysis_id=analysis_id)
+
+
+async def _run_analysis(gen: "_Generation", job_ids: List[UUID], granted: int,
+                        model: str) -> None:
+    """Grade, record the outcome on `gen`, refund every unit not stored."""
+    user_id = gen.user_id
+    started = time.perf_counter()
+    analysed = 0
+
+    def progress(_line: str) -> None:
+        gen.done += 1
+
+    try:
+        stats = await run_analysis(user_id, job_ids[:granted], model=model,
+                                   on_progress=progress)
+        analysed = stats["analysed"]
+        skipped = stats["skipped"] + len(job_ids) - granted
+
+        logger.info(
+            "analyze user=%s asked=%s granted=%s analysed=%s failed=%s "
+            "skipped=%s seconds=%.1f", user_id, len(job_ids), granted,
+            analysed, stats["failed"], skipped, time.perf_counter() - started)
+
+        if analysed == 0 and stats["failed"] > 0:
+            gen.status = "failed"
+            gen.error = {"status": status.HTTP_502_BAD_GATEWAY,
+                         "detail": "every grading call failed"}
+            return
+
+        rows = []
+
+        if stats["job_ids"]:
+            rows = await asyncio.to_thread(
+                db_analysis.select_analysis_page, user_id,
+                len(stats["job_ids"]), 0, stats["job_ids"])
+
+        gen.result = AnalyzeOut(
+            analysed=analysed, failed=stats["failed"], skipped=skipped,
+            results=[_analysis_out(r) for r in rows])
+        gen.status = "done"
+    except asyncio.CancelledError:
+        # Shutdown mid-run: give the units back before the loop goes away.
+        gen.status, gen.error = "failed", {"status": 503, "detail": "interrupted"}
+        raise
+    except Exception as exc:
+        code, detail = next((v for k, v in _KNOWN_FAILURES.items() if isinstance(exc, k)),
+                            (status.HTTP_500_INTERNAL_SERVER_ERROR, "analysis failed"))
+        if code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            logger.exception("analysis crashed")
+        gen.status, gen.error = "failed", {"status": code, "detail": detail}
     finally:
+        # Only stored verdicts count; failed gateway calls cost the user nothing.
+        try:
+            await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
+                                    granted - analysed)
+        except Exception:
+            logger.exception("analysis refund failed for %s", user_id)
+        gen.finished = time.monotonic()
         _analysis_in_flight.discard(user_id)
 
-    # Only stored verdicts count; failed gateway calls cost the user nothing.
-    await asyncio.to_thread(usage.refund, user_id, usage.KIND_ANALYSIS,
-                            granted - stats["analysed"])
-    skipped = stats["skipped"] + len(body.job_ids) - granted
 
-    logger.info(
-        "analyze user=%s asked=%s granted=%s analysed=%s failed=%s "
-        "skipped=%s seconds=%.1f", user_id, len(body.job_ids), granted,
-        stats["analysed"], stats["failed"], skipped,
-        time.perf_counter() - started)
+@router.get("/analyze/{analysis_id}", response_model=AnalyzeStatus,
+            responses=NOT_FOUND)
+def get_analysis_run(user_id: CurrentUser, analysis_id: UUID) -> AnalyzeStatus:
+    gen = _own_generation(user_id, analysis_id)
 
-    if stats["analysed"] == 0 and stats["failed"] > 0:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY,
-                            "every grading call failed")
-
-    rows = []
-
-    if stats["job_ids"]:
-        rows = await asyncio.to_thread(
-            db_analysis.select_analysis_page, user_id,
-            len(stats["job_ids"]), 0, stats["job_ids"])
-
-    return AnalyzeOut(
-        analysed=stats["analysed"], failed=stats["failed"], skipped=skipped,
-        results=[_analysis_out(r) for r in rows])
+    return AnalyzeStatus(status=gen.status, done=gen.done, total=gen.total,
+                         result=gen.result, error=gen.error)
 
 
 @router.get("/analyses", response_model=Page[AnalysisOut])
@@ -470,13 +515,15 @@ def get_job(user_id: CurrentUser, job_id: UUID) -> JobOut:
 class _Generation:
     user_id: UUID
     status: str = "running"
-    result: Optional[BaseModel] = None  # GenCvOut or LetterOut
+    result: Optional[BaseModel] = None  # GenCvOut, LetterOut or AnalyzeOut
     error: Optional[dict] = None
     finished: float = 0.0
+    done: int = 0  # analysis runs only: postings graded or failed so far
+    total: int = 0
     task: Optional[asyncio.Task] = field(default=None, repr=False)
 
 
-# Generations (CVs and cover letters) run in a background task; the client
+# Generations (CVs, cover letters, analysis runs) run in a background task; the client
 # polls this registry.
 # ponytail: process-local like _cv_in_flight (one API worker). A restart
 # mid-run makes the poll 404 -- the client treats that as "interrupted".

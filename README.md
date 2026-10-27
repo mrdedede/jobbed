@@ -37,7 +37,10 @@ career boards ──► nightly CronJobs ──► job_postings (shared, Postgre
 - `POST /v1/me/analyze` takes `{"job_ids": [...], "model": ...}` (1-50 ids
   picked from the candidates), sends each with your active CV to the LLM
   gateway, and stores a 0-100 grade plus a written analysis in `ai_analysis`.
-  Unknown, already graded and over-quota ids come back counted in `skipped`.
+  It answers `202 {"analysis_id"}` at once; poll `GET /v1/me/analyze/{analysis_id}`
+  for `status` (`running`/`done`/`failed`), progress (`done` of `total`) and,
+  when done, `result`. Unknown, already graded and over-quota ids come back
+  counted in `result.skipped`.
 - `GET /v1/me/analyses` lists your grades.
 - **Daily quota:** at most `DAILY_ANALYSIS_CAP` (default 10) postings graded per
   user per UTC day; past that the API answers `429` with `Retry-After`.
@@ -210,8 +213,9 @@ curl -s -X POST $API/v1/me/cvs       -H "$H" -H "$A" -d '{"content_md":"Backend 
 
 IDS=$(curl -s "$API/v1/me/analyses/candidates?window_days=1" -H "$A" \
   | jq -c '[.[:5][].job_id]')                             # pick the first five
-curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
-  -d "{\"job_ids\":$IDS,\"model\":\"haiku\"}"
+RUN=$(curl -s -X POST $API/v1/me/analyze -H "$H" -H "$A" \
+  -d "{\"job_ids\":$IDS,\"model\":\"haiku\"}" | jq -r .analysis_id)   # 202
+curl -s $API/v1/me/analyze/$RUN -H "$A"                 # poll until status != running
 curl -s "$API/v1/me/analyses?limit=20&min_grade=60" -H "$A"
 
 JOB=$(curl -s "$API/v1/me/analyses?limit=1" -H "$A" | jq -r '.[0].job_id')

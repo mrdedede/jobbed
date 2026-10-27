@@ -63,7 +63,11 @@ class Feed:
 FEEDS: Dict[ATSName, Feed] = {
     ATSName.GREENHOUSE: Feed(
         url="https://boards-api.greenhouse.io/v1/boards/{token}/jobs",
-        token=(r"[?&]for=([\w.-]+)", r"greenhouse\.io/(?:embed/)?([\w.-]+)"),
+        # A page that calls the API itself names the board after /v1/boards/;
+        # the generic form must skip that "v1", or the token comes back "v1"
+        # (together.ai, discord).
+        token=(r"[?&]for=([\w.-]+)", r"greenhouse\.io/v1/boards/([\w.-]+)",
+               r"greenhouse\.io/(?:embed/)?(?!v1\b)([\w.-]+)"),
         items="jobs",
         title="title",
         place="location",
@@ -86,7 +90,9 @@ FEEDS: Dict[ATSName, Feed] = {
     ),
     ATSName.RECRUITEE: Feed(
         url="https://{token}.recruitee.com/api/offers/",
-        token=(r"//([\w-]+)\.recruitee\.com",),
+        # careers-analytics is Recruitee's tracking script, on every custom
+        # domain board, and never a tenant.
+        token=(r"//(?!careers-analytics\.)([\w-]+)\.recruitee\.com",),
         items="offers",
         title="title",
         place="location",
@@ -113,7 +119,10 @@ FEEDS: Dict[ATSName, Feed] = {
             # oneclick-ui URLs put the tenant after /company/, not right
             # after the hostname -- must be tried before the generic form.
             r"smartrecruiters\.com/oneclick-ui/company/([\w.-]+)",
-            r"smartrecruiters\.com/([\w.-]+)",
+            r"smartrecruiters\.com/v1/companies/([\w.-]+)",
+            # job-widget is the embed's asset path (swissmarketplace), ni a
+            # short-link prefix (auchan) -- neither is a tenant.
+            r"smartrecruiters\.com/(?!(?:job-widget|ni|v1)\b)([\w.-]+)",
         ),
         items="content",
         title="name",

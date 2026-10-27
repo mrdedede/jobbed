@@ -607,11 +607,81 @@ async def test_a_feed_larger_than_the_page_cap_is_not_truncated():
     (ATSName.ASHBY, "https://jobs.ashbyhq.com/nabla?departmentId=8b", "nabla"),
     (ATSName.RECRUITEE, "https://aneo.recruitee.com", "aneo"),
     (ATSName.WORKABLE, "https://apply.workable.com/exotec/", "exotec"),
+    # Page bodies, not board URLs: the shapes the no-ATS feed fallback reads,
+    # each with the junk segment that used to be taken for the tenant.
+    (ATSName.GREENHOUSE,
+     'fetch("https://boards-api.greenhouse.io/v1/boards/togetherai/jobs")',
+     "togetherai"),
+    (ATSName.GREENHOUSE, 'src="https://api.greenhouse.io/v1"', None),
+    (ATSName.SMARTRECRUITERS,
+     "smartrecruiters.com/job-widget/1.6.10/script/smart_widget.js "
+     "jobs.smartrecruiters.com/smgswissmarketplacegroup/1b8f",
+     "smgswissmarketplacegroup"),
+    (ATSName.RECRUITEE,
+     "//careers-analytics.recruitee.com/t.js //pileje1.recruitee.com/o/dev",
+     "pileje1"),
 ])
 def test_token_regexes_match_real_board_urls(ats, url, expected):
     """The embed form is why `token` is a tuple: Python's alternation picks
     the leftmost position, so a single pattern captures "embed" instead."""
     assert _token(url, FEEDS[ats].token) == expected
+
+
+GREENHOUSE_EMBED = page(
+    '<iframe src="https://job-boards.greenhouse.io/embed/job_board?for=acme">'
+    "</iframe>"
+)
+
+
+async def test_undetected_board_reads_the_feed_its_page_embeds():
+    """betclic/algolia's shape: the embed carries the token, but too little
+    else for detect_ats to name the vendor, so the feed was never tried."""
+    made = board({
+        "https://acme.fr/jobs": GREENHOUSE_EMBED,
+        "https://boards-api.greenhouse.io/v1/boards/acme/jobs":
+            GREENHOUSE_BODY,
+    })
+
+    jobs = await made._feed()
+
+    assert [job.title for job in jobs] == ["Account Executive"]
+    assert made.ats == ATSName.GREENHOUSE
+
+
+async def test_feed_fallback_needs_the_vendor_host_on_the_page():
+    """`?for=` is Greenhouse's token shape, but on its own it is just a query
+    parameter -- no greenhouse.io on the page means no Greenhouse request."""
+    made = board({"https://acme.fr/jobs": page('<a href="/x?for=team">x</a>')})
+
+    assert await made._feed() == []
+    assert not any("greenhouse" in url for url in made.session.requested)
+    assert made.ats is None
+
+
+async def test_feed_fallback_moves_past_an_empty_vendor():
+    """A page can reference two vendors (flowdesk: Greenhouse and Workable);
+    one that yields nothing must not stop the next from being tried."""
+    made = board({
+        "https://acme.fr/jobs": page(
+            GREENHOUSE_EMBED + '<a href="https://jobs.lever.co/acme">x</a>'
+        ),
+        "https://api.lever.co/v0/postings/acme?mode=json": json.dumps([
+            {"text": "Data Engineer", "hostedUrl": "https://jobs.lever.co/acme/1",
+             "categories": {"location": "Paris"}},
+        ]),
+    })
+
+    jobs = await made._feed()
+
+    assert [job.title for job in jobs] == ["Data Engineer"]
+    assert made.ats == ATSName.LEVER
+
+
+async def test_feed_fallback_leaves_ats_unset_when_nothing_yields():
+    made = board({"https://acme.fr/jobs": GREENHOUSE_EMBED})
+
+    assert await made._feed() == []
+    assert made.ats is None
 
 
 def test_dig_tolerates_missing_keys_and_list_wrappers():

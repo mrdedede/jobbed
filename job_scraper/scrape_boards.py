@@ -91,12 +91,15 @@ async def scrape_one_board(entry: dict, client: httpx.AsyncClient,
     board = Board(company, url, session=client, render=render)
 
     try:
-        ats = await board.detect_ats()
+        await board.detect_ats()
         jobs = await board.scrape_board()
     except Exception as exc:
         return BoardResult(company, url, board, ats=None, jobs=None, error=exc)
 
-    return BoardResult(company, url, board, ats=ats, jobs=jobs, error=None)
+    # board.ats, not detect_ats()'s return: the feed fallback can name the
+    # vendor during scraping, and the output should say which one it was.
+    return BoardResult(company, url, board, ats=board.ats, jobs=jobs,
+                       error=None)
 
 
 def load_boards(input_file: Optional[Path] = None) -> List[dict]:

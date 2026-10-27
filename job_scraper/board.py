@@ -14,7 +14,7 @@ from dataclasses import replace
 from typing import Dict, List, Optional
 from urllib.parse import urldefrag
 
-from job_scraper.detector import ATSDetector, ATSName, Renderer
+from job_scraper.detector import ATS_REGISTRY, ATSDetector, ATSName, Renderer
 from job_scraper.fetching import fetch
 from job_scraper.models import Job
 from job_scraper.strategies import (
@@ -182,6 +182,9 @@ class Board:
         Returns:
             List of Job results, or empty list if no feed.
         """
+        if self.ats is None:
+            return await self._feed_from_page()
+
         scraper = VENDOR_SCRAPERS.get(self.ats)
 
         if scraper is not None:
@@ -190,6 +193,41 @@ class Board:
         feed = FEEDS.get(self.ats)
 
         return await scrape_feed(self, feed) if feed else []
+
+    async def _feed_from_page(self) -> List[Job]:
+        """Try every feed whose vendor the page references, first hit wins.
+
+        A careers page that embeds its ATS as an iframe or widget (betclic's
+        Breezy iframe, algolia's Greenhouse board) carries the tenant token
+        but too little else for detect_ats to name the vendor -- and without
+        a name the feed was never tried, so ~390 postings across a dozen
+        boards came back empty. scrape_feed already reads the token off the
+        page; this only supplies the vendor.
+
+        Returns:
+            Jobs from the first feed that produced any, with self.ats set to
+            its vendor so the output names where they came from. Empty and
+            self.ats left None if none did.
+        """
+        html = await self.get_html() or ""
+
+        for vendor in ATS_REGISTRY:
+            feed = FEEDS.get(vendor.name)
+
+            # The host gate is what keeps this cheap and safe: Greenhouse's
+            # `[?&]for=` token pattern alone would send any page with a
+            # ?for= link off to the Greenhouse API.
+            if feed is None or not any(host in html for host in vendor.hosts):
+                continue
+
+            jobs = await scrape_feed(self, feed)
+
+            if jobs:
+                self.ats = vendor.name
+
+                return jobs
+
+        return []
 
     async def _wordpress(self) -> List[Job]:
         """Try WordPress REST API scraper.

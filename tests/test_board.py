@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from job_scraper.board import Board, dedupe as _dedupe
+from job_scraper.board import Board, dedupe as _dedupe, linked_ats_url
 from job_scraper.fetching import (
     MAX_FETCH_BYTES,
     dig as _dig,
@@ -682,6 +682,95 @@ async def test_feed_fallback_leaves_ats_unset_when_nothing_yields():
 
     assert await made._feed() == []
     assert made.ats is None
+
+
+async def test_recruitee_custom_domain_reads_the_api_on_its_own_host():
+    """careers.maia-space.com: only the analytics script names Recruitee, so
+    there is no tenant token -- but the board's own host serves the API."""
+    made = board({
+        "https://careers.acme.fr/jobs": page(
+            '<script src="https://careers-analytics.recruitee.com/t.js">'
+            "</script>"
+        ),
+        "https://careers.acme.fr/api/offers/": json.dumps({"offers": [
+            {"title": "Data Engineer", "location": "Paris",
+             "careers_url": "https://careers.acme.fr/o/data-engineer"},
+        ]}),
+    }, url="https://careers.acme.fr/jobs")
+
+    jobs = await made._feed()
+
+    assert [job.url for job in jobs] == [
+        "https://careers.acme.fr/o/data-engineer"]
+    assert made.ats == ATSName.RECRUITEE
+
+
+# ======================================================================
+# Linked ATS
+# ======================================================================
+
+
+@pytest.mark.parametrize("html,expected", [
+    # Concentrix: the only Workday URL is in an inline JSON blob.
+    ('<script>{"apply_url":"https://cnx.wd1.myworkdayjobs.com/ext/job/'
+     'x/dev_R1/apply"}</script>',
+     "https://cnx.wd1.myworkdayjobs.com/ext/job/x/dev_R1/apply"),
+    # An asset on a vendor host is skipped for the board link after it.
+    ('<script src="https://careers-analytics.recruitee.com/t.js"></script>'
+     '<a href="https://acme.recruitee.com/o/dev">x</a>',
+     "https://acme.recruitee.com/o/dev"),
+    # eXalt: extensionless CDN images on the vendor's domain come first.
+    ('<img src="https://cdn-images.welcometothejungle.com/UTX/w:2000/q:85">'
+     '<a href="https://www.welcometothejungle.com/fr/companies/exalt">x</a>',
+     "https://www.welcometothejungle.com/fr/companies/exalt"),
+    # "Powered by" homepage links name no board.
+    ('<a href="https://www.teamtailor.com/?utm_source=career-site">x</a>',
+     None),
+    ('<a href="https://www.linkedin.com/company/acme">x</a>', None),
+])
+def test_linked_ats_url(html, expected):
+    assert linked_ats_url(html, "https://acme.fr/jobs") == expected
+
+
+def test_linked_ats_url_skips_the_vendor_already_hosting_the_board():
+    html = '<a href="https://app.teamtailor.com/companies/x/dashboard">x</a>'
+
+    assert linked_ats_url(html, "https://acme.teamtailor.com/jobs") is None
+
+
+LEVER_BODY = json.dumps([
+    {"text": "Data Engineer", "hostedUrl": "https://jobs.lever.co/acme/1",
+     "categories": {"location": "Paris"}},
+])
+
+
+async def test_linked_ats_reads_the_linked_vendor_board():
+    made = board({
+        "https://acme.fr/jobs": page(
+            '<a href="https://jobs.lever.co/acme/123">Apply</a>'),
+        "https://jobs.lever.co/acme/123": page("posting"),
+        "https://api.lever.co/v0/postings/acme?mode=json": LEVER_BODY,
+    })
+
+    jobs = await made._linked_ats()
+
+    assert [job.title for job in jobs] == ["Data Engineer"]
+    assert made.ats == ATSName.LEVER
+
+
+async def test_linked_ats_never_runs_the_vendor_sitemap():
+    """broadpeak's werecruit link came back as 11,860 "jobs" when the child
+    ran the full chain: the sitemap on a vendor host is the vendor's whole
+    site. Only the vendor path may run on the linked board."""
+    made = board({
+        "https://acme.fr/jobs": page(
+            '<a href="https://careers.werecruit.io/en/acme/5e92f1">Jobs</a>'),
+        "https://careers.werecruit.io/en/acme/5e92f1": page("no offers"),
+    })
+
+    assert await made.scrape_board() == []
+    assert not any("werecruit" in url and "sitemap" in url
+                   for url in made.session.requested)
 
 
 def test_dig_tolerates_missing_keys_and_list_wrappers():

@@ -10,9 +10,10 @@ wrong strategy.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Dict, List, Optional
-from urllib.parse import urldefrag
+from urllib.parse import urldefrag, urlparse
 
 from job_scraper.detector import ATS_REGISTRY, ATSDetector, ATSName, Renderer
 from job_scraper.fetching import fetch
@@ -52,6 +53,48 @@ def dedupe(jobs: List[Job]) -> List[Job]:
 #: A plain None-check cannot: None is the legitimate cached value for a dead
 #: board, and would send every strategy after the first back out to re-fetch.
 _UNFETCHED = object()
+
+#: Absolute URLs anywhere in a page, not just in anchors and iframes:
+#: Concentrix's Workday links exist only as "apply_url" in a script blob.
+_URL_RE = re.compile(r"https?://[^\s\"'<>\\)]+")
+
+#: Vendor-hosted files that are not boards: the Recruitee analytics script,
+#: the SmartRecruiters widget bundle, logos.
+_ASSET_RE = re.compile(
+    r"\.(?:js|css|png|jpe?g|svg|gif|webp|pdf|woff2?)(?:$|\?)", re.I
+)
+
+#: Vendor CDN hosts, whose files often carry no extension at all: eXalt's
+#: page leads with cdn-images.welcometothejungle.com/<hash>/... images.
+_ASSET_HOST_RE = re.compile(r"^(?:cdn|static|assets?|images?|img)[\w-]*\.",
+                            re.I)
+
+
+def linked_ats_url(html: str, base_url: str) -> Optional[str]:
+    """Find the first URL in a page that leads to another vendor's board.
+
+    Args:
+        html: The board page.
+        base_url: Where the page was served from.
+
+    Returns:
+        The first URL on a vendor-owned host that names a path, is not an
+        asset, and is not the vendor already hosting this board (teamtailor
+        boards link app.teamtailor.com dashboards). None if there is none.
+    """
+    own = ats_from_host(base_url)
+
+    for url in _URL_RE.findall(html):
+        vendor = ats_from_host(url)
+        parts = urlparse(url)
+
+        # An empty path is a "powered by" homepage link, never a board.
+        if (vendor and vendor != own and parts.path.strip("/")
+                and not _ASSET_RE.search(url)
+                and not _ASSET_HOST_RE.match(parts.hostname or "")):
+            return url
+
+    return None
 
 
 class Board:
@@ -164,7 +207,8 @@ class Board:
             Empty if every strategy came back empty.
         """
         for strategy in (self._feed, self._wordpress, self._sitemap,
-                         self._links, self._inline_json, self._rendered):
+                         self._links, self._inline_json, self._linked_ats,
+                         self._rendered):
             jobs = await strategy()
 
             if jobs:
@@ -228,6 +272,38 @@ class Board:
                 return jobs
 
         return []
+
+    async def _linked_ats(self) -> List[Job]:
+        """The ATS the page links or embeds, read through its vendor path.
+
+        A careers page that hands its listing to an ATS -- an iframe (sea
+        tpi's nos-recrutements), a link (52entertainment's WTTJ page), or only
+        an `apply_url` in inline JSON (Concentrix's Workday) -- names the
+        board the vendor scrapers need, but they read only board.url. One
+        hop, so a board costs at most one extra detection.
+
+        Only the child's _feed runs, never its full chain: on a vendor host
+        the sitemap is the vendor's whole site, and broadpeak's werecruit
+        link once came back as 11,860 "jobs" that way. That also makes
+        recursion impossible -- _feed never reaches this method.
+
+        Returns:
+            Jobs from the linked vendor, with self.ats set to it. Empty if the
+            page links no vendor or the vendor path found nothing.
+        """
+        url = linked_ats_url(await self.get_html() or "", self.url)
+
+        if url is None:
+            return []
+
+        child = Board(self.company_name, url, session=self.session)
+        await child.detect_ats()
+        jobs = await child._feed()
+
+        if jobs:
+            self.ats = child.ats
+
+        return jobs
 
     async def _wordpress(self) -> List[Job]:
         """Try WordPress REST API scraper.

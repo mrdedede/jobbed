@@ -14,15 +14,18 @@ failed costs a second request.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
+from job_scraper.detector import ATS_REGISTRY
 from job_scraper.fetching import decode_response, is_textual, request
+from job_scraper.strategies.feed import FEEDS, _token
 from job_scraper.strategies.links import JOB_PATH, _same_page
-from job_scraper.urls import job_href_matches
+from job_scraper.urls import _JOB_WORD, job_href_matches
 
 #: SPA bootstraps: the root element or state blob a client-side listing hangs
 #: itself off. Their presence is the strongest single signal that the postings
@@ -142,6 +145,104 @@ def _analyse(html: str, ats=None, base_url: str = "") -> str:
         return f"no links on the page ({shape})"
 
     return f"no job-shaped links ({shape})"
+
+
+#: A job word anywhere in the path, unanchored: wide on purpose, since its job
+#: is to surface the links JOB_URL_RE turned down, not to judge them.
+_JOB_WORD_ANYWHERE = re.compile(_JOB_WORD, re.I)
+
+#: Pages that say outright they have nothing open -- an empty board, not a bug.
+_NO_OPENINGS = re.compile(
+    r"aucune offre|no (?:open )?(?:positions|openings|jobs) (?:available|open)|"
+    r"there are (?:currently )?no (?:open )?(?:positions|jobs|openings)",
+    re.I,
+)
+
+#: Near-miss paths listed per row; enough to see the shape, short enough to read.
+MAX_NEAR_MISSES = 3
+
+
+async def evidence(board) -> str:
+    """The facts behind a miss, for whoever triages no_jobs.csv.
+
+    `explain` names one cause; this lists what the page holds that a fix
+    would start from: which ATS it references (the listing usually lives
+    there), the tenant token each feed would read off it (a wrong one --
+    Greenhouse's "v1" -- shows up right here), and which job-looking links
+    JOB_URL_RE turned down. Reads only the cached page: never a request.
+
+    Args:
+        board: The Board that came back empty, already scraped.
+
+    Returns:
+        "; "-joined facts, or "" when there is no page or nothing to say.
+    """
+    html = board.html
+
+    if not html:
+        return ""
+
+    return await asyncio.to_thread(_evidence, html, board.ats, board.url)
+
+
+def _evidence(html: str, ats=None, base_url: str = "") -> str:
+    """Synchronous body of `evidence`, run off the event loop."""
+    soup = BeautifulSoup(html, "html.parser")
+    facts = []
+
+    # Iframes and scripts count too: a widget embed is the commonest way a
+    # careers page hands its listing to an ATS without linking to it.
+    refs = " ".join(
+        tag.get(attr) or ""
+        for tag, attr in [(a, "href") for a in soup.find_all("a", href=True)]
+        + [(t, "src") for t in soup.find_all(["iframe", "script"], src=True)]
+    ).lower()
+    vendors = [str(vendor.name) for vendor in ATS_REGISTRY
+               if any(host in refs for host in vendor.hosts)]
+
+    if vendors:
+        facts.append(f"ats refs: {', '.join(vendors)}")
+
+    tokens = [f"{name}={token}" for name, feed in FEEDS.items()
+              if (token := _token(html, feed.token))]
+
+    if tokens:
+        facts.append(f"feed tokens: {', '.join(tokens)}")
+
+    hrefs = [tag["href"] for tag in soup.find_all("a", href=True)]
+    misses = []
+
+    for href in hrefs:
+        url = urljoin(base_url, href)
+        path = urlparse(url).path
+
+        if (url.startswith("http") and _JOB_WORD_ANYWHERE.search(path)
+                and not _same_page(url, base_url)
+                and not job_href_matches(url, ats, JOB_PATH)
+                and path not in misses):
+            misses.append(path)
+
+    if misses:
+        facts.append(f"near-miss paths: {', '.join(misses[:MAX_NEAR_MISSES])}"
+                     + (f" (+{len(misses) - MAX_NEAR_MISSES})"
+                        if len(misses) > MAX_NEAR_MISSES else ""))
+
+    # Postings that are on the page but not as web links: no anchor strategy
+    # will ever read these, so they need saying apart from a regex gap.
+    mailto = sum(href.startswith("mailto:") and "subject=" in href
+                 for href in hrefs)
+    pdfs = sum(href.lower().endswith(".pdf") for href in hrefs)
+
+    if mailto:
+        facts.append(f"{mailto} mailto postings")
+
+    if pdfs:
+        facts.append(f"{pdfs} pdf links")
+
+    if _NO_OPENINGS.search(soup.get_text(" ")):
+        facts.append("page says no openings")
+
+    return "; ".join(facts)
 
 
 def _context(board) -> str:

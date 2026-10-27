@@ -33,7 +33,7 @@ from job_scraper.fetching import new_client
 from job_scraper.models import Job
 
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
-MISS_FIELDNAMES = ["company", "url", "reason"]
+MISS_FIELDNAMES = ["company", "url", "reason", "ats", "evidence"]
 
 #: Boards in flight at once. A board does more work than a single post fetch
 #: (ATS detection + multi-strategy scrape), but each is mostly waiting on the
@@ -242,12 +242,16 @@ async def scrape_boards(input_file: Optional[Path] = None,
                     """
                     try:
                         reason = await diagnose.explain(board, exc)
+                        facts = await diagnose.evidence(board)
                     except Exception as err:
                         reason = (f"diagnosis failed: "
                                   f"{type(err).__name__}: {err}")
+                        facts = ""
 
                     misses.writerow({"company": company, "url": url,
-                                     "reason": reason})
+                                     "reason": reason,
+                                     "ats": getattr(board, "ats", "") or "",
+                                     "evidence": facts})
 
                 # Awaited in input order, like pool.map was: every write below
                 # -- writer, misses, on_board -- stays in one task and in the

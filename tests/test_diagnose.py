@@ -162,3 +162,26 @@ async def test_long_redirect_url_is_truncated():
     note = reason.split("redirected to ", 1)[1].rstrip(")")
     assert len(note) == diagnose.MAX_REDIRECT_LEN + len("...")
     assert note.endswith("...")
+
+
+async def test_evidence_names_ats_token_near_misses_and_no_openings():
+    """The shapes no_jobs triage kept needing by hand: an ATS embed with a
+    readable token, a posting URL JOB_URL_RE turns down, a mailto posting."""
+    board = FakeBoard(html=page(
+        '<iframe src="https://boards.greenhouse.io/embed/job_board?for=acme">'
+        "</iframe>"
+        '<a href="https://www.jobposting.pro/emploi-2731999-999">Dev</a>'
+        '<a href="mailto:rh@acme.test?subject=Dev (H/F)">Dev</a>'
+        "<p>Aucune offre pour le moment</p>"
+    ))
+    facts = await diagnose.evidence(board)
+
+    assert "ats refs: greenhouse" in facts
+    assert "greenhouse=acme" in facts
+    assert "/emploi-2731999-999" in facts
+    assert "1 mailto postings" in facts
+    assert "no openings" in facts
+
+
+async def test_evidence_is_empty_without_a_page():
+    assert await diagnose.evidence(FakeBoard()) == ""

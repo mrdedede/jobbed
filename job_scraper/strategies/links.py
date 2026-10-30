@@ -102,6 +102,12 @@ CHROME_ROLES = frozenset({"navigation", "banner", "contentinfo", "search"})
 #: other 30-a-page boards on one platform) lost every job.
 SECTIONING = ("article", "aside", "main", "nav", "section")
 
+#: The same, for <footer>, without <main>: hellowork puts its site footer
+#: inside <main>, and its "Offres d'emploi par métier" links read as postings
+#: (Soors, sogescot, synchrone, Oct 30). Its offer cards keep <main> for
+#: <header>: each one is a <header> inside <main>.
+CARD_FOOTER = ("article", "aside", "nav", "section")
+
 
 def _in_chrome(tag) -> bool:
     """Report whether an anchor sits in the site's menus, banner or footer.
@@ -118,8 +124,12 @@ def _in_chrome(tag) -> bool:
         if parent.name == "nav" or parent.get("role") in CHROME_ROLES:
             return True
 
-        if (parent.name in ("header", "footer")
+        if (parent.name == "header"
                 and parent.find_parent(SECTIONING) is None):
+            return True
+
+        if (parent.name == "footer"
+                and parent.find_parent(CARD_FOOTER) is None):
             return True
 
     return False

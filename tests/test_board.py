@@ -1265,6 +1265,21 @@ async def test_links_keeps_postings_in_a_card_s_own_header():
                                            "Scrum Master"]
 
 
+async def test_links_skips_a_site_footer_inside_main():
+    # hellowork: its footer sits in <main>, its offer cards are a <header>
+    # in <main>. Soors, sogescot and synchrone filed the footer as jobs.
+    listing = page(
+        "<main><div><header><a href='/fr-fr/emplois/82121281.html'>"
+        "Data Engineer H/F</a></header></div>"
+        "<footer><a href='/fr-fr/emploi/index-categorie.html'>"
+        "Offres d'emploi par métier</a></footer></main>"
+    )
+
+    jobs = await scrape_links(board({"https://acme.fr/jobs": listing}))
+
+    assert [job.title for job in jobs] == ["Data Engineer H/F"]
+
+
 #: URL shapes taken from real boards in the fixture corpus. Reproduced inline
 #: because the HTML corpus itself is gitignored -- only feeds/ is committed.
 AVATURE_PAGE = page(

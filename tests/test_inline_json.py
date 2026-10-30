@@ -94,11 +94,34 @@ async def test_no_html_returns_nothing():
     assert await scrape_inline_json(made) == []
 
 
+async def test_menus_and_logos_are_not_postings():
+    """Apple's globalNavData and join.com's logo objects: a title/url pair,
+    nothing a posting has. ~100 junk rows on Oct 30."""
+    html = """<script>{"globalNavData": {"items": [
+      {"id": "mac", "name": "mac", "url": "/mac/", "ariaLabel": "Mac"}
+    ]}, "logo": {"name": "Acme logo",
+                 "url": "https://cdn.join.com/x/acme-logo-s.png"}}</script>"""
+
+    assert await scrape_inline_json(board(html)) == []
+
+
+async def test_a_posting_field_keeps_a_record_with_a_plain_url():
+    """eiffage: the job word is in the hostname only, the record has a city."""
+    html = """<script>var results = {"hits": [
+      {"title": "Technicien F/H", "url": "/technicien-fh-40-jr2026-5602",
+       "city": "Lyon"}
+    ]};</script>"""
+
+    jobs = await scrape_inline_json(board(html))
+
+    assert [job.title for job in jobs] == ["Technicien F/H"]
+
+
 async def test_a_record_missing_either_key_is_skipped():
     html = """<script>var listing = [
       {"title": "No URL Here"},
       {"url": "/jobs/no-title"},
-      {"title": "Complete", "url": "/jobs/complete"}
+      {"title": "Complete", "url": "/jobs/complete-posting"}
     ];</script>"""
 
     jobs = await scrape_inline_json(board(html))

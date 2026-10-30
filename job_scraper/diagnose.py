@@ -206,7 +206,7 @@ _JOB_WORD_ANYWHERE = re.compile(_JOB_WORD, re.I)
 
 #: Pages that say outright they have nothing open -- an empty board, not a bug.
 _NO_OPENINGS = re.compile(
-    r"aucune offre|no (?:open )?(?:positions|openings|jobs) (?:available|open)|"
+    r"aucune offre|pas d.offres?|no (?:open )?(?:positions|openings|jobs) (?:available|open)|"
     r"there are (?:currently )?no (?:open )?(?:positions|jobs|openings)",
     re.I,
 )

@@ -265,5 +265,12 @@ async def test_evidence_names_ats_token_near_misses_and_no_openings():
     assert "no openings" in facts
 
 
+async def test_evidence_reads_hellowork_s_no_openings_wording():
+    board = FakeBoard(html=page(
+        "<p>Nous n'avons pas d'offres d'emploi chez Soors en ce moment</p>"))
+
+    assert "no openings" in await diagnose.evidence(board)
+
+
 async def test_evidence_is_empty_without_a_page():
     assert await diagnose.evidence(FakeBoard()) == ""

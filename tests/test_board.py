@@ -1547,6 +1547,49 @@ async def test_a_failed_render_yields_nothing_rather_than_raising():
     assert made.render_ran is True and made.rendered_html is None
 
 
+EMBED_URL = "https://hr.example/search/index"
+EMBED_PAGE = page(
+    "<a href='/6483/1/data-engineer'>Data engineer</a>"
+    "<a href='https://hr.example/jobs/6482-dev-senior'>Dev senior</a>"
+)
+
+
+async def test_a_listing_iframe_is_scraped_as_a_board_of_its_own():
+    """Région Hauts-de-France's careers page holds only a Gestmax iframe;
+    the postings live in the frame's own document."""
+    made = board({
+        "https://acme.fr/jobs": page(f"<iframe src='{EMBED_URL}'></iframe>"),
+        EMBED_URL: EMBED_PAGE,
+    })
+
+    jobs = await made.scrape_board()
+
+    assert [job.title for job in jobs] == ["Dev senior"]
+    assert all(job.via == "links" for job in jobs)
+    # On a vendor host the sitemap is the vendor's whole site.
+    assert not any(url.startswith("https://hr.example/sitemap")
+                   for url in made.session.requested)
+
+
+async def test_a_video_iframe_is_never_followed():
+    youtube = "https://www.youtube.com/embed/abc"
+    made = board({"https://acme.fr/jobs": page(
+        f"<iframe src='{youtube}'></iframe>")})
+
+    assert await made.scrape_board() == []
+    assert youtube not in made.session.requested
+
+
+async def test_an_iframe_that_only_exists_after_render_is_followed():
+    """Lille Métropole's Gestmax frame is injected by script."""
+    made = board(
+        {"https://acme.fr/jobs": SHELL_PAGE, EMBED_URL: EMBED_PAGE},
+        render=FakeRenderer(page(f"<iframe src='{EMBED_URL}'></iframe>")),
+    )
+
+    assert [job.title for job in await made.scrape_board()] == ["Dev senior"]
+
+
 async def test_the_rendered_page_is_kept_when_it_holds_no_postings():
     drawn = page("<div id='root'><a href='/about'>About</a></div>")
     made = board({"https://acme.fr/jobs": SHELL_PAGE},

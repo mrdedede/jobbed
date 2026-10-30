@@ -214,12 +214,24 @@ async def test_a_bot_check_after_render_is_named_blocked():
 async def test_evidence_names_listing_iframes_but_not_trackers():
     board = FakeBoard(render_ran=True, rendered_html=page(
         '<iframe src="https://www.googletagmanager.com/ns.html"></iframe>'
-        '<iframe src="https://widget.jarvi.tech/offers?c=tse"></iframe>'))
+        '<iframe src="https://www.youtube.com/embed/x"></iframe>'
+        '<iframe src="https://lillemetropole.gestmax.fr"></iframe>'))
 
     facts = await diagnose.evidence(board)
 
-    assert "iframes: widget.jarvi.tech" in facts
-    assert "googletagmanager" not in facts
+    assert "iframes: lillemetropole.gestmax.fr" in facts
+    assert "googletagmanager" not in facts and "youtube" not in facts
+
+
+async def test_an_ordinary_page_carrying_a_cloudflare_script_is_not_blocked():
+    """Cloudflare injects /cdn-cgi/challenge-platform into live pages too;
+    abd partners' listing read as blocked over it. A wall has no links."""
+    board = FakeBoard(render_ran=True, rendered_html=page(
+        links(60), head='<script src="/cdn-cgi/challenge-platform/x.js">'
+        '</script><title>Captcha-free careers</title>'))
+
+    assert (await diagnose.explain(board)).startswith(
+        "after render: no job-shaped links")
 
 
 async def test_long_redirect_url_is_truncated():

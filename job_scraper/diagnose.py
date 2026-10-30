@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from job_scraper.board import refuses_bots
+from job_scraper.board import listing_iframes, refuses_bots
 from job_scraper.detector import ATS_REGISTRY
 from job_scraper.fetching import decode_response, is_textual, request
 from job_scraper.scrape_postings import BLOCKED_PAGE, HEAD_LENGTH
@@ -57,13 +57,10 @@ MAX_REDIRECT_LEN = 120
 #: Bot checks whose page says nothing a reader would recognise -- DataDome's
 #: is "Please enable JS and disable any ad blocker" -- so they are told by the
 #: script host they load instead. BLOCKED_PAGE covers the ones with words.
+#: Not /cdn-cgi/challenge-platform: Cloudflare injects it into ordinary pages
+#: too (abd partners' live listing carries it).
 _BOT_WALL = re.compile(
-    r"captcha-delivery\.com|challenges\.cloudflare\.com"
-    r"|/cdn-cgi/challenge-platform|_Incapsula_", re.I)
-
-#: Iframe hosts that never hold a listing; left out of the evidence so the
-#: widget that does (TSE Energy's Jarvi) is not buried under them.
-_TRACKER_HOSTS = ("googletagmanager.com", "doubleclick.net", "google.com")
+    r"captcha-delivery\.com|challenges\.cloudflare\.com|_Incapsula_", re.I)
 
 
 async def explain(board, exc: Optional[BaseException] = None) -> str:
@@ -144,7 +141,12 @@ def _after_render(html: str, ats=None, base_url: str = "") -> str:
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     head = f"{title}\n{soup.get_text(' ', strip=True)[:HEAD_LENGTH]}"
 
-    if BLOCKED_PAGE.search(head) or _BOT_WALL.search(html):
+    # A challenge page is nearly empty. Without the anchor floor a real page
+    # with a Turnstile widget or a reCAPTCHA notice read as blocked
+    # (Wealthcome, abd partners and Suez, Oct 29-30).
+    walled = BLOCKED_PAGE.search(head) or _BOT_WALL.search(html)
+
+    if walled and len(soup.find_all("a", href=True)) < FEW_ANCHORS:
         return f"blocked after render ({title or urlparse(base_url).hostname})"
 
     return "after render: " + _analyse(html, ats, base_url, rendered=True)
@@ -285,11 +287,10 @@ def _evidence(html: str, ats=None, base_url: str = "") -> str:
     # widget to read instead.
     frames = []
 
-    for tag in soup.find_all("iframe", src=True):
-        host = urlparse(urljoin(base_url, tag["src"])).hostname or ""
+    for url in listing_iframes(html, base_url):
+        host = urlparse(url).hostname
 
-        if (host and host not in frames
-                and not host.endswith(_TRACKER_HOSTS)):
+        if host not in frames:
             frames.append(host)
 
     if frames:

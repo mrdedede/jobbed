@@ -13,7 +13,9 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 from typing import Dict, List, Optional
-from urllib.parse import urldefrag, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
+
+from bs4 import BeautifulSoup
 
 from job_scraper.detector import ATS_REGISTRY, ATSDetector, ATSName, Renderer
 from job_scraper.fetching import fetch
@@ -112,6 +114,51 @@ def linked_ats_url(html: str, base_url: str) -> Optional[str]:
             return url
 
     return None
+
+
+#: Iframe hosts that never hold a listing: video players, consent banners,
+#: trackers, share widgets, captchas. Substrings, so the numbered HubSpot
+#: hosts (143801506.hs-sites-eu1.com) match too.
+IFRAME_NOISE = (
+    "googletagmanager.com", "doubleclick.net", "google.com", "recaptcha.net",
+    "youtube.com", "youtube-nocookie.com", "vimeo.com", "cookiebot.com",
+    "linkedin.com", "embedly.com", "addtoany.com", "stripe.com",
+    "captcha-delivery.com", "company-target.com", "tree-nation.com",
+    "hs-sites",
+)
+
+#: Listing iframes followed per board. Each costs a detection and a fetch.
+MAX_IFRAMES = 3
+
+
+def listing_iframes(html: str, base_url: str) -> List[str]:
+    """The iframes on a page that could hold its job listing.
+
+    A careers page that embeds its listing (Région Hauts-de-France's Gestmax
+    search, selego's jobego widget) shows none of it to scrape_links: the
+    postings live in the frame's own document, rendered or not.
+
+    Args:
+        html: The page.
+        base_url: Where the page was served from.
+
+    Returns:
+        Absolute iframe URLs, in page order and deduplicated, leaving out
+        IFRAME_NOISE hosts.
+    """
+    found: List[str] = []
+
+    for tag in BeautifulSoup(html, "html.parser").find_all("iframe"):
+        src = (tag.get("src") or tag.get("data-src") or "").strip()
+        url = urljoin(base_url, src)
+        host = urlparse(url).hostname or ""
+
+        if (url.startswith("http") and host
+                and not any(noise in host for noise in IFRAME_NOISE)
+                and url not in found):
+            found.append(url)
+
+    return found
 
 
 class Board:
@@ -236,7 +283,7 @@ class Board:
 
         for strategy in (self._feed, self._wordpress, self._sitemap,
                          self._links, self._inline_json, self._linked_ats,
-                         self._rendered):
+                         self._iframes, self._rendered):
             jobs = await strategy()
 
             if jobs:
@@ -333,6 +380,44 @@ class Board:
 
         return jobs
 
+    async def _iframes(self) -> List[Job]:
+        """The listing a careers page embeds as an iframe, read as a board.
+
+        Returns:
+            Jobs from the first listing iframe that gave any. Empty if the
+            page embeds none.
+        """
+        return await self._iframe_jobs(await self.get_html() or "")
+
+    async def _iframe_jobs(self, html: str) -> List[Job]:
+        """Scrape each listing iframe in `html` as its own board.
+
+        Only the child's feed, anchors and inline JSON run: not its sitemap
+        or WordPress, which on a vendor host are the vendor's whole site --
+        the trap _linked_ats documents. The child has no renderer and never
+        reaches this method, so nothing recurses.
+
+        Args:
+            html: The page to read iframes from (served or rendered).
+
+        Returns:
+            Jobs from the first iframe that gave any, with self.ats set to
+            that child's. Empty if none did.
+        """
+        for url in listing_iframes(html, self.url)[:MAX_IFRAMES]:
+            child = Board(self.company_name, url, session=self.session)
+            await child.detect_ats()
+
+            for strategy in (child._feed, child._links, child._inline_json):
+                jobs = await strategy()
+
+                if jobs:
+                    self.ats = child.ats
+
+                    return jobs
+
+        return []
+
     async def _wordpress(self) -> List[Job]:
         """Try WordPress REST API scraper.
 
@@ -397,7 +482,12 @@ class Board:
         # `links` would claim these were scraped off the served page, which is
         # the one thing `via` exists to prevent -- a board that only works
         # under a browser has to stay visibly distinct from one that does not.
-        return [
+        jobs = [
             replace(job, via="rendered")
             for job in await scrape_links(self, html=html)
         ]
+
+        # Some embeds exist only once scripts run (Lille Métropole's Gestmax
+        # frame). The frame itself is fetched plainly, so the child's `via`
+        # is the truthful one.
+        return jobs or await self._iframe_jobs(html)

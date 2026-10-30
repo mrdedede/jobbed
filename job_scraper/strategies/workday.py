@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from job_scraper.board import Board
 
 WORKDAY_PAGE = 20
-WORKDAY_MAX_PAGES = 50
+WORKDAY_MAX_PAGES = 100
 
 
 async def scrape_workday(board: "Board") -> List[Job]:

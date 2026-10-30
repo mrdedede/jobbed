@@ -921,6 +921,25 @@ async def test_workday_pages_past_the_zeroed_total():
     )
 
 
+async def test_workday_stops_at_its_ceiling():
+    """2,000, not every posting: seven tenants sat at the old 1,000 (Oct 30)."""
+    def endless(payload):
+        return json.dumps({"jobPostings": [
+            {"title": f"Dev {n}", "externalPath": f"/job/Dev_{n}"}
+            for n in range(payload["offset"],
+                           payload["offset"] + payload["limit"])
+        ]})
+
+    made = board(
+        {"https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/careers/jobs":
+            endless},
+        ats=ATSName.WORKDAY,
+        url="https://acme.wd3.myworkdayjobs.com/fr-FR/careers",
+    )
+
+    assert len(await scrape_workday(made)) == 2000
+
+
 async def test_workday_ignores_a_missing_locale_segment():
     """`/Visa` has no locale; `/fr-FR/careers` does. Both must resolve."""
     made = board(

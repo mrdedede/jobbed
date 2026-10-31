@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from db._sql_utils import text_interval
 from db.engine import engine
 from db.tables import ai_analysis, generated_cv, job_postings
 
@@ -122,19 +123,28 @@ def select_job_for_generation(
         return conn.execute(stmt).first()
 
 
-def _without_cv_where(user_id: UUID, min_grade: int) -> list:
+def _without_cv_where(user_id: UUID, min_grade: int,
+                      since_days: Optional[int] = None) -> list:
     # SQL: SELECT job_id FROM generated_cv WHERE user_id = ?
     has_cv = select(generated_cv.c.job_id).where(
         generated_cv.c.user_id == user_id)
+    where = [ai_analysis.c.user_id == user_id,
+             ai_analysis.c.job_id.notin_(has_cv),
+             ai_analysis.c.adequation_grade >= min_grade]
 
-    return [ai_analysis.c.user_id == user_id,
-            ai_analysis.c.job_id.notin_(has_cv),
-            ai_analysis.c.adequation_grade >= min_grade]
+    if since_days is not None:
+        # since_days is a validated int, never client text: text_interval
+        # inlines it into SQL.
+        where.append(ai_analysis.c.created_at
+                     >= func.now() + text_interval(f"-{since_days} days"))
+
+    return where
 
 
 def select_jobs_for_cv(user_id: UUID, min_grade: int = 0,
                        limit: Optional[int] = None,
-                       offset: int = 0) -> List[Tuple]:
+                       offset: int = 0,
+                       since_days: Optional[int] = None) -> List[Tuple]:
     """This user's graded postings still missing a CV, best fit first.
 
     Args:
@@ -142,6 +152,7 @@ def select_jobs_for_cv(user_id: UUID, min_grade: int = 0,
         min_grade: Lowest adequation grade worth writing a CV for.
         limit: Cap on rows returned; None means no cap.
         offset: Rows to skip, for paging.
+        since_days: Only postings graded within this many days.
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
@@ -166,7 +177,7 @@ def select_jobs_for_cv(user_id: UUID, min_grade: int = 0,
         )
         .select_from(ai_analysis)
         .join(job_postings, job_postings.c.id == ai_analysis.c.job_id)
-        .where(*_without_cv_where(user_id, min_grade))
+        .where(*_without_cv_where(user_id, min_grade, since_days))
         .order_by(ai_analysis.c.adequation_grade.desc(),
                   ai_analysis.c.created_at.desc(), ai_analysis.c.id)
         .limit(limit)
@@ -176,10 +187,11 @@ def select_jobs_for_cv(user_id: UUID, min_grade: int = 0,
         return conn.execute(stmt).all()
 
 
-def count_jobs_for_cv(user_id: UUID, min_grade: int = 0) -> int:
+def count_jobs_for_cv(user_id: UUID, min_grade: int = 0,
+                      since_days: Optional[int] = None) -> int:
     """How many rows `select_jobs_for_cv` pages through."""
     stmt = (select(func.count()).select_from(ai_analysis)
-            .where(*_without_cv_where(user_id, min_grade)))
+            .where(*_without_cv_where(user_id, min_grade, since_days)))
     with engine.connect() as conn:
         return conn.execute(stmt).scalar_one()
 

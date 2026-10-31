@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 from job_scraper.detector import ATSName
 from job_scraper.fetching import (
@@ -46,6 +47,8 @@ class Feed:
         total: Dotted path to the count of postings on the whole board. Set
             together with page_param to page a feed that caps its response.
         page_param: Query parameter carrying the number of items already read.
+        own_host_path: Path on the board's own host serving this same feed,
+            for when the page carries no token -- a vendor custom domain.
     """
 
     url: str
@@ -58,12 +61,17 @@ class Feed:
     item_tag: str = ""
     total: str = ""
     page_param: str = ""
+    own_host_path: str = ""
 
 
 FEEDS: Dict[ATSName, Feed] = {
     ATSName.GREENHOUSE: Feed(
         url="https://boards-api.greenhouse.io/v1/boards/{token}/jobs",
-        token=(r"[?&]for=([\w.-]+)", r"greenhouse\.io/(?:embed/)?([\w.-]+)"),
+        # A page that calls the API itself names the board after /v1/boards/;
+        # the generic form must skip that "v1", or the token comes back "v1"
+        # (together.ai, discord).
+        token=(r"[?&]for=([\w.-]+)", r"greenhouse\.io/v1/boards/([\w.-]+)",
+               r"greenhouse\.io/(?:embed/)?(?!v1\b)([\w.-]+)"),
         items="jobs",
         title="title",
         place="location",
@@ -86,7 +94,12 @@ FEEDS: Dict[ATSName, Feed] = {
     ),
     ATSName.RECRUITEE: Feed(
         url="https://{token}.recruitee.com/api/offers/",
-        token=(r"//([\w-]+)\.recruitee\.com",),
+        # careers-analytics is Recruitee's tracking script, on every custom
+        # domain board, and never a tenant.
+        token=(r"//(?!careers-analytics\.)([\w-]+)\.recruitee\.com",),
+        # A custom-domain board (careers.maia-space.com, careers.nsigroup.eu)
+        # names no tenant anywhere, but serves the same API on its own host.
+        own_host_path="/api/offers/",
         items="offers",
         title="title",
         place="location",
@@ -113,7 +126,10 @@ FEEDS: Dict[ATSName, Feed] = {
             # oneclick-ui URLs put the tenant after /company/, not right
             # after the hostname -- must be tried before the generic form.
             r"smartrecruiters\.com/oneclick-ui/company/([\w.-]+)",
-            r"smartrecruiters\.com/([\w.-]+)",
+            r"smartrecruiters\.com/v1/companies/([\w.-]+)",
+            # job-widget is the embed's asset path (swissmarketplace), ni a
+            # short-link prefix (auchan) -- neither is a tenant.
+            r"smartrecruiters\.com/(?!(?:job-widget|ni|v1)\b)([\w.-]+)",
         ),
         items="content",
         title="name",
@@ -289,10 +305,13 @@ async def scrape_feed(board: "Board", feed: Feed) -> List[Job]:
         or _token(await board.get_html() or "", feed.token)
     )
 
-    if not token:
+    if token:
+        endpoint = feed.url.format(token=token)
+    elif feed.own_host_path:
+        endpoint = urljoin(board.final_url, feed.own_host_path)
+        token = urlparse(board.final_url).hostname or ""
+    else:
         return []
-
-    endpoint = feed.url.format(token=token)
     jobs: List[Job] = []
     seen = 0
 

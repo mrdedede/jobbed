@@ -118,7 +118,7 @@ async def list_due(user_id: UUID, window: str = "-24 hours") -> list:
 async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                        model: str = gateway.HAIKU_MODEL,
                        concurrency: int = 4,
-                       on_progress: Optional[Callable[[str], None]] = None
+                       on_progress: Optional[Callable[[UUID, Optional[int], str], None]] = None
                        ) -> dict:
     """Grade the postings the user picked and store each verdict.
 
@@ -131,7 +131,8 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
             already graded are skipped, so a retry never pays twice.
         model: Which gateway model grades.
         concurrency: Calls in flight at once.
-        on_progress: Optional callback given one line per posting.
+        on_progress: Optional callback given, per posting, its id, its grade
+            (None when it failed) and a printable line.
 
     Returns:
         Dict with `analysed` and `failed` counts, `skipped` (asked for but
@@ -157,6 +158,8 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
     async def grade(index: int, job, client: httpx.AsyncClient) -> None:
         job_id, company, title, _ = job
 
+        grade_value = None
+
         async with gate:
             try:
                 verdict = await analysis.analyze(job, cv_md, model, client)
@@ -171,13 +174,15 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
 
                 counts["analysed"] += 1
                 stored.append(job_id)
+                grade_value = verdict["adequation_grade"]
                 note = f"{verdict['adequation_grade']:3}"
             except Exception as exc:
                 counts["failed"] += 1
                 note = f"FAIL {type(exc).__name__}: {exc}"
 
         if on_progress:
-            on_progress(f"[{index}/{len(jobs)}] {note}  {company} - {title}")
+            on_progress(job_id, grade_value,
+                        f"[{index}/{len(jobs)}] {note}  {company} - {title}")
 
     if jobs:
         async with httpx.AsyncClient(timeout=gateway.TIMEOUT) as client:
@@ -205,7 +210,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     due = asyncio.run(list_due(args.user_id, args.window))
     picked = [row[0] for row in (due[:args.limit] if args.limit else due)]
     stats = asyncio.run(run_analysis(
-        args.user_id, picked, model=args.model, on_progress=print))
+        args.user_id, picked, model=args.model,
+        on_progress=lambda _id, _grade, line: print(line)))
     print(f"\n{stats['analysed']} analysed, {stats['failed']} failed, "
           f"{len(due) - len(picked)} remaining")
 

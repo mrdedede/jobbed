@@ -391,6 +391,19 @@ POSITIVE = [
         page("<h1>Careers</h1>"),
         "cornerstone",
     ),
+    (
+        "gestmax on a public-sector custom domain, markup only",
+        "https://recrutement.loire-atlantique.fr/search",
+        page('<div class="gestmax-container background border">'
+             '<a href="/3334/1/medecin-de-pmi">Médecin</a></div>'),
+        "gestmax",
+    ),
+    (
+        "talentsoft on its older hyphenated tenant domain",
+        "https://ugap-recrute.talent-soft.com/offre-de-emploi/liste-offres.aspx",
+        page("<h1>Nos offres</h1>"),
+        "talentsoft",
+    ),
 ]
 
 

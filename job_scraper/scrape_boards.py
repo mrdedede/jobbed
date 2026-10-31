@@ -33,7 +33,7 @@ from job_scraper.fetching import new_client
 from job_scraper.models import Job
 
 FIELDNAMES = ["company", "title", "url", "place", "via", "ats", "description"]
-MISS_FIELDNAMES = ["company", "url", "reason"]
+MISS_FIELDNAMES = ["company", "url", "reason", "ats", "evidence"]
 
 #: Boards in flight at once. A board does more work than a single post fetch
 #: (ATS detection + multi-strategy scrape), but each is mostly waiting on the
@@ -91,12 +91,15 @@ async def scrape_one_board(entry: dict, client: httpx.AsyncClient,
     board = Board(company, url, session=client, render=render)
 
     try:
-        ats = await board.detect_ats()
+        await board.detect_ats()
         jobs = await board.scrape_board()
     except Exception as exc:
         return BoardResult(company, url, board, ats=None, jobs=None, error=exc)
 
-    return BoardResult(company, url, board, ats=ats, jobs=jobs, error=None)
+    # board.ats, not detect_ats()'s return: the feed fallback can name the
+    # vendor during scraping, and the output should say which one it was.
+    return BoardResult(company, url, board, ats=board.ats, jobs=jobs,
+                       error=None)
 
 
 def load_boards(input_file: Optional[Path] = None) -> List[dict]:
@@ -242,12 +245,16 @@ async def scrape_boards(input_file: Optional[Path] = None,
                     """
                     try:
                         reason = await diagnose.explain(board, exc)
+                        facts = await diagnose.evidence(board)
                     except Exception as err:
                         reason = (f"diagnosis failed: "
                                   f"{type(err).__name__}: {err}")
+                        facts = ""
 
                     misses.writerow({"company": company, "url": url,
-                                     "reason": reason})
+                                     "reason": reason,
+                                     "ats": getattr(board, "ats", "") or "",
+                                     "evidence": facts})
 
                 # Awaited in input order, like pool.map was: every write below
                 # -- writer, misses, on_board -- stays in one task and in the
@@ -313,10 +320,15 @@ async def scrape_boards(input_file: Optional[Path] = None,
 
 
 #: Reasons (the start of a diagnose.explain line) that a browser can fix: the
-#: listing is built in JS, or the page is an empty shell. The others -- 403s,
-#: "job-shaped links present", "no job-shaped links" -- are different problems
-#: and a browser would only burn minutes on them.
-JS_SHELL_REASONS = ("likely javascript-rendered", "no links on the page")
+#: listing is built in JS, or the page is an empty shell. "No job-shaped
+#: links" is in too: the no_jobs analysis found most of those pages load their
+#: listing after the document (Algolia, @@LINK@@ templates, ATS widgets), and
+#: the feed, linked-ATS and URL-shape fixes now take the cheap cases first, so
+#: what is left mostly needs rendering. The others -- 403s, "job-shaped links
+#: present" -- are different problems and a browser would only burn minutes on
+#: them.
+JS_SHELL_REASONS = ("likely javascript-rendered", "no links on the page",
+                    "no job-shaped links")
 
 
 def render_candidates(path: Optional[Path] = None) -> List[dict]:

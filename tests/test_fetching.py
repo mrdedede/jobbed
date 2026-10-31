@@ -215,3 +215,12 @@ async def test_reason_truncated_comes_with_text():
         lambda r: httpx.Response(200, text="x" * 1000), max_bytes=10)
 
     assert (len(text), reason) == (10, "truncated")
+
+
+def test_the_shared_context_trusts_the_bundled_intermediates():
+    """Meritis and apsia send no intermediate; without this one in the
+    trust store every request to them fails verification (Oct 31)."""
+    issuers = [dict(part[0] for part in cert["subject"]).get("commonName")
+               for cert in fetching.SSL_CONTEXT.get_ca_certs()]
+
+    assert "GlobalSign GCC R6 AlphaSSL CA 2025" in issuers

@@ -54,6 +54,17 @@ JOB_PATH: Dict[ATSName, str] = {
     # identical for the board and its jobs and only the query tells them
     # apart. Containing "?" is what opts this row into query matching below.
     ATSName.NJOYN: r"xweb\.asp\?.*\bPage=JobDetails\b.*\bJobid=",
+    # The job word and the id share one segment (/emploi-2731999-999), so the
+    # generic shape, which wants a slug segment after the job word, missed
+    # every posting on Ippon, act digital and the other company pages.
+    ATSName.JOBPOSTINGPRO: r"/emploi-\d+-\d+$",
+    # /offre-de-emploi/emploi-<slug>_<id>.aspx (ugap, airfrance). Kept off the
+    # generic shape: the same prefix also files liste-offres.aspx and
+    # ma-selection-offres.aspx, which a generic rule would read as postings.
+    ATSName.TALENTSOFT: r"/offre-de-emploi/emploi-[^/?#]+_\d+\.aspx",
+    # /<offer id>/<lang id>/<slug> with no job word at all (Loire-Atlantique,
+    # Strasbourg). Safe only because it is gated on a detected Gestmax board.
+    ATSName.GESTMAX: r"^/\d+/\d+/[^/?#]+",
 }
 
 #: An anchor label shorter than this is a chevron or a badge, not a job title.
@@ -79,6 +90,49 @@ SKIP_TITLES = frozenset({
 #: covers the usual <div class=card><h3>title</h3>...<a>read more</a></div>
 #: without drifting up into the page banner.
 CARD_DEPTH = 3
+
+#: ARIA roles of page furniture. role=search is in for Capgemini's header
+#: search widget, whose "Job offers" link was the one menu link left standing.
+CHROME_ROLES = frozenset({"navigation", "banner", "contentinfo", "search"})
+
+#: Elements that make a <header>/<footer> local to a card rather than the
+#: page's own -- the HTML spec's rule for when they map to banner and
+#: contentinfo. Without it, boards that file each posting as
+#: <article><header><a>title</a></header> (TOHTEM, proxiad, adentis and the
+#: other 30-a-page boards on one platform) lost every job.
+SECTIONING = ("article", "aside", "main", "nav", "section")
+
+#: The same, for <footer>, without <main>: hellowork puts its site footer
+#: inside <main>, and its "Offres d'emploi par métier" links read as postings
+#: (Soors, sogescot, synchrone, Oct 30). Its offer cards keep <main> for
+#: <header>: each one is a <header> inside <main>.
+CARD_FOOTER = ("article", "aside", "nav", "section")
+
+
+def _in_chrome(tag) -> bool:
+    """Report whether an anchor sits in the site's menus, banner or footer.
+
+    Corporate careers sites file their culture pages under the careers path
+    with hyphenated slugs (/careers/why-join-capgemini/), which no URL shape
+    tells apart from a posting (/careers/cloud-engineer on seqone is real).
+    Where the link sits does: measured on the 131 boards the links strategy
+    serves, every anchor dropped here was a menu, filter or pager link, and
+    Capgemini's 41 matches -- all menu -- fell to zero, so the board reaches
+    no_jobs.csv and RenderBoards instead of passing as scraped.
+    """
+    for parent in tag.parents:
+        if parent.name == "nav" or parent.get("role") in CHROME_ROLES:
+            return True
+
+        if (parent.name == "header"
+                and parent.find_parent(SECTIONING) is None):
+            return True
+
+        if (parent.name == "footer"
+                and parent.find_parent(CARD_FOOTER) is None):
+            return True
+
+    return False
 
 
 def _card_title(tag) -> str:
@@ -182,6 +236,9 @@ async def scrape_links(board: "Board", html: Optional[str] = None) -> List[Job]:
             continue
 
         if not job_href_matches(url, board.ats, JOB_PATH):
+            continue
+
+        if _in_chrome(tag):
             continue
 
         jobs.append(Job(

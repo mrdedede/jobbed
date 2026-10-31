@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from job_scraper import diagnose
+from job_scraper.scrape_boards import JS_SHELL_REASONS
 
 pytestmark = pytest.mark.anyio
 
@@ -41,8 +42,10 @@ class FakeBoard:
     """A Board reduced to the four attributes `explain` reads."""
 
     def __init__(self, html=None, session=None, final_url=None, render=None,
-                 ats=None):
+                 ats=None, rendered_html=None, render_ran=False):
         self.html = html
+        self.rendered_html = rendered_html
+        self.render_ran = render_ran
         self.session = session or FakeSession(FakeResponse())
         self.board_url = "https://example.test/careers"
         self.final_url = final_url or self.board_url
@@ -69,6 +72,17 @@ async def test_exception_is_the_explanation():
 
     assert "ConnectTimeout" in reason
     assert "too slow" in reason
+
+
+async def test_an_unverifiable_certificate_chain_is_named():
+    error = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable "
+        "to get local issuer certificate (_ssl.c:1010)")
+    board = FakeBoard(session=FakeSession(error=error))
+
+    assert (await diagnose.explain(board)).startswith(
+        "tls: certificate chain not verifiable (certificate verify failed: "
+        "unable to get local issuer certificate")
 
 
 async def test_non_200_is_reported_with_its_status():
@@ -120,6 +134,26 @@ async def test_job_shaped_links_present_but_unread():
     assert "job-shaped links present" in await diagnose.explain(board)
 
 
+async def test_a_bot_refusing_platform_is_named_and_kept_out_of_rendering():
+    board = FakeBoard(html=page(links(60, path="/jobs/senior-engineer")))
+    board.board_url = "https://www.apec.fr/candidat/recherche-emploi.html"
+    reason = await diagnose.explain(board)
+
+    assert "bot-protected platform (apec)" in reason
+    assert not reason.startswith(JS_SHELL_REASONS)
+
+
+async def test_job_shaped_links_in_the_menus_do_not_count_as_present():
+    """Capgemini: its only job-shaped links are menu links scrape_links now
+    skips, and "links present" would keep it out of RenderBoards."""
+    board = FakeBoard(html=page(
+        "<nav>" + links(60, path="/careers/why-join-us") + "</nav>"
+        '<div id="__next"></div>'
+    ))
+
+    assert "likely javascript-rendered" in await diagnose.explain(board)
+
+
 async def test_job_shaped_link_outranks_the_spa_marker():
     """A real match on this fetch disproves the SPA-marker's own prediction
     that postings only arrive after render -- kering's shape: an id="__next"
@@ -142,14 +176,73 @@ async def test_probe_falls_through_to_html_analysis():
     assert "no job-shaped links" in await diagnose.explain(board)
 
 
-async def test_redirect_and_renderer_are_appended_as_context():
+async def test_redirect_is_appended_as_context():
     board = FakeBoard(html=page(links(60)),
                       final_url="https://example.test/elsewhere",
                       render=lambda url: None)
     reason = await diagnose.explain(board)
 
     assert "redirected to https://example.test/elsewhere" in reason
-    assert "renderer ran" in reason
+    # A configured renderer is not a render: only the cause may say one ran.
+    assert "render" not in reason
+
+
+async def test_a_render_that_returned_no_page_says_so():
+    board = FakeBoard(html=page(links(60)), render_ran=True)
+
+    assert (await diagnose.explain(board)).startswith("render failed")
+
+
+async def test_a_rendered_page_is_judged_not_the_served_one():
+    """The served shell had 0 anchors; the browser drew 60, none a posting.
+    Its SPA marker survives the render, so it must not read as JS-built."""
+    board = FakeBoard(html=page('<div id="__next"></div>'), render_ran=True,
+                      rendered_html=page('<div id="__next">' + links(60)
+                                         + "</div>"))
+    reason = await diagnose.explain(board)
+
+    assert reason.startswith("after render: no job-shaped links (60 anchors")
+    assert "javascript-rendered" not in reason
+
+
+#: The body APEC served on 2026-10-27, trimmed: its only words are about
+#: JS and ad blockers, so it is known by the DataDome host it loads.
+DATADOME_PAGE = (
+    '<html lang="en"><head><title>apec.fr</title></head><body>'
+    '<p id="cmsg">Please enable JS and disable any ad blocker</p>'
+    '<script src="https://ct.captcha-delivery.com/c.js"></script>'
+    "</body></html>"
+)
+
+
+async def test_a_bot_check_after_render_is_named_blocked():
+    board = FakeBoard(render_ran=True, rendered_html=DATADOME_PAGE)
+
+    assert (await diagnose.explain(board)
+            == "blocked after render (apec.fr)")
+
+
+async def test_evidence_names_listing_iframes_but_not_trackers():
+    board = FakeBoard(render_ran=True, rendered_html=page(
+        '<iframe src="https://www.googletagmanager.com/ns.html"></iframe>'
+        '<iframe src="https://www.youtube.com/embed/x"></iframe>'
+        '<iframe src="https://lillemetropole.gestmax.fr"></iframe>'))
+
+    facts = await diagnose.evidence(board)
+
+    assert "iframes: lillemetropole.gestmax.fr" in facts
+    assert "googletagmanager" not in facts and "youtube" not in facts
+
+
+async def test_an_ordinary_page_carrying_a_cloudflare_script_is_not_blocked():
+    """Cloudflare injects /cdn-cgi/challenge-platform into live pages too;
+    abd partners' listing read as blocked over it. A wall has no links."""
+    board = FakeBoard(render_ran=True, rendered_html=page(
+        links(60), head='<script src="/cdn-cgi/challenge-platform/x.js">'
+        '</script><title>Captcha-free careers</title>'))
+
+    assert (await diagnose.explain(board)).startswith(
+        "after render: no job-shaped links")
 
 
 async def test_long_redirect_url_is_truncated():
@@ -162,3 +255,33 @@ async def test_long_redirect_url_is_truncated():
     note = reason.split("redirected to ", 1)[1].rstrip(")")
     assert len(note) == diagnose.MAX_REDIRECT_LEN + len("...")
     assert note.endswith("...")
+
+
+async def test_evidence_names_ats_token_near_misses_and_no_openings():
+    """The shapes no_jobs triage kept needing by hand: an ATS embed with a
+    readable token, a posting URL JOB_URL_RE turns down, a mailto posting."""
+    board = FakeBoard(html=page(
+        '<iframe src="https://boards.greenhouse.io/embed/job_board?for=acme">'
+        "</iframe>"
+        '<a href="https://www.jobposting.pro/emploi-2731999-999">Dev</a>'
+        '<a href="mailto:rh@acme.test?subject=Dev (H/F)">Dev</a>'
+        "<p>Aucune offre pour le moment</p>"
+    ))
+    facts = await diagnose.evidence(board)
+
+    assert "ats refs: greenhouse" in facts
+    assert "greenhouse=acme" in facts
+    assert "/emploi-2731999-999" in facts
+    assert "1 mailto postings" in facts
+    assert "no openings" in facts
+
+
+async def test_evidence_reads_hellowork_s_no_openings_wording():
+    board = FakeBoard(html=page(
+        "<p>Nous n'avons pas d'offres d'emploi chez Soors en ce moment</p>"))
+
+    assert "no openings" in await diagnose.evidence(board)
+
+
+async def test_evidence_is_empty_without_a_page():
+    assert await diagnose.evidence(FakeBoard()) == ""

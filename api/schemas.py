@@ -7,7 +7,7 @@ capped, and the model a client may ask for is a closed set.
 
 import os
 from datetime import date, datetime
-from typing import Annotated, Generic, List, Literal, Optional, TypeVar
+from typing import Annotated, Dict, Generic, List, Literal, Optional, TypeVar
 from uuid import UUID
 
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field,
@@ -191,6 +191,7 @@ class AnalyzeStatus(BaseModel):
     status: Literal["running", "done", "failed"]
     done: int  # postings graded or failed so far
     total: int  # postings this run will try (granted under the daily cap)
+    graded: Dict[UUID, Optional[int]] = {}  # finished so far: grade, None if failed
     result: Optional[AnalyzeOut] = None
     error: Optional[dict] = None
 

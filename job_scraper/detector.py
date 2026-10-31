@@ -543,6 +543,7 @@ class ATSName(StrEnum):
     JOBPOSTINGPRO = auto()
     KISSMYJOB = auto()
     HR_MANAGER = auto()
+    GESTMAX = auto()
 
     # Enterprise career-site platforms. These almost always run on the
     # employer's own domain, so they are identified by vendor infrastructure
@@ -566,6 +567,10 @@ class ATSName(StrEnum):
     # (strategies/werecruit.py).
     WERECRUIT = auto()
     BEETWEEN = auto()
+
+    # Job sites that refuse automated access. Named so their boards are
+    # skipped and reported as such, not scraped (board.REFUSES_BOTS).
+    APEC = auto()
 
 
 @dataclass(frozen=True)
@@ -902,8 +907,10 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
     ),
     ATS(
         name=ATSName.TALENTSOFT,
-        hosts=("talentsoft.com", "cegid-hr.com"),
-        assets=("talentsoft.com", "cegid.com", "cegid-hr.com"),
+        # talent-soft.com, hyphenated, is the older tenant domain (ugap).
+        hosts=("talentsoft.com", "talent-soft.com", "cegid-hr.com"),
+        assets=("talentsoft.com", "talent-soft.com", "cegid.com",
+                "cegid-hr.com"),
         terms=("talentsoft", "cegid talent"),
         rules=(
             rule(
@@ -1104,6 +1111,21 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         assets=("hr-manager.net",),
         terms=("hr-manager",),
     ),
+    ATS(
+        # French public-sector recruiting, always on the employer's own
+        # domain (recrutement.loire-atlantique.fr, recrutement.strasbourg.eu)
+        # with no vendor host or asset to go on. Its markup is the one thing
+        # every tenant shares.
+        name=ATSName.GESTMAX,
+        terms=("gestmax",),
+        rules=(
+            rule(
+                "gestmax.container", "dom", 45, TIER_DEFINITIVE,
+                "Gestmax container markup",
+                in_text("html", "gestmax-container"),
+            ),
+        ),
+    ),
 
     # ------------------------------------------------------------------
     # Enterprise career-site platforms.
@@ -1197,6 +1219,12 @@ ATS_REGISTRY: Tuple[ATS, ...] = (
         hosts=("nos-recrutements.fr",),
         assets=("beetween.com",),
         terms=("beetween",),
+    ),
+    # Hostname only: an employer page that links its APEC offers is still
+    # that employer's board.
+    ATS(
+        name=ATSName.APEC,
+        hosts=("apec.fr",),
     ),
 )
 

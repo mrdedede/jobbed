@@ -17,15 +17,20 @@ from job_scraper.detector import ATS_REGISTRY, ATSName, _host_hit
 _JOB_WORD = (
     r"(?:jobs?|offres?|offers?|emplois?|postes?|annonces?|"
     r"vacanc(?:y|ies)|positions?|openings?|opportunit(?:y|ies)|"
-    r"careers?|carrieres?|stellen?|recrutement)"
+    r"careers?|carrieres?|stellen?|recrut(?:e|ement)|recruit)"
 )
+# "recrute" is diggers' /on-recrute/<slug>; "recruit" is Zoho Recruit's
+# /recruit/PortalDetail.na?...&jobid=N (exoscale). The (?![a-zA-Z]) after the
+# job word in the patterns below keeps both off "recrutement-..." pages and
+# "/recruitment/".
 
 #: The posting segment. A real posting slug is either hyphenated/underscored
-#: ("data-engineer", "ajusteuse_22660") or a bare id ("842306"); a single bare
-#: word is a category or listing page. This is what stops the `[\w]*-?` prefix
-#: below from swallowing /nos-offres/localisations along with
-#: /nos-offres/dev-senior.
-_JOB_SLUG = r"(?:[^/?#]*[-_][^/?#]*|\d{3,})"
+#: ("data-engineer", "ajusteuse_22660"), a bare id ("842306"), or an id behind
+#: a short letter prefix (vulcain's "oe00001903"); a single bare word is a
+#: category or listing page. This is what stops the `[\w]*-?` prefix below
+#: from swallowing /nos-offres/localisations along with /nos-offres/dev-senior.
+#: The prefixed form needs four digits so /jobs/v2 stays a listing.
+_JOB_SLUG = r"(?:[^/?#]*[-_][^/?#]*|\d{3,}|[a-z]{1,3}\d{4,})"
 
 #: `(?:[\w]+-)?` is the prefix French boards need: without it the job word has
 #: to sit directly after a slash, so /nos-offres/... and /offres-emploi/...
@@ -44,7 +49,11 @@ _JOB_SLUG = r"(?:[^/?#]*[-_][^/?#]*|\d{3,})"
 #: greedy enough to reach airfrance's /offre-de-emploi/..._22660.aspx also
 #: swallowed "-advice" and "-blog" here. Left as a known gap rather than
 #: solved: compound segments like /offre-de-emploi/ or michelin's
-#: /job-offer-result-list/ still miss.
+#: /job-offer-result-list/ still miss, as does think.fr's job word used as a
+#: slug prefix (/offre-ingenieur-devops-h-f/). Each generic fix measured
+#: re-admits listing or content pages -- /offre-de-emploi/ took Talentsoft's
+#: own liste-offres.aspx along with its postings -- so /offre-de-emploi/ is
+#: read through the Talentsoft JOB_PATH entry instead.
 #:
 #: Measured and rejected, so it is not re-tried:
 #: - "join-us"/"nous-rejoindre" as job words. Buys Extia's 20 real postings
@@ -82,9 +91,10 @@ JOB_URL_RE = re.compile(
 #: `links.py` opts a board's anchors into checking the query string at all
 #: (the same `with_query` switch njoyn's JOB_PATH entry uses); this regex is
 #: the generic fallback for boards with no vendor-specific override.
+#: `annonce=` as well as `...id=`: eps.fr links /fr/offre.html?annonce=N.
 JOB_QUERY_ID_RE = re.compile(
     rf"/(?:[\w]+-)?d?{_JOB_WORD}(?:-d?-?{_JOB_WORD})?(?![a-zA-Z])[^?]*"
-    r"\?(?:[\w.%+-]+=[\w.%+-]*&)*\w*id=\d+",
+    r"\?(?:[\w.%+-]+=[\w.%+-]*&)*\w*(?:id|annonce)=\d+",
     re.I,
 )
 

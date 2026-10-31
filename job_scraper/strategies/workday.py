@@ -12,7 +12,10 @@ if TYPE_CHECKING:
     from job_scraper.board import Board
 
 WORKDAY_PAGE = 20
-WORKDAY_MAX_PAGES = 50
+#: Workday's own ceiling, not ours: from offset 2,000 on, the jobs endpoint
+#: replays the first page (Airbus, Oct 31), so 100 pages is all a single
+#: search can reach. A tenant past that needs splitting by facet.
+WORKDAY_MAX_PAGES = 100
 
 
 async def scrape_workday(board: "Board") -> List[Job]:

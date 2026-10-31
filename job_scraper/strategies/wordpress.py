@@ -21,13 +21,16 @@ _WP_TYPES = "/wp-json/wp/v2/types"
 #: Every WordPress theme ships assets from wp-content, and most expose the REST
 #: root as a wp-json link tag. Either is enough to justify the probe below.
 _WP_MARKER = re.compile(r"wp-content|wp-json", re.I)
+#: Not "recrut": it picked the recruiters' own pages, mercato's
+#: cabinet-recrutement (513 office pages) and Service Public's
+#: conseils-recruteurs (advice articles). Mercato files its ads as "annonce".
 _WP_JOB_TYPE = re.compile(
-    r"job|offre|emploi|career|carriere|poste|recrut|vacan", re.I
+    r"job|offre|emploi|annonce|career|carriere|poste|vacan", re.I
 )
 
-#: WordPress caps per_page at 100.
+#: WordPress caps per_page at 100. 40 pages: mercato holds 3,014 ads.
 WP_PAGE = 100
-WP_MAX_PAGES = 20
+WP_MAX_PAGES = 40
 
 
 async def scrape_wordpress(board: "Board") -> List[Job]:

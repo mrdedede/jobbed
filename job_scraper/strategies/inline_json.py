@@ -23,6 +23,8 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from job_scraper.models import Job
+from job_scraper.strategies.links import JOB_PATH
+from job_scraper.urls import job_href_matches
 
 if TYPE_CHECKING:
     from job_scraper.board import Board
@@ -34,6 +36,17 @@ MAX_RECORDS = 2_000
 
 _TITLE_KEYS = ("title", "name", "jobtitle", "job_title", "posting_title")
 _URL_KEYS = ("url", "href", "link", "joburl", "job_url", "permalink")
+
+#: Fields only a posting carries. A title/url pair alone is any menu item or
+#: image: Apple's globalNavData ({"name": "mac", "url": "/mac/"}) and join.com
+#: logo objects were ~100 junk rows on Oct 30. A record is kept when its URL
+#: is job-shaped (Atos) or it has one of these (eiffage, whose job word sits
+#: in the hostname only).
+_POSTING_KEYS = frozenset({
+    "location", "locations", "city", "country", "region", "place", "lieu",
+    "contract", "contracttype", "jobtype", "employmenttype", "department",
+    "dateposted", "postingdate",
+})
 
 #: `var x = {...}`, `window.x = {...}`, or `window['x'] = {...}` -- the shapes
 #: an inline listing widget bootstraps itself with. Captures the RHS greedily
@@ -201,13 +214,19 @@ async def scrape_inline_json(board: "Board", html: Optional[str] = None) -> List
             continue
 
         for record in _find_records(parsed):
+            url = urljoin(
+                board.url,
+                record[next(k for k in _URL_KEYS if record.get(k))],
+            )
+
+            if not (job_href_matches(url, board.ats, JOB_PATH)
+                    or _POSTING_KEYS & {key.lower() for key in record}):
+                continue
+
             jobs.append(Job(
                 company=board.company_name,
                 title=record[next(k for k in _TITLE_KEYS if record.get(k))],
-                url=urljoin(
-                    board.url,
-                    record[next(k for k in _URL_KEYS if record.get(k))],
-                ),
+                url=url,
                 via="inline_json",
             ))
 

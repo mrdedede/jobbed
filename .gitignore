@@ -19,3 +19,6 @@ db/joblister.db
 temp/
 # Editable install metadata.
 *.egg-info/
+
+# Certificates
+job_scraper/intermediates.pem

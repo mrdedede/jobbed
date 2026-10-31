@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from job_scraper.board import Board, dedupe as _dedupe
+from job_scraper.board import Board, dedupe as _dedupe, linked_ats_url
 from job_scraper.fetching import (
     MAX_FETCH_BYTES,
     dig as _dig,
@@ -33,6 +33,8 @@ from job_scraper.strategies import (
     scrape_wttj,
 )
 from job_scraper.strategies.comeet import COMEET_API
+from job_scraper.strategies.links import JOB_PATH
+from job_scraper.urls import job_href_matches
 from job_scraper.strategies.feed import _token
 from job_scraper.strategies.sitemap import (
     _nested_sitemaps,
@@ -255,6 +257,34 @@ async def test_sitemap_falls_back_to_robots_txt():
 ])
 def test_generic_job_url_shape(path, is_posting):
     assert bool(_JOB_URL_RE.search(path)) is is_posting
+
+
+@pytest.mark.parametrize("ats,url,is_posting", [
+    (ATSName.JOBPOSTINGPRO, "https://www.jobposting.pro/emploi-2731999-999",
+     True),
+    (ATSName.JOBPOSTINGPRO,
+     "https://www.jobposting.pro/careers-meent+life+sciences-979513397",
+     False),
+    (ATSName.TALENTSOFT, "https://ugap-recrute.talent-soft.com/"
+     "offre-de-emploi/emploi-acheteur-confirme-h-f_2827.aspx", True),
+    # The listing pages share the posting prefix; the vendor shape is what
+    # keeps them out.
+    (ATSName.TALENTSOFT, "https://ugap-recrute.talent-soft.com/"
+     "offre-de-emploi/liste-offres.aspx", False),
+    (ATSName.GESTMAX, "https://recrutement.loire-atlantique.fr/3334/1/"
+     "medecin-de-pmi?backlink=search", True),
+    (ATSName.GESTMAX, "https://recrutement.loire-atlantique.fr/search", False),
+    # Generic fallback, id in the query string.
+    (None, "https://www.eps.fr/fr/offre.html?annonce=111520", True),
+    (None, "https://www.eps.fr/fr/nos_offres.html?_tabi=I3&_pid=Offres",
+     False),
+    (None, "https://jobs.exoscale.com/recruit/PortalDetail.na?iframe=true"
+     "&digest=eowukki.a85bxd-&jobid=4113640000", True),
+])
+def test_posting_shapes_from_the_no_jobs_corpus(ats, url, is_posting):
+    """Boards whose postings were on the page but whose URLs matched no
+    shape; each one is a real link from no_jobs.csv."""
+    assert job_href_matches(url, ats, JOB_PATH) is is_posting
 
 
 # ======================================================================
@@ -607,11 +637,170 @@ async def test_a_feed_larger_than_the_page_cap_is_not_truncated():
     (ATSName.ASHBY, "https://jobs.ashbyhq.com/nabla?departmentId=8b", "nabla"),
     (ATSName.RECRUITEE, "https://aneo.recruitee.com", "aneo"),
     (ATSName.WORKABLE, "https://apply.workable.com/exotec/", "exotec"),
+    # Page bodies, not board URLs: the shapes the no-ATS feed fallback reads,
+    # each with the junk segment that used to be taken for the tenant.
+    (ATSName.GREENHOUSE,
+     'fetch("https://boards-api.greenhouse.io/v1/boards/togetherai/jobs")',
+     "togetherai"),
+    (ATSName.GREENHOUSE, 'src="https://api.greenhouse.io/v1"', None),
+    (ATSName.SMARTRECRUITERS,
+     "smartrecruiters.com/job-widget/1.6.10/script/smart_widget.js "
+     "jobs.smartrecruiters.com/smgswissmarketplacegroup/1b8f",
+     "smgswissmarketplacegroup"),
+    (ATSName.RECRUITEE,
+     "//careers-analytics.recruitee.com/t.js //pileje1.recruitee.com/o/dev",
+     "pileje1"),
 ])
 def test_token_regexes_match_real_board_urls(ats, url, expected):
     """The embed form is why `token` is a tuple: Python's alternation picks
     the leftmost position, so a single pattern captures "embed" instead."""
     assert _token(url, FEEDS[ats].token) == expected
+
+
+GREENHOUSE_EMBED = page(
+    '<iframe src="https://job-boards.greenhouse.io/embed/job_board?for=acme">'
+    "</iframe>"
+)
+
+
+async def test_undetected_board_reads_the_feed_its_page_embeds():
+    """betclic/algolia's shape: the embed carries the token, but too little
+    else for detect_ats to name the vendor, so the feed was never tried."""
+    made = board({
+        "https://acme.fr/jobs": GREENHOUSE_EMBED,
+        "https://boards-api.greenhouse.io/v1/boards/acme/jobs":
+            GREENHOUSE_BODY,
+    })
+
+    jobs = await made._feed()
+
+    assert [job.title for job in jobs] == ["Account Executive"]
+    assert made.ats == ATSName.GREENHOUSE
+
+
+async def test_feed_fallback_needs_the_vendor_host_on_the_page():
+    """`?for=` is Greenhouse's token shape, but on its own it is just a query
+    parameter -- no greenhouse.io on the page means no Greenhouse request."""
+    made = board({"https://acme.fr/jobs": page('<a href="/x?for=team">x</a>')})
+
+    assert await made._feed() == []
+    assert not any("greenhouse" in url for url in made.session.requested)
+    assert made.ats is None
+
+
+async def test_feed_fallback_moves_past_an_empty_vendor():
+    """A page can reference two vendors (flowdesk: Greenhouse and Workable);
+    one that yields nothing must not stop the next from being tried."""
+    made = board({
+        "https://acme.fr/jobs": page(
+            GREENHOUSE_EMBED + '<a href="https://jobs.lever.co/acme">x</a>'
+        ),
+        "https://api.lever.co/v0/postings/acme?mode=json": json.dumps([
+            {"text": "Data Engineer", "hostedUrl": "https://jobs.lever.co/acme/1",
+             "categories": {"location": "Paris"}},
+        ]),
+    })
+
+    jobs = await made._feed()
+
+    assert [job.title for job in jobs] == ["Data Engineer"]
+    assert made.ats == ATSName.LEVER
+
+
+async def test_feed_fallback_leaves_ats_unset_when_nothing_yields():
+    made = board({"https://acme.fr/jobs": GREENHOUSE_EMBED})
+
+    assert await made._feed() == []
+    assert made.ats is None
+
+
+async def test_recruitee_custom_domain_reads_the_api_on_its_own_host():
+    """careers.maia-space.com: only the analytics script names Recruitee, so
+    there is no tenant token -- but the board's own host serves the API."""
+    made = board({
+        "https://careers.acme.fr/jobs": page(
+            '<script src="https://careers-analytics.recruitee.com/t.js">'
+            "</script>"
+        ),
+        "https://careers.acme.fr/api/offers/": json.dumps({"offers": [
+            {"title": "Data Engineer", "location": "Paris",
+             "careers_url": "https://careers.acme.fr/o/data-engineer"},
+        ]}),
+    }, url="https://careers.acme.fr/jobs")
+
+    jobs = await made._feed()
+
+    assert [job.url for job in jobs] == [
+        "https://careers.acme.fr/o/data-engineer"]
+    assert made.ats == ATSName.RECRUITEE
+
+
+# ======================================================================
+# Linked ATS
+# ======================================================================
+
+
+@pytest.mark.parametrize("html,expected", [
+    # Concentrix: the only Workday URL is in an inline JSON blob.
+    ('<script>{"apply_url":"https://cnx.wd1.myworkdayjobs.com/ext/job/'
+     'x/dev_R1/apply"}</script>',
+     "https://cnx.wd1.myworkdayjobs.com/ext/job/x/dev_R1/apply"),
+    # An asset on a vendor host is skipped for the board link after it.
+    ('<script src="https://careers-analytics.recruitee.com/t.js"></script>'
+     '<a href="https://acme.recruitee.com/o/dev">x</a>',
+     "https://acme.recruitee.com/o/dev"),
+    # eXalt: extensionless CDN images on the vendor's domain come first.
+    ('<img src="https://cdn-images.welcometothejungle.com/UTX/w:2000/q:85">'
+     '<a href="https://www.welcometothejungle.com/fr/companies/exalt">x</a>',
+     "https://www.welcometothejungle.com/fr/companies/exalt"),
+    # "Powered by" homepage links name no board.
+    ('<a href="https://www.teamtailor.com/?utm_source=career-site">x</a>',
+     None),
+    ('<a href="https://www.linkedin.com/company/acme">x</a>', None),
+])
+def test_linked_ats_url(html, expected):
+    assert linked_ats_url(html, "https://acme.fr/jobs") == expected
+
+
+def test_linked_ats_url_skips_the_vendor_already_hosting_the_board():
+    html = '<a href="https://app.teamtailor.com/companies/x/dashboard">x</a>'
+
+    assert linked_ats_url(html, "https://acme.teamtailor.com/jobs") is None
+
+
+LEVER_BODY = json.dumps([
+    {"text": "Data Engineer", "hostedUrl": "https://jobs.lever.co/acme/1",
+     "categories": {"location": "Paris"}},
+])
+
+
+async def test_linked_ats_reads_the_linked_vendor_board():
+    made = board({
+        "https://acme.fr/jobs": page(
+            '<a href="https://jobs.lever.co/acme/123">Apply</a>'),
+        "https://jobs.lever.co/acme/123": page("posting"),
+        "https://api.lever.co/v0/postings/acme?mode=json": LEVER_BODY,
+    })
+
+    jobs = await made._linked_ats()
+
+    assert [job.title for job in jobs] == ["Data Engineer"]
+    assert made.ats == ATSName.LEVER
+
+
+async def test_linked_ats_never_runs_the_vendor_sitemap():
+    """broadpeak's werecruit link came back as 11,860 "jobs" when the child
+    ran the full chain: the sitemap on a vendor host is the vendor's whole
+    site. Only the vendor path may run on the linked board."""
+    made = board({
+        "https://acme.fr/jobs": page(
+            '<a href="https://careers.werecruit.io/en/acme/5e92f1">Jobs</a>'),
+        "https://careers.werecruit.io/en/acme/5e92f1": page("no offers"),
+    })
+
+    assert await made.scrape_board() == []
+    assert not any("werecruit" in url and "sitemap" in url
+                   for url in made.session.requested)
 
 
 def test_dig_tolerates_missing_keys_and_list_wrappers():
@@ -730,6 +919,25 @@ async def test_workday_pages_past_the_zeroed_total():
         place="Paris",
         via="workday",
     )
+
+
+async def test_workday_stops_at_its_ceiling():
+    """2,000: past that offset Workday replays page one (Airbus, Oct 31)."""
+    def endless(payload):
+        return json.dumps({"jobPostings": [
+            {"title": f"Dev {n}", "externalPath": f"/job/Dev_{n}"}
+            for n in range(payload["offset"],
+                           payload["offset"] + payload["limit"])
+        ]})
+
+    made = board(
+        {"https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/careers/jobs":
+            endless},
+        ats=ATSName.WORKDAY,
+        url="https://acme.wd3.myworkdayjobs.com/fr-FR/careers",
+    )
+
+    assert len(await scrape_workday(made)) == 2000
 
 
 async def test_workday_ignores_a_missing_locale_segment():
@@ -930,6 +1138,19 @@ async def test_wordpress_discovers_the_post_type_rather_than_guessing_it():
     assert jobs[0].via == "wordpress"
 
 
+async def test_wordpress_reads_the_ads_not_the_recruiter_pages():
+    """mercato lists cabinet-recrutement (513 office pages) before annonce."""
+    made = wordpress_board(type_name="annonce", count=1, **{
+        WP_TYPES: json.dumps({"post": {}, "cabinet-recrutement": {},
+                              "annonce": {}}),
+    })
+
+    jobs = await scrape_wordpress(made)
+
+    assert [job.url for job in jobs] == [f"{WP_ROOT}/annonce/dev-0-h-f/"]
+    assert not any("cabinet" in url for url in made.session.requested)
+
+
 async def test_wordpress_unescapes_the_rendered_title():
     """WP escapes entities; raw these read "Go developer &#8211; Team"."""
     jobs = await scrape_wordpress(wordpress_board())
@@ -1006,6 +1227,70 @@ async def test_links_falls_back_to_the_generic_job_shape_for_an_unknown_ats():
     jobs = _dedupe(await scrape_links(board({"https://acme.fr/jobs": BOARD_PAGE})))
 
     assert len(jobs) == 2
+
+
+#: Capgemini's page, cut down: every job-shaped link is in the site menus or
+#: the header search widget, and the listing itself is drawn in JS.
+MENU_ONLY_PAGE = page(
+    "<header><div id='navigation'>"
+    "<a href='/careers/why-join-capgemini/'>Why join Capgemini</a></div>"
+    "<div role='search'><a href='/careers/join-us/'>Job offers</a></div>"
+    "</header>"
+    "<nav><a href='/careers/join-capgemini/interview-tips/'>Interview tips</a>"
+    "</nav>"
+    "<div role='navigation'><a href='/careers/life-at-capgemini/'>Life</a>"
+    "</div>"
+    "<footer><a href='/careers/candidate-privacy-notice'>Privacy</a></footer>"
+)
+
+
+async def test_a_board_on_a_bot_refusing_host_is_not_scraped():
+    # APEC answers bots with a DataDome captcha: no strategy may touch it,
+    # job-shaped links on the page or not.
+    apec = "https://www.apec.fr/candidat/recherche-emploi.html/emploi?motsCles=x"
+    made = board({apec: BOARD_PAGE}, url=apec)
+
+    assert await made.scrape_board() == []
+    assert made.session.requested == []
+
+
+async def test_links_ignores_menu_banner_and_footer_links():
+    # Left in, these made Capgemini a 15-job board, so it never reached
+    # no_jobs.csv and RenderBoards never rendered it.
+    assert await scrape_links(board({"https://acme.fr/jobs": MENU_ONLY_PAGE})) == []
+
+
+async def test_links_keeps_postings_in_a_card_s_own_header():
+    # TOHTEM, proxiad and the rest of one platform's boards: a <header>
+    # inside an <article> is the card's, not the page banner.
+    listing = page(
+        "<header><nav><a href='/careers/why-join-us'>Why join us</a></nav>"
+        "</header><main>"
+        "<article><header><a href='/offres/ingenieur-devops-h-f'>"
+        "Ingénieur DevOps H/F</a></header></article>"
+        "<section><footer><a href='/offres/scrum-master-h-f'>Scrum Master"
+        "</a></footer></section></main>"
+    )
+
+    jobs = await scrape_links(board({"https://acme.fr/jobs": listing}))
+
+    assert [job.title for job in jobs] == ["Ingénieur DevOps H/F",
+                                           "Scrum Master"]
+
+
+async def test_links_skips_a_site_footer_inside_main():
+    # hellowork: its footer sits in <main>, its offer cards are a <header>
+    # in <main>. Soors, sogescot and synchrone filed the footer as jobs.
+    listing = page(
+        "<main><div><header><a href='/fr-fr/emplois/82121281.html'>"
+        "Data Engineer H/F</a></header></div>"
+        "<footer><a href='/fr-fr/emploi/index-categorie.html'>"
+        "Offres d'emploi par métier</a></footer></main>"
+    )
+
+    jobs = await scrape_links(board({"https://acme.fr/jobs": listing}))
+
+    assert [job.title for job in jobs] == ["Data Engineer H/F"]
 
 
 #: URL shapes taken from real boards in the fixture corpus. Reproduced inline
@@ -1305,6 +1590,60 @@ async def test_a_failed_render_yields_nothing_rather_than_raising():
     made = board({"https://acme.fr/jobs": SHELL_PAGE}, render=FakeRenderer())
 
     assert await made.scrape_board() == []
+    # Kept for diagnose: a failed render must not read like an empty page.
+    assert made.render_ran is True and made.rendered_html is None
+
+
+EMBED_URL = "https://hr.example/search/index"
+EMBED_PAGE = page(
+    "<a href='/6483/1/data-engineer'>Data engineer</a>"
+    "<a href='https://hr.example/jobs/6482-dev-senior'>Dev senior</a>"
+)
+
+
+async def test_a_listing_iframe_is_scraped_as_a_board_of_its_own():
+    """Région Hauts-de-France's careers page holds only a Gestmax iframe;
+    the postings live in the frame's own document."""
+    made = board({
+        "https://acme.fr/jobs": page(f"<iframe src='{EMBED_URL}'></iframe>"),
+        EMBED_URL: EMBED_PAGE,
+    })
+
+    jobs = await made.scrape_board()
+
+    assert [job.title for job in jobs] == ["Dev senior"]
+    assert all(job.via == "links" for job in jobs)
+    # On a vendor host the sitemap is the vendor's whole site.
+    assert not any(url.startswith("https://hr.example/sitemap")
+                   for url in made.session.requested)
+
+
+async def test_a_video_iframe_is_never_followed():
+    youtube = "https://www.youtube.com/embed/abc"
+    made = board({"https://acme.fr/jobs": page(
+        f"<iframe src='{youtube}'></iframe>")})
+
+    assert await made.scrape_board() == []
+    assert youtube not in made.session.requested
+
+
+async def test_an_iframe_that_only_exists_after_render_is_followed():
+    """Lille Métropole's Gestmax frame is injected by script."""
+    made = board(
+        {"https://acme.fr/jobs": SHELL_PAGE, EMBED_URL: EMBED_PAGE},
+        render=FakeRenderer(page(f"<iframe src='{EMBED_URL}'></iframe>")),
+    )
+
+    assert [job.title for job in await made.scrape_board()] == ["Dev senior"]
+
+
+async def test_the_rendered_page_is_kept_when_it_holds_no_postings():
+    drawn = page("<div id='root'><a href='/about'>About</a></div>")
+    made = board({"https://acme.fr/jobs": SHELL_PAGE},
+                 render=FakeRenderer(drawn))
+
+    assert await made.scrape_board() == []
+    assert made.render_ran is True and made.rendered_html == drawn
 
 
 async def test_the_renderer_reaches_the_detector_too(monkeypatch):

@@ -373,8 +373,9 @@ async def _run_analysis(gen: "_Generation", job_ids: List[UUID], granted: int,
     started = time.perf_counter()
     analysed = 0
 
-    def progress(_line: str) -> None:
+    def progress(job_id: UUID, grade: Optional[int], _line: str) -> None:
         gen.done += 1
+        gen.graded[job_id] = grade
 
     try:
         stats = await run_analysis(user_id, job_ids[:granted], model=model,
@@ -431,7 +432,7 @@ def get_analysis_run(user_id: CurrentUser, analysis_id: UUID) -> AnalyzeStatus:
     gen = _own_generation(user_id, analysis_id)
 
     return AnalyzeStatus(status=gen.status, done=gen.done, total=gen.total,
-                         result=gen.result, error=gen.error)
+                         graded=gen.graded, result=gen.result, error=gen.error)
 
 
 @router.get("/analyses", response_model=Page[AnalysisOut])
@@ -474,12 +475,14 @@ def get_analyses_without_cv(
         user_id: CurrentUser,
         limit: int = Limit,
         offset: int = Offset,
-        min_grade: int = Query(0, ge=0, le=100)
+        min_grade: int = Query(0, ge=0, le=100),
+        since_days: Optional[int] = Query(None, ge=1, le=365)
 ) -> Page[AnalysisOut]:
-    rows = db_cvs.select_jobs_for_cv(user_id, min_grade, limit, offset)
+    rows = db_cvs.select_jobs_for_cv(user_id, min_grade, limit, offset,
+                                     since_days=since_days)
 
     return Page(items=[_analysis_out(r) for r in rows],
-                total=db_cvs.count_jobs_for_cv(user_id, min_grade))
+                total=db_cvs.count_jobs_for_cv(user_id, min_grade, since_days))
 
 
 @router.get("/analyses/candidates", response_model=Page[CandidateOut],
@@ -520,6 +523,8 @@ class _Generation:
     finished: float = 0.0
     done: int = 0  # analysis runs only: postings graded or failed so far
     total: int = 0
+    # analysis runs only: each finished posting's grade, None if it failed
+    graded: Dict[UUID, Optional[int]] = field(default_factory=dict)
     task: Optional[asyncio.Task] = field(default=None, repr=False)
 
 

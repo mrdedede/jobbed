@@ -20,12 +20,15 @@ import asyncio
 import contextlib
 import json
 import re
+import ssl
 import time
 import weakref
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple, TypeVar
 from urllib.parse import urlparse
 
+import certifi
 import httpx
 
 #: A browser UA, not a bot string: several boards (devoteam, edf, hermes) 403
@@ -86,6 +89,17 @@ MAX_RETRY_AFTER = 30
 
 DEFAULT_TIMEOUT = 20
 
+#: certifi's roots plus the intermediates some servers forget to send.
+#: Not truststore: on the cluster's Linux image it is OpenSSL again, which
+#: never fetches a missing intermediate, so Meritis would still fail there.
+#
+# ponytail: a hand-kept list in intermediates.pem; each new misconfigured CA
+# is added by hand. Fetching the issuer from the leaf's AIA URL on a verify
+# failure is the upgrade, if no_jobs.csv keeps showing "tls:" reasons.
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+SSL_CONTEXT.load_verify_locations(
+    cafile=str(Path(__file__).with_name("intermediates.pem")))
+
 #: A two-letter language code, optionally with a region: the leading path
 #: segment boards insert for localised listings ("/fr-fr/careers/...").
 LOCALE_RE = re.compile(r"^[a-z]{2}(?:-[a-z]{2})?$", re.I)
@@ -108,6 +122,7 @@ def new_client(headers: Optional[Dict[str, str]] = None) -> httpx.AsyncClient:
         follow_redirects=True,
         max_redirects=10,
         timeout=DEFAULT_TIMEOUT,
+        verify=SSL_CONTEXT,
         limits=httpx.Limits(max_connections=GLOBAL_CONCURRENCY,
                             max_keepalive_connections=20),
     )

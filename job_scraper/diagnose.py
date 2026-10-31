@@ -132,6 +132,14 @@ async def _probe(board) -> str:
     try:
         return await request(board.session, board.url, read)
     except httpx.HTTPError as err:
+        # Meritis and apsia read as a bare ConnectError for a missing
+        # intermediate; naming it says to add one to intermediates.pem.
+        reason = re.search(r"CERTIFICATE_VERIFY_FAILED\]\s*([^(]*)", str(err))
+
+        if reason:
+            return ("tls: certificate chain not verifiable "
+                    f"({reason.group(1).strip()})")
+
         return f"fetch failed: {type(err).__name__}"
 
 

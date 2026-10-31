@@ -74,6 +74,17 @@ async def test_exception_is_the_explanation():
     assert "too slow" in reason
 
 
+async def test_an_unverifiable_certificate_chain_is_named():
+    error = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable "
+        "to get local issuer certificate (_ssl.c:1010)")
+    board = FakeBoard(session=FakeSession(error=error))
+
+    assert (await diagnose.explain(board)).startswith(
+        "tls: certificate chain not verifiable (certificate verify failed: "
+        "unable to get local issuer certificate")
+
+
 async def test_non_200_is_reported_with_its_status():
     board = FakeBoard(session=FakeSession(FakeResponse(status=403)))
 

@@ -455,5 +455,7 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
 
     assert (first.status_code, second.status_code) == (202, 409)
     assert (running["status"], running["done"], running["total"]) == ("running", 0, 1)
+    assert running["graded"] == {}
     assert (finished["status"], finished["done"]) == ("done", 1)
+    assert finished["graded"] == {ids("Go A")[0]: 77}
     assert uid not in user_router._analysis_in_flight

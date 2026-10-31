@@ -345,6 +345,14 @@ def test_without_cv_lists_graded_postings_still_missing_one(as_user, chat):
     assert c.get("/v1/me/analyses/without-cv?min_grade=100").json() \
         == {"items": [], "total": 0}
 
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE ai_analysis SET created_at = now() - interval '3 days' "
+                          "WHERE job_id = :j"), {"j": job_ids[1]})
+    recent = c.get("/v1/me/analyses/without-cv?since_days=1").json()
+
+    assert [a["job_id"] for a in recent["items"]] == [str(job_ids[2])]
+    assert recent["total"] == 1
+
 
 @pytest.mark.parametrize("ext", ["docx", "pdf"])
 def test_server_side_rendering_routes_are_gone(as_user, chat, ext):

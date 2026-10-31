@@ -922,7 +922,7 @@ async def test_workday_pages_past_the_zeroed_total():
 
 
 async def test_workday_stops_at_its_ceiling():
-    """2,000, not every posting: seven tenants sat at the old 1,000 (Oct 30)."""
+    """2,000: past that offset Workday replays page one (Airbus, Oct 31)."""
     def endless(payload):
         return json.dumps({"jobPostings": [
             {"title": f"Dev {n}", "externalPath": f"/job/Dev_{n}"}
@@ -1136,6 +1136,19 @@ async def test_wordpress_discovers_the_post_type_rather_than_guessing_it():
     assert WP_TYPES in made.session.requested
     assert jobs[0].url == f"{WP_ROOT}/offres/dev-0-h-f/"
     assert jobs[0].via == "wordpress"
+
+
+async def test_wordpress_reads_the_ads_not_the_recruiter_pages():
+    """mercato lists cabinet-recrutement (513 office pages) before annonce."""
+    made = wordpress_board(type_name="annonce", count=1, **{
+        WP_TYPES: json.dumps({"post": {}, "cabinet-recrutement": {},
+                              "annonce": {}}),
+    })
+
+    jobs = await scrape_wordpress(made)
+
+    assert [job.url for job in jobs] == [f"{WP_ROOT}/annonce/dev-0-h-f/"]
+    assert not any("cabinet" in url for url in made.session.requested)
 
 
 async def test_wordpress_unescapes_the_rendered_title():

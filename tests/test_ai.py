@@ -3,6 +3,7 @@ ai/cv_generation.py, with the gateway faked at the HTTP / chat() seam."""
 
 import json
 import uuid
+from datetime import date
 
 import httpx
 import pytest
@@ -88,6 +89,17 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
     assert "my cv" in prompt and "write python" in prompt
     assert "## Dev -- Acme" in prompt
     assert schema is analysis.ANALYSIS_SCHEMA
+
+
+async def test_analyze_gives_the_date_and_asks_for_the_write_up_first(fake_chat):
+    calls, _ = fake_chat
+
+    await analysis.analyze(JOB, "cv")
+
+    _, prompt, schema = calls[0]
+    assert date.today().isoformat() in prompt
+    assert schema["required"][0] == "depth_analysis"
+    assert next(iter(schema["properties"])) == "depth_analysis"
 
 
 async def test_analyze_returns_the_place_the_model_read(fake_chat):
@@ -223,6 +235,38 @@ async def test_generate_cv_without_an_active_cv_refuses(user, fake_chat):
 
     with pytest.raises(NoActiveCv):
         await cv_generation.generate_cv(user, job_id)
+
+
+@pytest.mark.parametrize("ats, emphasis", [
+    ("workday", "requirement coverage"),
+    ("successfactors", "skills under dated jobs"),
+    ("greenhouse", "clean core fields"),
+    ("smartrecruiters", "complete sections"),
+])
+async def test_generate_cv_adds_the_emphasis_of_the_postings_ats(
+        fake_chat, monkeypatch, ats, emphasis):
+    calls, state = fake_chat
+    state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
+    monkeypatch.setattr(generated_cv, "select_job_for_generation",
+                        lambda user_id, job_id: ("post", uuid.uuid4(), "why", ats))
+    monkeypatch.setattr(generated_cv, "insert_generated_cv",
+                        lambda *args: uuid.uuid4())
+
+    await cv_generation.generate_cv(uuid.uuid4(), uuid.uuid4(), cv_md="my cv")
+
+    prompt = calls[0][1]
+    assert f"Emphasis for this posting: {emphasis}" in prompt
+    assert prompt.count("Emphasis for this posting") == 1
+    assert prompt.index("The ground rule") < prompt.index("Emphasis") \
+        < prompt.index("# User CV")
+
+
+@pytest.mark.parametrize("ats", [None, "", "lever", "../generate-cv"])
+async def test_generate_cv_prompt_is_the_default_for_any_other_ats(ats):
+    assert cv_generation._build_prompt("cv", "why", "post", ats) \
+        == cv_generation._build_prompt("cv", "why", "post")
+    assert "Emphasis for this posting" not in \
+        cv_generation._build_prompt("cv", "why", "post", ats)
 
 
 @pytest.mark.parametrize("answer", ["garbage", "[]", '{"locale": "fr"}'])

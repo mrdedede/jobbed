@@ -96,7 +96,8 @@ def update_generated_cv(user_id: UUID, cv_id: UUID, cv: dict) -> bool:
 # SELECTIONS
 
 def select_job_for_generation(
-        user_id: UUID, job_id: UUID) -> Optional[Tuple[str, UUID, str]]:
+        user_id: UUID, job_id: UUID
+        ) -> Optional[Tuple[str, UUID, str, Optional[str]]]:
     """The posting text and this user's analysis of it, for the CV prompt.
 
     Args:
@@ -105,16 +106,16 @@ def select_job_for_generation(
         job_id: The posting to generate a CV for.
 
     Returns:
-        Tuple of (description, ai_analysis id, depth_analysis), or None when
+        Tuple of (description, ai_analysis id, depth_analysis, ats), or None when
         the posting does not exist or this user has not graded it yet.
     """
     # SQL: SELECT job_postings.description, ai_analysis.id,
-    #      ai_analysis.depth_analysis FROM job_postings
+    #      ai_analysis.depth_analysis, job_postings.ats FROM job_postings
     #      JOIN ai_analysis ON ai_analysis.job_id = job_postings.id
     #      WHERE job_postings.id = ? AND ai_analysis.user_id = ?
     stmt = (
         select(job_postings.c.description, ai_analysis.c.id,
-               ai_analysis.c.depth_analysis)
+               ai_analysis.c.depth_analysis, job_postings.c.ats)
         .join(ai_analysis, ai_analysis.c.job_id == job_postings.c.id)
         .where(job_postings.c.id == job_id)
         .where(ai_analysis.c.user_id == user_id)

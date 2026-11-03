@@ -1,6 +1,7 @@
 """Grade one posting against one CV, through the LLM gateway."""
 
 import json
+from datetime import date
 from typing import Optional, Tuple
 
 import httpx
@@ -14,15 +15,17 @@ with open(paths.GRADE_JOB_MD, "r") as f:
 # Enforced by the model API, not by the prompt: asking for "no code fences" in
 # prose got ignored often enough to break parsing. The 0-100 range is checked
 # in `analyze` -- structured-output schemas do not reliably honour min/max.
+# The write-up comes first so the model works out the gaps and the experience
+# deduction before it commits to a grade.
 ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
-        "adequation_grade": {"type": "integer"},
         "depth_analysis": {"type": "string"},
+        "adequation_grade": {"type": "integer"},
         # Optional: the job's location, for postings the scraper found none on.
         "place": {"type": "string"},
     },
-    "required": ["adequation_grade", "depth_analysis"],
+    "required": ["depth_analysis", "adequation_grade"],
     "additionalProperties": False,
 }
 
@@ -31,7 +34,9 @@ def build_prompt(cv_md: str, job: Tuple) -> str:
     """The grading prompt. `job` is (id, company, title, description)."""
     _, company, title, description = job
 
-    return (f"{grade_job}\n--------\n# User CV\n{cv_md}\n--------\n"
+    return (f"{grade_job}\n--------\n# Today's date\n"
+            f"{date.today().isoformat()}\n--------\n"
+            f"# User CV\n{cv_md}\n--------\n"
             f"# JOB POST\n\n## {title} -- {company}\n\n{description}")
 
 

@@ -21,6 +21,11 @@ from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
 with open(paths.GENERATE_CV_MD, "r") as f:
     generate_cv_prompt = f.read()
 
+#: ATS name, as stored in job_postings.ats -> what its generate-cv-<ats>.md
+#: adds to the prompt. Any other ATS, or none, gets generate-cv.md alone.
+_ATS_EMPHASIS = {path.stem.removeprefix("generate-cv-"): path.read_text()
+                 for path in paths.AI.glob("generate-cv-*.md")}
+
 # Enforced by the model API, not by the prompt: the shape asked for in prose gets
 # ignored often enough to break parsing (same lesson as ai.analysis).
 # `languages` is deliberately absent -- it is copied verbatim from the CV at
@@ -101,8 +106,13 @@ _LANGUAGE_REMINDER = (
     "text field into it. Only proper nouns stay unchanged.")
 
 
-def _build_prompt(cv_md: str, depth_analysis: Optional[str], description: str) -> str:
-    return (f"{generate_cv_prompt}\n--------\n# User CV\n{cv_md}\n"
+def _build_prompt(cv_md: str, depth_analysis: Optional[str], description: str,
+                  ats: Optional[str] = None) -> str:
+    emphasis = _ATS_EMPHASIS.get(ats)
+    instructions = (f"{generate_cv_prompt}\n{emphasis}" if emphasis
+                    else generate_cv_prompt)
+
+    return (f"{instructions}\n--------\n# User CV\n{cv_md}\n"
             f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis or ''}\n"
             f"--------\n# JOB POST\n\n{description}\n"
             f"--------\n{_LANGUAGE_REMINDER}")
@@ -147,9 +157,9 @@ async def generate_cv(user_id: UUID, job_id: UUID,
 
         cv_md = active[1]
 
-    description, analysis_id, depth_analysis = row
+    description, analysis_id, depth_analysis, ats = row
     raw = await gateway.chat(
-        model, _build_prompt(cv_md, depth_analysis, description),
+        model, _build_prompt(cv_md, depth_analysis, description, ats),
         CV_SCHEMA, client)
 
     try:

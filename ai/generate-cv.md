@@ -17,7 +17,7 @@ Never invent. Not an employer, not a date, not a degree, not a tool, not a
 metric, not a responsibility. Everything in your output must trace back to a line in the candidate's CV.
 
 What you may do is reframe: reword a bullet in the posting's vocabulary,
-reorder experiences and bullets so the relevant ones come first, group skills under labels the posting would recognise, and drop what this posting has no use for. Dropping is the main tool — a tailored CV is shorter than the source one, not longer.
+reorder experiences and bullets so the relevant ones come first, group skills under labels the posting would recognise, and drop the bullets and skills this posting has no use for. Dropping is the main tool — a tailored CV is shorter than the source one, not longer. Whole experiences are the exception: they all stay.
 
 A CV that gets the candidate an interview they cannot survive is worse than one that gets no call.
 
@@ -50,10 +50,12 @@ even if everything else is perfect.
 
 **`skills`** — three to five competence groups, each with three to six entries. Label the groups with the posting's own vocabulary where the CV supports it. The skills the posting asks for come first, inside the group and across groups. Every entry appears somewhere in the source CV.
 
-**`experiences`** — professional experiences, most relevant to this posting first, not necessarily most recent. Each carries `role`, `company`, `location` ("City, Country"), `start_date` and `end_date` as "Month, Year" — `end_date` is "Present" (translated) for a current job — and `bullets`. Role, month names and bullets are written in the `locale` language.
+**`experiences`** — every professional experience in the source CV, most relevant to this posting first, not necessarily most recent. Each carries `role`, `company`, `location` ("City, Country"), `start_date` and `end_date` as "Month, Year" — `end_date` is "Present" (translated) for a current job — and `bullets`. Role, month names and bullets are written in the `locale` language.
 
-At least four bullets each, unless the source CV has fewer for that job. A
-bullet names the task, the skills used to solve it, and the result, quantified whenever the source CV quantifies it. Rewrite bullets toward this posting; drop the ones it has no use for. An experience with nothing relevant left in it can be cut entirely — but never cut one just because it is old, gaps in a timeline get asked about.
+At least four bullets each for an experience relevant to this posting, unless the source CV has fewer for that job. A
+bullet names the task, the skills used to solve it, and the result, quantified whenever the source CV quantifies it. Rewrite bullets toward this posting; drop the ones it has no use for.
+
+Never cut an experience, however old or irrelevant. If one has little relevance to this posting, keep its role, company, location and dates and shorten it to one or two bullets. Applicant tracking systems can compute years of experience from these dates, so a missing job can lower the candidate's total, and gaps in a timeline get asked about.
 
 **`education`** — each entry carries `diploma`, `institution`, `location`,
 `period` ("2019 - 2021"), `degree` (the topic and level), and `details` (research topic, GPA — empty string when the source CV has neither). Most recent first. Education is not tailored; it is reported.

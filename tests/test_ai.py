@@ -3,6 +3,7 @@ ai/cv_generation.py, with the gateway faked at the HTTP / chat() seam."""
 
 import json
 import uuid
+from datetime import date
 
 import httpx
 import pytest
@@ -88,6 +89,17 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
     assert "my cv" in prompt and "write python" in prompt
     assert "## Dev -- Acme" in prompt
     assert schema is analysis.ANALYSIS_SCHEMA
+
+
+async def test_analyze_gives_the_date_and_asks_for_the_write_up_first(fake_chat):
+    calls, _ = fake_chat
+
+    await analysis.analyze(JOB, "cv")
+
+    _, prompt, schema = calls[0]
+    assert date.today().isoformat() in prompt
+    assert schema["required"][0] == "depth_analysis"
+    assert next(iter(schema["properties"])) == "depth_analysis"
 
 
 async def test_analyze_returns_the_place_the_model_read(fake_chat):

@@ -14,6 +14,7 @@ from uuid import UUID
 import httpx
 
 from ai import gateway
+from ai.analysis import requirements_section
 from ai.exceptions import NoGeneratedCv, UnusableAnswer
 from db import cover_letters as db_letters
 from job_scraper import paths
@@ -47,7 +48,7 @@ _LANGUAGE_REMINDER = (
 
 
 def _build_prompt(cv: dict, depth_analysis: Optional[str], answers: dict,
-                  description: str) -> str:
+                  description: str, assessment: Optional[dict] = None) -> str:
     answered = "\n\n".join(
         f"## {heading}\n{answers.get(key) or '(no answer)'}"
         for key, heading in _QUESTIONS.items())
@@ -55,6 +56,7 @@ def _build_prompt(cv: dict, depth_analysis: Optional[str], answers: dict,
     return (f"{cover_letter_prompt}\n--------\n# TAILORED CV\n"
             f"{json.dumps(cv, ensure_ascii=False, indent=1)}\n"
             f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis or ''}\n"
+            f"{requirements_section(assessment)}"
             f"--------\n# CANDIDATE'S ANSWERS\n\n{answered}\n"
             f"--------\n# JOB POST\n\n{description}\n"
             f"--------\n{_LANGUAGE_REMINDER}")
@@ -87,9 +89,10 @@ async def generate_cover_letter(user_id: UUID, cv_id: UUID, answers: dict,
     if row is None:
         raise NoGeneratedCv(f"no generated cv {cv_id} for user {user_id}")
 
-    job_id, cv, description, depth_analysis = row
+    job_id, cv, description, depth_analysis, assessment = row
     raw = await gateway.chat(
-        model, _build_prompt(cv, depth_analysis, answers, description or ""),
+        model, _build_prompt(cv, depth_analysis, answers, description or "",
+                             assessment),
         LETTER_SCHEMA, client)
 
     try:

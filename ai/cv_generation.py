@@ -13,6 +13,7 @@ from uuid import UUID
 import httpx
 
 from ai import gateway
+from ai.analysis import requirements_section
 from db import generated_cv as db_generated_cv
 from db import users
 from job_scraper import paths
@@ -70,6 +71,19 @@ CV_SCHEMA = {
                         "additionalProperties": False,
                     },
                 },
+                "certifications": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "issuer": {"type": "string"},
+                            "year": {"type": "string"},
+                        },
+                        "required": ["name", "issuer", "year"],
+                        "additionalProperties": False,
+                    },
+                },
                 "education": {
                     "type": "array",
                     "items": {
@@ -89,11 +103,12 @@ CV_SCHEMA = {
                 },
             },
             "required": ["cv_introduction", "profile_text", "skills",
-                         "experiences", "education"],
+                         "experiences", "education", "certifications"],
             "additionalProperties": False,
         },
     },
     "required": ["locale", "cv"],
+    "additionalProperties": False,
 }
 
 
@@ -107,13 +122,15 @@ _LANGUAGE_REMINDER = (
 
 
 def _build_prompt(cv_md: str, depth_analysis: Optional[str], description: str,
-                  ats: Optional[str] = None) -> str:
+                  ats: Optional[str] = None,
+                  assessment: Optional[dict] = None) -> str:
     emphasis = _ATS_EMPHASIS.get(ats)
     instructions = (f"{generate_cv_prompt}\n{emphasis}" if emphasis
                     else generate_cv_prompt)
 
     return (f"{instructions}\n--------\n# User CV\n{cv_md}\n"
             f"--------\n# ANALYSIS OF THIS POSTING\n\n{depth_analysis or ''}\n"
+            f"{requirements_section(assessment)}"
             f"--------\n# JOB POST\n\n{description}\n"
             f"--------\n{_LANGUAGE_REMINDER}")
 
@@ -157,9 +174,9 @@ async def generate_cv(user_id: UUID, job_id: UUID,
 
         cv_md = active[1]
 
-    description, analysis_id, depth_analysis, ats = row
+    description, analysis_id, depth_analysis, ats, assessment = row
     raw = await gateway.chat(
-        model, _build_prompt(cv_md, depth_analysis, description, ats),
+        model, _build_prompt(cv_md, depth_analysis, description, ats, assessment),
         CV_SCHEMA, client)
 
     try:

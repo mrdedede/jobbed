@@ -182,6 +182,22 @@ def test_unavailable_backend_is_a_503(adapters, client):
     assert "ANTHROPIC_API_KEY" in response.json()["detail"]
 
 
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+async def test_claude_adapter_rejects_an_answer_that_stopped_early(
+        monkeypatch, stop_reason):
+    monkeypatch.setattr(claude_module.settings, "anthropic_api_key", "k")
+    reply = _Reply([_Block('{"cut": ')])
+    reply.stop_reason = stop_reason
+
+    async def create(**kwargs):
+        return reply
+
+    monkeypatch.setattr(claude_module._client.messages, "create", create)
+
+    with pytest.raises(ValueError, match=stop_reason):
+        await ClaudeAdapter().complete("haiku", "prompt", None)
+
+
 async def test_claude_adapter_with_no_text_raises(monkeypatch):
     monkeypatch.setattr(claude_module.settings, "anthropic_api_key", "k")
 

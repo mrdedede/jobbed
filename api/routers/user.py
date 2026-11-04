@@ -306,10 +306,12 @@ async def suggest_cv_terms(user_id: CurrentUser, cv_id: UUID) -> TermSuggestions
 # ANALYSIS
 
 def _analysis_out(row) -> AnalysisOut:
+    """A row of `select_analysis_page`, or of the without-CV listing, whose
+    shorter rows have no `has_cv` because the answer is always no."""
     return AnalysisOut(
         job_id=row[0], adequation_grade=row[1], company=row[2], title=row[3],
         place=row[4], url=row[5], ai_model=row[6], depth_analysis=row[7],
-        analysed_at=row[8])
+        analysed_at=row[8], has_cv=len(row) > 9 and row[9])
 
 
 def _seconds_to_utc_midnight() -> int:
@@ -323,12 +325,15 @@ def _seconds_to_utc_midnight() -> int:
 @router.post("/analyze", response_model=AnalyzeStarted,
              status_code=status.HTTP_202_ACCEPTED,
              responses={429: {"description": "Daily analysis cap reached"},
-                        409: {"description": "No active CV, or a run is "
-                                             "already in flight"}},
+                        409: {"description": "No active CV, a run is already "
+                                             "in flight, or a regrade picked a "
+                                             "posting with a generated CV"}},
              description="Starts grading the picked postings, in order, up "
                          "to the daily cap. Poll GET /analyze/{analysis_id} "
                          "for progress and the result. Unknown, already "
-                         "graded and over-cap ones come back as `skipped`.")
+                         "graded and over-cap ones come back as `skipped`. "
+                         "With `regrade`, already graded postings run again "
+                         "and each uses one of the day's analyses.")
 async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeStarted:
     if user_id in _analysis_in_flight:
         raise HTTPException(status.HTTP_409_CONFLICT,
@@ -337,8 +342,16 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeSta
     # No await between the check above and this add: atomic on the event loop.
     _analysis_in_flight.add(user_id)
     try:
-        if await asyncio.to_thread(users.select_active_user_cv, user_id) is None:
+        active = await asyncio.to_thread(users.select_active_user_cv, user_id)
+
+        if active is None or not active[1].strip():
             raise HTTPException(status.HTTP_409_CONFLICT, "no active CV")
+
+        # Before reserving, so a refused regrade uses none of the day's cap.
+        if body.regrade and await asyncio.to_thread(
+                db_analysis.any_has_cv, user_id, body.job_ids):
+            raise HTTPException(status.HTTP_409_CONFLICT,
+                                "already has a generated CV")
 
         granted = await asyncio.to_thread(
             usage.reserve, user_id, usage.KIND_ANALYSIS, len(body.job_ids),
@@ -361,13 +374,13 @@ async def analyze_post(user_id: CurrentUser, body: AnalyzeRequest) -> AnalyzeSta
     gen = _generations[analysis_id] = _Generation(user_id, total=granted)
     # Held so the loop cannot garbage-collect the task mid-run.
     gen.task = asyncio.create_task(
-        _run_analysis(gen, body.job_ids, granted, body.model))
+        _run_analysis(gen, body.job_ids, granted, body.model, body.regrade))
 
     return AnalyzeStarted(analysis_id=analysis_id)
 
 
 async def _run_analysis(gen: "_Generation", job_ids: List[UUID], granted: int,
-                        model: str) -> None:
+                        model: str, regrade: bool = False) -> None:
     """Grade, record the outcome on `gen`, refund every unit not stored."""
     user_id = gen.user_id
     started = time.perf_counter()
@@ -379,7 +392,7 @@ async def _run_analysis(gen: "_Generation", job_ids: List[UUID], granted: int,
 
     try:
         stats = await run_analysis(user_id, job_ids[:granted], model=model,
-                                   on_progress=progress)
+                                   on_progress=progress, regrade=regrade)
         analysed = stats["analysed"]
         skipped = stats["skipped"] + len(job_ids) - granted
 
@@ -431,8 +444,11 @@ async def _run_analysis(gen: "_Generation", job_ids: List[UUID], granted: int,
 def get_analysis_run(user_id: CurrentUser, analysis_id: UUID) -> AnalyzeStatus:
     gen = _own_generation(user_id, analysis_id)
 
-    return AnalyzeStatus(status=gen.status, done=gen.done, total=gen.total,
-                         graded=gen.graded, result=gen.result, error=gen.error)
+    # "running" until the refund is done and the user's slot is free: a client
+    # told it finished may start the next run at once, and must not get a 409.
+    return AnalyzeStatus(status=gen.status if gen.finished else "running",
+                         done=gen.done, total=gen.total, graded=gen.graded,
+                         result=gen.result, error=gen.error)
 
 
 @router.get("/analyses", response_model=Page[AnalysisOut])

@@ -8,6 +8,7 @@ gateway call per posting, run concurrently up to `concurrency` -- see
 
 import argparse
 import asyncio
+import logging
 import sys
 from collections import defaultdict
 from typing import Callable, Iterable, Optional, Sequence
@@ -23,6 +24,7 @@ from db import users
 from job_scraper.filters import filter_frame
 from ai.exceptions import NoActiveCv
 
+logger = logging.getLogger(__name__)
 
 CANDIDATE_COLUMNS = ["id", "company", "title", "url", "place", "description",
                      "scraped_at"]
@@ -118,8 +120,8 @@ async def list_due(user_id: UUID, window: str = "-24 hours") -> list:
 async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                        model: str = gateway.HAIKU_MODEL,
                        concurrency: int = 4,
-                       on_progress: Optional[Callable[[UUID, Optional[int], str], None]] = None
-                       ) -> dict:
+                       on_progress: Optional[Callable[[UUID, Optional[int], str], None]] = None,
+                       regrade: bool = False) -> dict:
     """Grade the postings the user picked and store each verdict.
 
     The user's keywords and blacklist do not apply here: they shape the
@@ -129,10 +131,14 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
         user_id: Whose CV to grade against and whose analyses to write.
         job_ids: Postings to grade, in order. Unknown ones and ones this user
             already graded are skipped, so a retry never pays twice.
+            With `regrade`, the reverse: only postings this user graded and
+            has no CV for run, and each new verdict replaces the old one.
         model: Which gateway model grades.
         concurrency: Calls in flight at once.
         on_progress: Optional callback given, per posting, its id, its grade
-            (None when it failed) and a printable line.
+            (None when it failed or had nothing to assess) and a printable line.
+        regrade: Grade already graded postings again. A failed call stores
+            nothing, so the old grade survives it.
 
     Returns:
         Dict with `analysed` and `failed` counts, `skipped` (asked for but
@@ -144,19 +150,21 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
     """
     active = await asyncio.to_thread(users.select_active_user_cv, user_id)
 
-    if active is None:
+    if active is None or not active[1].strip():
         raise NoActiveCv(f"user {user_id} has no active CV")
 
     cv_md = active[1]
+    select_jobs = (db_analysis.select_regradable_jobs if regrade
+                   else db_analysis.select_ungraded_jobs)
     found = {row[0]: row for row in await asyncio.to_thread(
-        db_analysis.select_ungraded_jobs, user_id, job_ids)}
+        select_jobs, user_id, job_ids)}
     jobs = [found[i] for i in dict.fromkeys(job_ids) if i in found]
     gate = asyncio.Semaphore(concurrency)
     counts = {"analysed": 0, "failed": 0}
     stored = []
 
     async def grade(index: int, job, client: httpx.AsyncClient) -> None:
-        job_id, company, title, _ = job
+        job_id, company, title, *_ = job
 
         grade_value = None
 
@@ -166,6 +174,7 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                 await asyncio.to_thread(db_analysis.insert_analysis, [
                     user_id, verdict["adequation_grade"],
                     verdict["depth_analysis"], model, job_id,
+                    verdict["assessment"],
                 ])
 
                 if verdict["place"]:
@@ -175,10 +184,12 @@ async def run_analysis(user_id: UUID, job_ids: Sequence[UUID],
                 counts["analysed"] += 1
                 stored.append(job_id)
                 grade_value = verdict["adequation_grade"]
-                note = f"{verdict['adequation_grade']:3}"
+                note = f"{'--' if grade_value is None else grade_value:>3}"
             except Exception as exc:
                 counts["failed"] += 1
                 note = f"FAIL {type(exc).__name__}: {exc}"
+                logger.warning("grading job %s failed: %s: %s", job_id,
+                               type(exc).__name__, exc)
 
         if on_progress:
             on_progress(job_id, grade_value,

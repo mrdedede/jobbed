@@ -122,6 +122,7 @@ class AnalyzeRequest(BaseModel):
     """The postings the user picked to grade, from /analyses/candidates."""
     job_ids: List[UUID] = Field(min_length=1, max_length=50)
     model: str = "haiku"
+    regrade: bool = False  # grade these again; refused if one has a CV
 
     @field_validator("job_ids")
     @classmethod
@@ -148,6 +149,7 @@ class AnalysisOut(BaseModel):
     ai_model: Optional[str] = None
     depth_analysis: Optional[str] = None
     analysed_at: datetime
+    has_cv: bool = False  # a CV was generated from it: cannot be regraded
 
 
 T = TypeVar("T")
@@ -262,12 +264,20 @@ class GenEducation(_Strict):
     details: CvText
 
 
+class GenCertification(_Strict):
+    name: CvText
+    issuer: CvText
+    year: CvText
+
+
 class GenCvBody(_Strict):
     cv_introduction: CvText
     profile_text: CvText
     skills: List[GenSkillGroup] = Field(max_length=50)
     experiences: List[GenExperience] = Field(max_length=50)
     education: List[GenEducation] = Field(max_length=50)
+    # Defaulted: CVs generated before this field existed can still be edited.
+    certifications: List[GenCertification] = Field(default=[], max_length=50)
 
 
 class GenCvUpdate(_Strict):

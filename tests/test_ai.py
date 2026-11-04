@@ -8,14 +8,16 @@ from datetime import date
 import httpx
 import pytest
 
-from ai import analysis, cv_generation, gateway, main_analysis
+from api_helpers import empty_answer, grading_answer
+
+from ai import (analysis, cover_letter, cv_generation, gateway, main_analysis,
+                term_suggestion)
 from ai.exceptions import NoActiveCv, UnusableAnswer
 from db import analysis as db_analysis
 from db import generated_cv, jobs, users
 
 pytestmark = pytest.mark.anyio
 
-GOOD = json.dumps({"adequation_grade": 77, "depth_analysis": "solid fit"})
 
 
 # gateway.chat
@@ -59,18 +61,18 @@ async def test_chat_maps_a_malformed_body_to_gateway_error():
 
 # analysis.analyze
 
-JOB = (uuid.uuid4(), "Acme", "Dev", "write python")
+JOB = (uuid.uuid4(), "Acme", "Dev", "write python", None)
 
 
 @pytest.fixture
 def fake_chat(monkeypatch):
     calls = []
-    state = {"answer": GOOD}
+    state = {"answer": None}  # None: a valid answer to whatever was asked
 
     async def chat(model, prompt, schema=None, client=None):
         calls.append((model, prompt, schema))
 
-        return state["answer"]
+        return state["answer"] or grading_answer(prompt, "solid fit")
 
     monkeypatch.setattr(gateway, "chat", chat)
 
@@ -82,8 +84,9 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
 
     verdict = await analysis.analyze(JOB, "my cv", model="ollama-x")
 
-    assert verdict == {"adequation_grade": 77, "depth_analysis": "solid fit",
-                       "place": None}
+    assert verdict["adequation_grade"] == 100
+    assert verdict["depth_analysis"].startswith("solid fit")
+    assert verdict["place"] is None
     model, prompt, schema = calls[0]
     assert model == "ollama-x"
     assert "my cv" in prompt and "write python" in prompt
@@ -91,31 +94,163 @@ async def test_analyze_returns_a_validated_verdict(fake_chat):
     assert schema is analysis.ANALYSIS_SCHEMA
 
 
-async def test_analyze_gives_the_date_and_asks_for_the_write_up_first(fake_chat):
+async def test_analyze_gives_the_date_and_asks_for_the_write_up_last(fake_chat):
     calls, _ = fake_chat
 
     await analysis.analyze(JOB, "cv")
 
     _, prompt, schema = calls[0]
     assert date.today().isoformat() in prompt
-    assert schema["required"][0] == "depth_analysis"
-    assert next(iter(schema["properties"])) == "depth_analysis"
+    assert schema["required"][-1] == "depth_analysis"
+    assert "adequation_grade" not in schema["properties"]
 
 
 async def test_analyze_returns_the_place_the_model_read(fake_chat):
     _, state = fake_chat
-    state["answer"] = json.dumps({"adequation_grade": 5, "depth_analysis": "x",
-                                  "place": " Toulouse "})
+    state["answer"] = empty_answer(place=" Toulouse ")
 
     assert (await analysis.analyze(JOB, "cv"))["place"] == "Toulouse"
 
 
+def _requirement(**overrides):
+    return {"text": "Python", "kind": "skill", "importance": "required",
+            "status": "met", "evidence": "the CV", "quote": "write python",
+            **overrides}
+
+
+def _answer(**overrides):
+    return json.dumps({
+        "requirements": [_requirement()], "required_years": None,
+        "experiences": [], "onsite_country": None, "depth_analysis": "x",
+        **overrides})
+
+
+async def test_analyze_computes_the_grade_and_keeps_the_facts(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(
+        requirements=[_requirement(), _requirement(status="transferable")],
+        required_years=2,
+        experiences=[{"company": "C", "role": "R", "start": "2010-01",
+                      "end": "2015-01", "relevant": True}])
+
+    verdict = await analysis.analyze(JOB, "cv")
+
+    assert verdict["adequation_grade"] == 75
+    assert verdict["assessment"]["fit"] == 75
+    assert verdict["assessment"]["graded_on"] == date.today().isoformat()
+    assert len(verdict["assessment"]["requirements"]) == 2
+
+
+async def test_analyze_ignores_a_grade_from_the_model(fake_chat):
+    _, state = fake_chat
+    state["answer"] = json.dumps({**json.loads(_answer()), "adequation_grade": 3})
+
+    assert (await analysis.analyze(JOB, "cv"))["adequation_grade"] == 100
+
+
+async def test_analyze_applies_the_postings_ats_policy(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(requirements=[_requirement(status="transferable")])
+    workday = (*JOB[:4], "workday")
+
+    verdict = await analysis.analyze(workday, "cv")
+
+    assert verdict["adequation_grade"] == 30
+    assert verdict["assessment"]["fit"] == 50
+
+
+async def test_analyze_puts_the_score_in_the_write_up(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(required_years=5)
+
+    written = (await analysis.analyze(JOB, "cv"))["depth_analysis"]
+
+    assert written.startswith("x\n\n**Grade: 65/100**")
+    assert "(fit: 65/100)" in written
+    assert "minus 35 points" in written
+
+
+async def test_analyze_drops_a_requirement_the_posting_does_not_contain(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(requirements=[
+        _requirement(), _requirement(status="missing", quote="ten years of COBOL")])
+
+    verdict = await analysis.analyze(JOB, "cv")
+
+    assert verdict["adequation_grade"] == 100
+    assert [r["quote"] for r in verdict["assessment"]["requirements"]] == ["write python"]
+
+
+async def test_analyze_matches_a_quote_across_spacing_and_case(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(requirements=[_requirement(quote="WRITE\n  python")])
+
+    assert (await analysis.analyze(JOB, "cv"))["adequation_grade"] == 100
+
+
+async def test_analyze_with_no_requirements_left_is_ungraded(fake_chat):
+    _, state = fake_chat
+    state["answer"] = _answer(requirements=[_requirement(quote="invented")],
+                              depth_analysis="nothing to judge")
+
+    verdict = await analysis.analyze(JOB, "cv")
+
+    assert verdict["adequation_grade"] is None
+    assert verdict["depth_analysis"] == "nothing to judge"
+
+
+@pytest.mark.parametrize("description", ["", "   \n ", None])
+async def test_analyze_does_not_pay_for_a_blank_posting(fake_chat, description):
+    calls, _ = fake_chat
+
+    verdict = await analysis.analyze((*JOB[:3], description, None), "cv")
+
+    assert calls == []
+    assert verdict["adequation_grade"] is None
+    assert "nothing to judge" in verdict["depth_analysis"]
+
+
+@pytest.mark.parametrize("ats, emphasis", [
+    ("workday", "basic qualification"),
+    ("successfactors", "related skills"),
+    ("greenhouse", "employment dates"),
+    ("smartrecruiters", "education, skills and experience"),
+])
+def test_build_prompt_adds_the_postings_ats_emphasis(ats, emphasis):
+    prompt = analysis.build_prompt("cv", (*JOB[:4], ats))
+
+    assert emphasis in prompt
+    assert prompt.index("How to judge evidence") < prompt.index("# User CV")
+
+
+@pytest.mark.parametrize("ats", [None, "", "lever", "../grade-job"])
+def test_build_prompt_is_the_default_for_any_other_ats(ats):
+    prompt = analysis.build_prompt("cv", (*JOB[:4], ats))
+
+    assert "How to judge evidence" not in prompt
+
+
+def test_the_prompt_never_asks_for_a_grade_or_a_work_permit():
+    prompt = analysis.build_prompt("cv", JOB)
+
+    assert "adequation_grade" not in prompt
+    assert "Never list work authorisation" in prompt
+
+
 @pytest.mark.parametrize("answer", [
     "not json",
-    json.dumps({"adequation_grade": 101, "depth_analysis": "x"}),
-    json.dumps({"adequation_grade": -1, "depth_analysis": "x"}),
-    json.dumps({"adequation_grade": "high", "depth_analysis": "x"}),
-    json.dumps({"adequation_grade": 50}),
+    "[]",
+    json.dumps({"depth_analysis": "x"}),
+    _answer(depth_analysis=3),
+    _answer(required_years="five"),
+    _answer(required_years=-1),
+    _answer(requirements="many"),
+    _answer(requirements=[_requirement(status="great")]),
+    _answer(requirements=[_requirement(importance="vital")]),
+    _answer(experiences=[{"start": "2020-01", "end": None, "relevant": True, "x": 1},
+                         {"company": "C"}]),
+    _answer(experiences=[{"company": "C", "role": "R", "start": "last year",
+                          "end": None, "relevant": True}]),
 ])
 async def test_analyze_rejects_unusable_answers(fake_chat, answer):
     _, state = fake_chat
@@ -153,7 +288,7 @@ async def test_run_analysis_grades_and_stores_each_picked_posting(
     assert (stats["analysed"], stats["failed"], stats["skipped"]) == (2, 0, 0)
     assert set(stats["job_ids"]) == {r[0] for r in db_analysis.select_analyses(user)}
     rows = db_analysis.select_analyses(user)
-    assert [r[1] for r in rows] == [77, 77]
+    assert [r[1] for r in rows] == [100, 100]
     assert {r[6] for r in rows} == {"haiku"}
 
 
@@ -164,8 +299,7 @@ async def test_run_analysis_fills_only_an_empty_place(user, fake_chat):
     ])
     users.insert_user_cv(user, "my cv")
     _, state = fake_chat
-    state["answer"] = json.dumps({"adequation_grade": 50, "depth_analysis": "x",
-                                  "place": "Gent"})
+    state["answer"] = empty_answer(place="Gent")
 
     await main_analysis.run_analysis(user, _pending(user))
 
@@ -248,7 +382,7 @@ async def test_generate_cv_adds_the_emphasis_of_the_postings_ats(
     calls, state = fake_chat
     state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
     monkeypatch.setattr(generated_cv, "select_job_for_generation",
-                        lambda user_id, job_id: ("post", uuid.uuid4(), "why", ats))
+                        lambda user_id, job_id: ("post", uuid.uuid4(), "why", ats, None))
     monkeypatch.setattr(generated_cv, "insert_generated_cv",
                         lambda *args: uuid.uuid4())
 
@@ -415,3 +549,124 @@ def test_cli_grades_the_first_limit_due_postings(monkeypatch):
     assert main_analysis.main([str(uid), "--limit", "0"]) == 0
     assert (seen["model"], seen["job_ids"], seen["window"]) == (
         "haiku", [d[0] for d in due], "-24 hours")
+
+
+# the CV prompt
+
+def test_cv_prompt_protects_seniority_and_unfinished_degrees():
+    prompt = cv_generation._build_prompt("cv", "why", "post")
+
+    assert "must never overstate seniority" in prompt
+    assert "still in progress" in prompt
+    assert "**`certifications`**" in prompt
+
+
+def test_cv_schema_requires_certifications():
+    cv = cv_generation.CV_SCHEMA["properties"]["cv"]
+
+    assert "certifications" in cv["required"]
+    assert cv["properties"]["certifications"]["items"]["required"] == [
+        "name", "issuer", "year"]
+
+
+def test_shared_rules_moved_out_of_the_ats_prompts():
+    assert 'Write `role` in full' in cv_generation.generate_cv_prompt
+    assert 'Write `role` in full' not in cv_generation._ATS_EMPHASIS["greenhouse"]
+    assert 'Attach a skill' in cv_generation.generate_cv_prompt
+    assert 'Attach a skill' not in cv_generation._ATS_EMPHASIS["successfactors"]
+
+
+def _objects(schema):
+    """Every object type in a JSON schema, however deeply nested."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            yield schema
+        for value in schema.values():
+            yield from _objects(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from _objects(value)
+
+
+@pytest.mark.parametrize("schema", [
+    analysis.ANALYSIS_SCHEMA, cv_generation.CV_SCHEMA,
+    cover_letter.LETTER_SCHEMA, term_suggestion.TERMS_SCHEMA,
+], ids=["analysis", "cv", "letter", "terms"])
+def test_every_object_in_a_model_schema_closes_its_properties(schema):
+    # Claude rejects a schema with any open object, which reaches the user only
+    # as "the AI model call failed". Ollama accepts it, so local runs hide this.
+    assert all(o.get("additionalProperties") is False for o in _objects(schema))
+
+
+# the analysis in the CV and letter prompts
+
+ASSESSMENT = {"fit": 42, "graded_on": "2026-11-04", "requirements": [
+    _requirement(text="Rust", status="missing", importance="preferred",
+                 evidence="CV shows Go."),
+    _requirement(text="Go", status="met", evidence="Five years at Company 1."),
+    _requirement(text="Kafka", status="transferable",
+                 evidence="RabbitMQ at Company 2."),
+]}
+
+
+def test_requirements_section_lists_facts_required_first_and_no_grade():
+    section = analysis.requirements_section(ASSESSMENT)
+
+    assert section.splitlines()[3:] == [
+        "- met (required): Go. Five years at Company 1.",
+        "- transferable (required): Kafka. RabbitMQ at Company 2.",
+        "- missing (preferred): Rust. CV shows Go.",
+    ]
+    assert "42" not in section
+
+
+@pytest.mark.parametrize("assessment", [None, {}, {"requirements": []}])
+def test_requirements_section_is_empty_for_older_analyses(assessment):
+    assert analysis.requirements_section(assessment) == ""
+
+
+def test_the_cv_prompt_carries_the_requirements_before_the_posting():
+    prompt = cv_generation._build_prompt("cv", "why", "post", None, ASSESSMENT)
+
+    assert (prompt.index("# ANALYSIS OF THIS POSTING")
+            < prompt.index("met (required): Go")
+            < prompt.index("# JOB POST"))
+
+
+def test_the_letter_prompt_carries_the_requirements_before_the_answers():
+    prompt = cover_letter._build_prompt({"profile_text": "p"}, "why", {}, "post",
+                                        ASSESSMENT)
+
+    assert (prompt.index("# ANALYSIS OF THIS POSTING")
+            < prompt.index("met (required): Go")
+            < prompt.index("# CANDIDATE'S ANSWERS"))
+
+
+def test_an_older_analysis_leaves_both_prompts_without_the_section():
+    assert "# REQUIREMENTS CHECKED" not in cv_generation._build_prompt(
+        "cv", "why", "post", None, None)
+    assert "# REQUIREMENTS CHECKED" not in cover_letter._build_prompt(
+        {}, "why", {}, "post", None)
+
+
+def test_both_prompts_say_how_to_treat_each_status():
+    for prompt in (cv_generation.generate_cv_prompt,
+                   cover_letter.cover_letter_prompt):
+        assert "## Using the analysis" in prompt
+        assert "not a source of facts" in prompt
+        assert "**`missing`**" in prompt and "**`transferable`**" in prompt
+
+
+async def test_generate_cv_sends_the_stored_assessment_to_the_model(
+        fake_chat, monkeypatch):
+    calls, state = fake_chat
+    state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
+    monkeypatch.setattr(
+        generated_cv, "select_job_for_generation",
+        lambda user_id, job_id: ("post", uuid.uuid4(), "why", None, ASSESSMENT))
+    monkeypatch.setattr(generated_cv, "insert_generated_cv",
+                        lambda *args: uuid.uuid4())
+
+    await cv_generation.generate_cv(uuid.uuid4(), uuid.uuid4(), cv_md="my cv")
+
+    assert "met (required): Go" in calls[0][1]

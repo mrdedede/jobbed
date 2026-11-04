@@ -11,7 +11,10 @@ piped into something else.
 - **The tailored CV**, as JSON. The only source of facts about the candidate's
   experience, skills and education.
 - **The analysis**, the write-up already produced for this posting. Its
-  "what to emphasise" paragraph says what the letter should lead with.
+  "what to emphasise" paragraph says what the letter should lead with. Ignore
+  any grade or score in it: those are not for the letter.
+- **The requirements checked**, when present: what the posting asks for, each
+  marked `met`, `transferable` or `missing`, with the evidence found.
 - **The candidate's answers**: why this job interests them, how it fits their
   career goals, why the offer makes sense to them. The only source of the
   candidate's motivation. Any of them can be empty.
@@ -27,6 +30,20 @@ from the job post.
 When an answer is empty, do not make one up for it: write less motivation, not
 a generic one. "I am passionate about your mission" with nothing behind it is
 worse than saying nothing.
+
+## Using the analysis
+
+The analysis points you at the CV; it is not a source of facts. If it names
+something the tailored CV does not show, leave it out.
+
+- **`met`** — build the letter's case on the required ones, each tied to a
+  specific experience from the CV. Do not repeat the whole list.
+- **`transferable`** — this is where a letter earns its place: name the real
+  experience and say plainly how it carries over to what the posting asks for.
+  Never claim the skill itself.
+- **`missing`** — never claim or imply it. Leave it out unless the candidate's
+  answers address it, and then use their words. Do not apologise for a gap or
+  draw attention to it.
 
 ## The language rule — MANDATORY
 

@@ -95,7 +95,8 @@ def update_cover_letter(user_id: UUID, letter_id: UUID, letter: str) -> bool:
 # SELECTIONS
 
 def select_cv_for_letter(
-        user_id: UUID, cv_id: UUID) -> Optional[Tuple[UUID, dict, str, str]]:
+        user_id: UUID, cv_id: UUID
+        ) -> Optional[Tuple[UUID, dict, str, str, Optional[dict]]]:
     """A generated CV with its posting and analysis, for the letter prompt.
 
     Args:
@@ -103,17 +104,19 @@ def select_cv_for_letter(
         cv_id: The generated_cv id.
 
     Returns:
-        Tuple of (job_id, cv, description, depth_analysis), or None.
+        Tuple of (job_id, cv, description, depth_analysis, assessment), or None.
     """
     # SQL: SELECT generated_cv.job_id, generated_cv.cv,
-    #      job_postings.description, ai_analysis.depth_analysis
+    #      job_postings.description, ai_analysis.depth_analysis,
+    #      ai_analysis.assessment
     #      FROM generated_cv
     #      JOIN job_postings ON job_postings.id = generated_cv.job_id
     #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
     #      WHERE generated_cv.id = ? AND generated_cv.user_id = ?
     stmt = (
         select(generated_cv.c.job_id, generated_cv.c.cv,
-               job_postings.c.description, ai_analysis.c.depth_analysis)
+               job_postings.c.description, ai_analysis.c.depth_analysis,
+               ai_analysis.c.assessment)
         .select_from(generated_cv)
         .join(job_postings, job_postings.c.id == generated_cv.c.job_id)
         .join(ai_analysis, ai_analysis.c.id == generated_cv.c.ai_analysis_id)

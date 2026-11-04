@@ -168,7 +168,7 @@ def test_select_analysis_page_omits_description_orders_and_filters(
     page = analysis.select_analysis_page(user, limit=10)
 
     assert [r[1] for r in page] == [90, 40]
-    assert len(page[0]) == 9  # no description column
+    assert len(page[0]) == 10  # no description column
     assert len(analysis.select_analysis_page(user, limit=1)) == 1
     assert [r[0] for r in analysis.select_analysis_page(
         user, 10, min_grade=50)] == [high]

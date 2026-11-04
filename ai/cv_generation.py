@@ -70,6 +70,19 @@ CV_SCHEMA = {
                         "additionalProperties": False,
                     },
                 },
+                "certifications": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "issuer": {"type": "string"},
+                            "year": {"type": "string"},
+                        },
+                        "required": ["name", "issuer", "year"],
+                        "additionalProperties": False,
+                    },
+                },
                 "education": {
                     "type": "array",
                     "items": {
@@ -89,7 +102,7 @@ CV_SCHEMA = {
                 },
             },
             "required": ["cv_introduction", "profile_text", "skills",
-                         "experiences", "education"],
+                         "experiences", "education", "certifications"],
             "additionalProperties": False,
         },
     },

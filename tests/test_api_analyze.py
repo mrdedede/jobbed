@@ -3,34 +3,34 @@
 import asyncio
 import json
 import time
+import uuid
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from api_helpers import as_user, bearer, make_user
+from api_helpers import as_user, bearer, grading_answer, make_user
 
 import ai.main_analysis as main_analysis
 from ai import gateway
 from api.main import app
 from api.routers import user as user_router
-from db import jobs, users
+from db import generated_cv, jobs, users
 from db.engine import engine
 
 ID = "00000000-0000-0000-0000-000000000000"
-GOOD = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
 
 
 @pytest.fixture
 def chat(monkeypatch):
     calls = []
-    state = {"answer": GOOD}
+    state = {"answer": None}  # None: a valid answer to whatever was asked
 
     async def fake(model, prompt, schema=None, client=None):
         calls.append(model)
 
-        return state["answer"]
+        return state["answer"] or grading_answer(prompt)
 
     monkeypatch.setattr(gateway, "chat", fake)
 
@@ -113,7 +113,7 @@ def test_happy_path_grades_only_the_picked_ids_without_description(
     assert (body["analysed"], body["failed"], body["skipped"]) == (1, 0, 0)
     result = body["results"][0]
     # Picked by hand, so the keyword filter does not get a say.
-    assert (result["title"], result["adequation_grade"]) == ("Py Dev", 77)
+    assert (result["title"], result["adequation_grade"]) == ("Py Dev", 100)
     assert "description" not in result
     assert [a["title"] for a in as_user(uid).get("/v1/me/analyses").json()["items"]] \
         == ["Py Dev"]
@@ -236,10 +236,10 @@ def test_all_calls_failing_is_502(client, chat):
 def test_partial_failure_is_200_with_counts(client, chat, monkeypatch):
     jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
     jobs.insert_jobs([posting(2, "Go B", "go " * 6)])
-    answers = iter(["garbage", GOOD])
+    answers = iter(["garbage", None])
 
     async def flaky(model, prompt, schema=None, client=None):
-        return next(answers)
+        return next(answers) or grading_answer(prompt)
 
     monkeypatch.setattr(gateway, "chat", flaky)
 
@@ -282,6 +282,7 @@ def test_analyses_filter_order_and_isolation(client, chat):
     listed = as_user(uid).get("/v1/me/analyses?limit=1").json()["items"]
 
     assert len(listed) == 1 and "description" not in listed[0]
+    set_grades(uid, {"Go A": 77, "Go B": 77})
     assert as_user(uid).get("/v1/me/analyses?min_grade=90").json()["items"] == []
     assert as_user(other).get("/v1/me/analyses").json()["items"] == []
     with engine.begin() as conn:
@@ -430,7 +431,7 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
         started.set()
         await release.wait()
 
-        return GOOD
+        return grading_answer(prompt)
 
     monkeypatch.setattr(gateway, "chat", slow)
     jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
@@ -457,5 +458,200 @@ async def test_overlapping_runs_for_one_user_get_one_409(db, monkeypatch):
     assert (running["status"], running["done"], running["total"]) == ("running", 0, 1)
     assert running["graded"] == {}
     assert (finished["status"], finished["done"]) == ("done", 1)
-    assert finished["graded"] == {ids("Go A")[0]: 77}
+    assert finished["graded"] == {ids("Go A")[0]: 100}
     assert uid not in user_router._analysis_in_flight
+
+
+# regrading
+
+def _graded(client, uid, title="Go A"):
+    """A posting this user graded; returns its id and its analysis id."""
+    jobs.insert_jobs([posting(hash(title) % 10**6, title, "go " * 6)])
+    [job_id] = ids(title)
+    assert analyze(client, uid, [job_id]).json()["analysed"] == 1
+
+    return job_id, _analysis_row(uid, job_id)[0]
+
+
+def _analysis_row(uid, job_id):
+    with engine.connect() as conn:
+        return conn.execute(text(
+            "SELECT id, adequation_grade, depth_analysis, assessment "
+            "FROM ai_analysis WHERE user_id = :u AND job_id = :j"),
+            {"u": uid, "j": job_id}).one()
+
+
+def _used_today(uid):
+    with engine.connect() as conn:
+        return conn.execute(text(
+            "SELECT coalesce(sum(count), 0) FROM llm_usage "
+            "WHERE user_id = :u AND kind = 'analysis'"), {"u": uid}).scalar_one()
+
+
+def test_regrade_replaces_the_verdict_and_keeps_the_analysis_id(client, chat):
+    _, state = chat
+    uid = make_user()
+    job_id, analysis_id = _graded(client, uid)
+    state["answer"] = json.dumps({
+        "requirements": [], "required_years": None, "experiences": [],
+        "onsite_country": None, "depth_analysis": "second look"})
+
+    body = analyze(client, uid, [job_id], regrade=True).json()
+
+    assert body["analysed"] == 1
+    row = _analysis_row(uid, job_id)
+    assert (row[0], row[1], row[2]) == (analysis_id, None, "second look")
+
+
+def test_a_graded_posting_is_skipped_without_regrade(client, chat):
+    calls, _ = chat
+    uid = make_user()
+    job_id, _ = _graded(client, uid)
+    before = len(calls)
+
+    body = analyze(client, uid, [job_id]).json()
+
+    assert (body["analysed"], body["skipped"]) == (0, 1)
+    assert len(calls) == before
+
+
+def test_a_failed_regrade_keeps_the_old_grade_and_refunds(client, chat):
+    _, state = chat
+    uid = make_user()
+    job_id, _ = _graded(client, uid)
+    used = _used_today(uid)
+    state["answer"] = "garbage"
+
+    assert analyze(client, uid, [job_id], regrade=True).status_code == 502
+
+    assert _analysis_row(uid, job_id)[1] == 100
+    assert _used_today(uid) == used
+
+
+def test_a_regrade_uses_one_of_the_days_analyses(client, chat):
+    uid = make_user()
+    job_id, _ = _graded(client, uid)
+    used = _used_today(uid)
+
+    analyze(client, uid, [job_id], regrade=True)
+
+    assert _used_today(uid) == used + 1
+
+
+def test_regrade_respects_the_daily_cap(client, chat, monkeypatch):
+    calls, _ = chat
+    uid = make_user()
+    job_id, _ = _graded(client, uid)
+    monkeypatch.setattr(user_router, "DAILY_ANALYSIS_CAP", _used_today(uid))
+    before = len(calls)
+
+    assert analyze(client, uid, [job_id], regrade=True).status_code == 429
+    assert len(calls) == before
+
+
+def test_a_posting_with_a_cv_cannot_be_regraded(client, chat):
+    calls, _ = chat
+    uid = make_user()
+    job_id, analysis_id = _graded(client, uid)
+    generated_cv.insert_generated_cv(uid, "en", {"profile_text": "p"}, job_id,
+                                     analysis_id)
+    before, used = len(calls), _used_today(uid)
+
+    refused = analyze(client, uid, [job_id], regrade=True)
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "already has a generated CV"
+    assert (len(calls), _used_today(uid)) == (before, used)
+    # The refusal does not leave the user stuck as "already running".
+    assert uid not in user_router._analysis_in_flight
+
+
+def test_one_posting_with_a_cv_refuses_the_whole_regrade(client, chat):
+    uid = make_user()
+    with_cv, analysis_id = _graded(client, uid, "Go A")
+    without_cv, _ = _graded(client, uid, "Go B")
+    generated_cv.insert_generated_cv(uid, "en", {"profile_text": "p"}, with_cv,
+                                     analysis_id)
+
+    assert analyze(client, uid, [with_cv, without_cv],
+                   regrade=True).status_code == 409
+
+
+def test_another_users_cv_does_not_block_a_regrade(client, chat):
+    mine, other = make_user(), make_user()
+    job_id, _ = _graded(client, mine)
+    assert analyze(client, other, [job_id]).json()["analysed"] == 1
+    generated_cv.insert_generated_cv(other, "en", {"profile_text": "p"}, job_id,
+                                     _analysis_row(other, job_id)[0])
+
+    assert analyze(client, mine, [job_id], regrade=True).json()["analysed"] == 1
+
+
+def test_regrading_a_posting_never_graded_is_skipped(client, chat):
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
+    uid = make_user()
+
+    body = analyze(client, uid, ids("Go A"), regrade=True).json()
+
+    assert (body["analysed"], body["skipped"]) == (0, 1)
+
+
+def test_the_list_says_which_analyses_have_a_cv(client, chat):
+    uid = make_user()
+    with_cv, analysis_id = _graded(client, uid, "Go A")
+    _graded(client, uid, "Go B")
+    generated_cv.insert_generated_cv(uid, "en", {"profile_text": "p"}, with_cv,
+                                     analysis_id)
+
+    items = as_user(uid).get("/v1/me/analyses").json()["items"]
+
+    assert {i["title"]: i["has_cv"] for i in items} == {"Go A": True, "Go B": False}
+
+
+def test_the_grade_and_the_facts_are_stored(client, chat):
+    uid = make_user()
+    job_id, _ = _graded(client, uid)
+
+    _, grade, written, assessment = _analysis_row(uid, job_id)
+
+    assert grade == 100
+    assert "**Grade: 100/100**" in written
+    assert assessment["fit"] == 100
+    assert assessment["requirements"][0]["status"] == "met"
+
+
+def test_a_blank_active_cv_is_refused_before_any_call(client, chat):
+    calls, _ = chat
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
+    uid = make_user(cv=False)
+    users.insert_user_cv(uid, "   \n")
+
+    response = analyze(client, uid, ids("Go A"))
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "no active CV"
+    assert calls == []
+
+
+def test_a_failed_call_logs_why(client, chat, caplog):
+    _, state = chat
+    jobs.insert_jobs([posting(1, "Go A", "go " * 6)])
+    uid = make_user()
+    state["answer"] = "garbage"
+
+    with caplog.at_level("WARNING", logger="ai.main_analysis"):
+        analyze(client, uid, ids("Go A"))
+
+    assert ids("Go A")[0] in caplog.text and "unusable model answer" in caplog.text
+
+
+def test_a_run_reads_as_running_until_its_cleanup_is_done(client, chat):
+    uid = make_user()
+    run_id = uuid.uuid4()
+    gen = user_router._generations[run_id] = user_router._Generation(uid, status="done")
+
+    assert as_user(uid).get(f"/v1/me/analyze/{run_id}").json()["status"] == "running"
+
+    gen.finished = time.monotonic()
+
+    assert as_user(uid).get(f"/v1/me/analyze/{run_id}").json()["status"] == "done"

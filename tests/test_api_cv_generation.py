@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from api_helpers import bearer, make_user
+from api_helpers import bearer, grading_answer, make_user
 
 import ai.main_analysis as main_analysis
 from ai import gateway
@@ -32,12 +32,11 @@ EDITED = {
                    "period": "2019 - 2021", "degree": "CS", "details": ""}],
 }
 GOOD = json.dumps({"locale": "fr", "cv": CV})
-GRADE = json.dumps({"adequation_grade": 77, "depth_analysis": "fits"})
 
 
 @pytest.fixture
 def chat(monkeypatch):
-    """Fake gateway: grading answers GRADE, CV generation answers state['answer']."""
+    """Fake gateway: grading answers `grading_answer`, CV generation answers state['answer']."""
     state = {"answer": GOOD, "error": None, "gate": None}
 
     async def fake(model, prompt, schema=None, client=None):
@@ -48,7 +47,7 @@ def chat(monkeypatch):
                 raise state["error"]
             return state["answer"]
 
-        return GRADE
+        return grading_answer(prompt)
 
     monkeypatch.setattr(gateway, "chat", fake)
 
@@ -342,6 +341,9 @@ def test_without_cv_lists_graded_postings_still_missing_one(as_user, chat):
     assert listed["total"] == 2
     assert {a["job_id"] for a in listed["items"]} == {str(j) for j in job_ids[1:]}
     assert all(a["depth_analysis"] for a in listed["items"])
+    assert not any(a["has_cv"] for a in listed["items"])
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE ai_analysis SET adequation_grade = 77"))
     assert c.get("/v1/me/analyses/without-cv?min_grade=100").json() \
         == {"items": [], "total": 0}
 
@@ -438,9 +440,11 @@ def test_put_replaces_the_cv_and_the_list_shows_it(as_user, chat):
     put = c.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": EDITED})
 
     assert put.status_code == 200
-    assert put.json()["cv"] == EDITED
+    # The body fills in what an older client leaves out.
+    saved = {**EDITED, "certifications": []}
+    assert put.json()["cv"] == saved
     assert put.json()["locale"] == "fr"
-    assert c.get("/v1/me/generated-cvs").json()["items"][0]["cv"] == EDITED
+    assert c.get("/v1/me/generated-cvs").json()["items"][0]["cv"] == saved
 
 
 def test_put_on_another_users_or_unknown_cv_is_404(as_user, chat):
@@ -479,3 +483,29 @@ def test_edit_schema_matches_the_generation_schema():
     assert set(GenSkillGroup.model_fields) == set(items["skills"]["required"])
     assert set(GenExperience.model_fields) == set(items["experiences"]["required"])
     assert set(GenEducation.model_fields) == set(items["education"]["required"])
+
+
+def test_a_cv_edit_round_trips_certifications_and_allows_old_cvs(as_user, chat):
+    uid, job_ids = graded_user(1)
+    c = as_user(uid)
+    cv_id = finish(c, job_ids[0])["cv"]["cv_id"]
+    certification = {"name": "CKA", "issuer": "CNCF", "year": "2024"}
+
+    # EDITED has no certifications, like one generated before the field existed.
+    assert c.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": EDITED}).status_code == 200
+    updated = c.put(f"/v1/me/generated-cvs/{cv_id}",
+                    json={"cv": {**EDITED, "certifications": [certification]}})
+
+    assert updated.status_code == 200
+    assert updated.json()["cv"]["certifications"] == [certification]
+
+
+def test_a_cv_edit_rejects_an_unknown_certification_field(as_user, chat):
+    uid, job_ids = graded_user(1)
+    c = as_user(uid)
+    cv_id = finish(c, job_ids[0])["cv"]["cv_id"]
+
+    response = c.put(f"/v1/me/generated-cvs/{cv_id}", json={"cv": {
+        **EDITED, "certifications": [{"name": "CKA", "issuer": "", "year": "", "x": 1}]}})
+
+    assert response.status_code == 422

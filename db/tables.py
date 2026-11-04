@@ -123,6 +123,9 @@ ai_analysis = Table(
     Column("adequation_grade", Integer),
     Column("depth_analysis", Text),
     Column("ai_model", String),
+    # What the grade was computed from (ai.scoring), plus the neutral `fit`: a
+    # policy change can regrade from this without another model call.
+    Column("assessment", JSONB),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     UniqueConstraint("user_id", "job_id", name="uq_ai_analysis_user_job"),
 )

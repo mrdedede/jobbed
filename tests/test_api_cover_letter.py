@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from api_helpers import bearer, make_user
+from api_helpers import bearer, grading_answer, make_user
 
 from ai import gateway
 from api.main import app
@@ -41,7 +41,7 @@ def chat(monkeypatch):
             return state["answer"]
         if '"locale"' in shape:
             return json.dumps({"locale": "fr", "cv": CV})
-        return json.dumps({"adequation_grade": 77, "depth_analysis": "lead with Go"})
+        return grading_answer(prompt, "lead with Go")
 
     monkeypatch.setattr(gateway, "chat", fake)
 
@@ -104,7 +104,7 @@ def test_letter_is_written_stored_and_listed_with_its_analysis(as_user, chat):
     letter = body["letter"]
     assert (letter["letter"], letter["locale"], letter["cv_id"]) == (LETTER, "fr", cv_id)
     assert letter["answers"] == ANSWERS
-    assert letter["depth_analysis"] == "lead with Go"
+    assert letter["depth_analysis"].startswith("lead with Go")
     assert [l["letter_id"] for l in c.get("/v1/me/cover-letters").json()["items"]] == [letter["letter_id"]]
     assert used(uid) == 1
 

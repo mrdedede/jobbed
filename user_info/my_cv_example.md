@@ -30,6 +30,11 @@ Research topic (if any), GPA if applicable
 Begin year - end year, Topic and degree
 Research topic (if any), GPA if applicable
 
+## Certifications
+### Certification 1 - Issuer 1 (Year)
+
+### Certification 2 - Issuer 2 (Year)
+
 ## Skills
 ### Competence 1
 - Skill 1

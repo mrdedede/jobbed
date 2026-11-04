@@ -28,7 +28,6 @@ USER_INFO = ROOT / "user_info"
 # Inputs the user supplies (all gitignored; each has an *_example sibling).
 BOARDS_CSV = Path(os.environ.get("JOBBED_BOARDS_CSV",
                                  USER_INFO / "job_boards.csv"))
-CV_TEMPLATE_DOCX = USER_INFO / "CV_placeholder.docx"
 FRANCE_TRAVAIL_CREDENTIALS = Path(os.environ.get(
     "FRANCE_TRAVAIL_CREDENTIALS_FILE",
     USER_INFO / "france_travail_credentials.json"))
@@ -59,7 +58,3 @@ GRADE_JOB_MD = AI / "grade-job.md"
 GENERATE_CV_MD = AI / "generate-cv.md"
 SUGGEST_TERMS_MD = AI / "suggest-terms.md"
 COVER_LETTER_MD = AI / "write-cover-letter.md"
-
-#: Section titles and language names, one file per supported locale. The docx
-#: renderer reads these; nothing else does.
-L10N = ROOT / "cv_generator" / "l10n"

@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db._sql_utils import text_interval
 from db.engine import engine
-from db.tables import ai_analysis, job_postings
+from db.tables import ai_analysis, generated_cv, job_postings
 
 
 # INSERTIONS
@@ -27,21 +27,24 @@ def insert_analysis(analysis: Sequence) -> None:
 
     Args:
         analysis: (user_id, adequation_grade, depth_analysis, ai_model,
-            job_id) -- which postings are worth analysing is decided by
+            job_id), optionally followed by the assessment the grade was
+            computed from -- which postings are worth analysing is decided by
             `select_jobs_to_analyse`, not here.
 
     Raises:
         RuntimeError: If the database rejects the insertion.
     """
-    user_id, adequation_grade, depth_analysis, ai_model, job_id = analysis
+    user_id, adequation_grade, depth_analysis, ai_model, job_id, *rest = analysis
     # SQL: INSERT INTO ai_analysis (user_id, job_id, adequation_grade,
-    #      depth_analysis, ai_model) VALUES (?, ?, ?, ?, ?)
+    #      depth_analysis, ai_model, assessment) VALUES (?, ?, ?, ?, ?, ?)
     #      ON CONFLICT (user_id, job_id) DO UPDATE SET adequation_grade = ...,
-    #      depth_analysis = ..., ai_model = ..., created_at = now()
+    #      depth_analysis = ..., ai_model = ..., assessment = ...,
+    #      created_at = now()
     values = dict(
         adequation_grade=adequation_grade,
         depth_analysis=depth_analysis,
         ai_model=ai_model,
+        assessment=rest[0] if rest else None,
     )
     stmt = pg_insert(ai_analysis).values(
         user_id=user_id, job_id=job_id, **values
@@ -105,20 +108,65 @@ def select_ungraded_jobs(
         job_ids: The postings the user picked.
 
     Returns:
-        List of (id, company, title, description), in no particular order.
+        List of (id, company, title, description, ats), in no particular order.
     """
     # SQL: SELECT job_id FROM ai_analysis WHERE user_id = ?
     graded = select(ai_analysis.c.job_id).where(ai_analysis.c.user_id == user_id)
-    # SQL: SELECT id, company, title, description FROM job_postings
+    # SQL: SELECT id, company, title, description, ats FROM job_postings
     #      WHERE id IN (...) AND id NOT IN (<graded subquery above>)
     stmt = (
-        select(job_postings.c.id, job_postings.c.company,
-               job_postings.c.title, job_postings.c.description)
+        select(job_postings.c.id, job_postings.c.company, job_postings.c.title,
+               job_postings.c.description, job_postings.c.ats)
         .where(job_postings.c.id.in_(job_ids))
         .where(job_postings.c.id.notin_(graded))
     )
     with engine.connect() as conn:
         return conn.execute(stmt).all()
+
+
+def _user_cvs(user_id: UUID):
+    # SQL: SELECT job_id FROM generated_cv WHERE user_id = ?
+    return select(generated_cv.c.job_id).where(generated_cv.c.user_id == user_id)
+
+
+def select_regradable_jobs(
+        user_id: UUID,
+        job_ids: Sequence[UUID]) -> List[Tuple[UUID, str, str, str, Optional[str]]]:
+    """Of these postings, the ones this user graded and has no CV for.
+
+    A CV was tailored against the old analysis, so regrading its posting would
+    mean regenerating the CV too.
+
+    Args:
+        user_id: The user asking.
+        job_ids: The postings the user picked.
+
+    Returns:
+        List of (id, company, title, description, ats), in no particular order.
+    """
+    # SQL: SELECT job_id FROM ai_analysis WHERE user_id = ?
+    graded = select(ai_analysis.c.job_id).where(ai_analysis.c.user_id == user_id)
+    # SQL: SELECT id, company, title, description, ats FROM job_postings
+    #      WHERE id IN (...) AND id IN (<graded>) AND id NOT IN (<user's CVs>)
+    stmt = (
+        select(job_postings.c.id, job_postings.c.company, job_postings.c.title,
+               job_postings.c.description, job_postings.c.ats)
+        .where(job_postings.c.id.in_(job_ids))
+        .where(job_postings.c.id.in_(graded))
+        .where(job_postings.c.id.notin_(_user_cvs(user_id)))
+    )
+    with engine.connect() as conn:
+        return conn.execute(stmt).all()
+
+
+def any_has_cv(user_id: UUID, job_ids: Sequence[UUID]) -> bool:
+    """Whether this user generated a CV for any of these postings."""
+    # SQL: SELECT EXISTS(SELECT job_id FROM generated_cv
+    #      WHERE user_id = ? AND job_id IN (...))
+    stmt = select(_user_cvs(user_id).where(
+        generated_cv.c.job_id.in_(job_ids)).exists())
+    with engine.connect() as conn:
+        return bool(conn.execute(stmt).scalar_one())
 
 
 def select_job(job_id: UUID) -> Optional[Tuple]:
@@ -322,12 +370,13 @@ def select_analysis_page(
 
     Returns:
         List of (job_id, adequation_grade, company, title, place, url,
-        ai_model, depth_analysis, analysed_at).
+        ai_model, depth_analysis, analysed_at, has_cv).
     """
     # SQL: SELECT job_postings.id, ai_analysis.adequation_grade,
     #      job_postings.company, job_postings.title, job_postings.place,
     #      job_postings.url, ai_analysis.ai_model, ai_analysis.depth_analysis,
-    #      ai_analysis.created_at
+    #      ai_analysis.created_at, EXISTS(SELECT job_id FROM generated_cv
+    #      WHERE user_id = ? AND job_id = ai_analysis.job_id)
     #      FROM ai_analysis JOIN job_postings ON job_postings.id = ai_analysis.job_id
     #      WHERE <_analysis_where>
     #      ORDER BY adequation_grade DESC NULLS LAST, created_at DESC, id
@@ -338,6 +387,8 @@ def select_analysis_page(
             job_postings.c.company, job_postings.c.title,
             job_postings.c.place, job_postings.c.url, ai_analysis.c.ai_model,
             ai_analysis.c.depth_analysis, ai_analysis.c.created_at,
+            _user_cvs(user_id).where(
+                generated_cv.c.job_id == ai_analysis.c.job_id).exists(),
         )
         .select_from(ai_analysis)
         .join(job_postings, job_postings.c.id == ai_analysis.c.job_id)

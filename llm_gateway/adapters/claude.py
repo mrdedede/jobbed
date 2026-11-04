@@ -13,7 +13,7 @@ from llm_gateway.config import settings
 #: Short names callers send. Each can be overridden without a redeploy of
 #: callers: CLAUDE_MODEL_HAIKU / _SONNET / _OPUS.
 _ALIASES = {
-    "haiku": os.environ.get("CLAUDE_MODEL_HAIKU", "claude-haiku-4-5"),
+    "haiku": os.environ.get("CLAUDE_MODEL_HAIKU", "claude-haiku-5-5"),
     "sonnet": os.environ.get("CLAUDE_MODEL_SONNET", "claude-sonnet-5-5"),
     "opus": os.environ.get("CLAUDE_MODEL_OPUS", "claude-opus-5-5"),
 }
@@ -38,10 +38,15 @@ class ClaudeAdapter:
 
         response = await _client.messages.create(
             model=model_id,
-            max_tokens=4096,
+            # Generous: on current models thinking shares this budget.
+            max_tokens=16000,
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
+        # A cut-off or declined answer is not an answer, whatever text it has.
+        if response.stop_reason in ("max_tokens", "refusal"):
+            raise ValueError(f"model stopped early: {response.stop_reason}")
+
         text = "".join(
             block.text for block in response.content if block.type == "text")
 

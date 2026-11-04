@@ -107,6 +107,7 @@ CV_SCHEMA = {
         },
     },
     "required": ["locale", "cv"],
+    "additionalProperties": False,
 }
 
 

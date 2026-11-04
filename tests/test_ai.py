@@ -10,7 +10,8 @@ import pytest
 
 from api_helpers import empty_answer, grading_answer
 
-from ai import analysis, cv_generation, gateway, main_analysis
+from ai import (analysis, cover_letter, cv_generation, gateway, main_analysis,
+                term_suggestion)
 from ai.exceptions import NoActiveCv, UnusableAnswer
 from db import analysis as db_analysis
 from db import generated_cv, jobs, users
@@ -573,3 +574,25 @@ def test_shared_rules_moved_out_of_the_ats_prompts():
     assert 'Write `role` in full' not in cv_generation._ATS_EMPHASIS["greenhouse"]
     assert 'Attach a skill' in cv_generation.generate_cv_prompt
     assert 'Attach a skill' not in cv_generation._ATS_EMPHASIS["successfactors"]
+
+
+def _objects(schema):
+    """Every object type in a JSON schema, however deeply nested."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object":
+            yield schema
+        for value in schema.values():
+            yield from _objects(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from _objects(value)
+
+
+@pytest.mark.parametrize("schema", [
+    analysis.ANALYSIS_SCHEMA, cv_generation.CV_SCHEMA,
+    cover_letter.LETTER_SCHEMA, term_suggestion.TERMS_SCHEMA,
+], ids=["analysis", "cv", "letter", "terms"])
+def test_every_object_in_a_model_schema_closes_its_properties(schema):
+    # Claude rejects a schema with any open object, which reaches the user only
+    # as "the AI model call failed". Ollama accepts it, so local runs hide this.
+    assert all(o.get("additionalProperties") is False for o in _objects(schema))

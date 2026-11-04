@@ -196,3 +196,12 @@ def test_routes_require_a_token(db):
         assert c.post("/v1/me/cover-letters/generate",
                       json={"cv_id": str(uuid.uuid4())}).status_code == 401
         assert c.get("/v1/me/cover-letters").status_code == 401
+
+
+def test_the_letter_prompt_gets_the_requirements_of_a_real_analysis(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+
+    finish(c, cv_id)
+
+    assert "# REQUIREMENTS CHECKED" in chat["prompt"]
+    assert "- met (required): the job. the CV" in chat["prompt"]

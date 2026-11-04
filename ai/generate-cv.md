@@ -9,7 +9,8 @@ something else.
 
 - **The candidate's CV**, sent alongside this prompt. The only source of facts.
 - **The job post**, at the end of the prompt.
-- **The analysis**, the write-up already produced for this posting. Its "what to emphasise" paragraph is the ordering instruction: lead with what it names.
+- **The analysis**, the write-up already produced for this posting. Its "what to emphasise" paragraph is the ordering instruction: lead with what it names. Its strengths and gaps say where the candidate stands. Ignore any grade or score in it: those are not for the CV.
+- **The requirements checked**, when present: what the posting asks for, each marked `met`, `transferable` or `missing`, with the evidence found. See "Using the analysis".
 
 ## The ground rule
 
@@ -20,6 +21,14 @@ What you may do is reframe: reword a bullet in the posting's vocabulary,
 reorder experiences and bullets so the relevant ones come first, group skills under labels the posting would recognise, and drop the bullets and skills this posting has no use for. Dropping is the main tool — a tailored CV is shorter than the source one, not longer. Whole experiences are the exception: they all stay.
 
 A CV that gets the candidate an interview they cannot survive is worse than one that gets no call.
+
+## Using the analysis
+
+The analysis points you at the CV; it is not a source of facts. If it names something you cannot find in the candidate's CV, leave it out.
+
+- **`met`** — lead with these, required ones first, in the posting's own wording where the CV supports it.
+- **`transferable`** — present the real experience under its own name, so the link to the requirement is clear. Do not rename it to the skill the posting asked for, and do not list that skill in `skills`.
+- **`missing`** — never imply it: not in `profile_text`, not in `skills`, not in a bullet. Do not mention the gap either. A CV is no place to point out what it lacks.
 
 ## The language rule — MANDATORY
 

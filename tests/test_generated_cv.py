@@ -58,7 +58,7 @@ def test_generated_cv_round_trip(user, graded_job):
     generated_cv.insert_generated_cv(
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
-    description, returned_analysis_id, depth, ats = \
+    description, returned_analysis_id, depth, ats, _ = \
         generated_cv.select_job_for_generation(user, job_id)
 
     assert (returned_analysis_id, depth) == (analysis_id, "the write-up")
@@ -76,6 +76,16 @@ def test_select_job_for_generation_returns_the_postings_ats(db, user):
     assert generated_cv.select_job_for_generation(user, job_id)[3] == "workday"
 
 
+def test_select_job_for_generation_returns_the_assessment(db, user):
+    jobs.insert_jobs([
+        ("Acme", "Dev", "A description", "http://x/3", "Paris", None, None),
+    ])
+    job_id = _job_id_for_url("http://x/3")
+    analysis.insert_analysis((user, 80, "w", "haiku", job_id, {"fit": 80}))
+
+    assert generated_cv.select_job_for_generation(user, job_id)[4] == {"fit": 80}
+
+
 def test_select_job_for_generation_is_per_user(user, other_user, graded_job):
     """Postings are shared but a grade is one user's: another user's own
     analysis must never feed this user's CV prompt."""
@@ -83,8 +93,8 @@ def test_select_job_for_generation_is_per_user(user, other_user, graded_job):
     analysis.insert_analysis((other_user, 10, "someone else's", "haiku",
                               job_id))
 
-    _, mine, depth, _ = generated_cv.select_job_for_generation(user, job_id)
-    _, theirs, their_depth, _ = generated_cv.select_job_for_generation(
+    _, mine, depth, _, _ = generated_cv.select_job_for_generation(user, job_id)
+    _, theirs, their_depth, _, _ = generated_cv.select_job_for_generation(
         other_user, job_id)
 
     assert (mine, depth) == (analysis_id, "the write-up")

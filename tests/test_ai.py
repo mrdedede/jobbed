@@ -382,7 +382,7 @@ async def test_generate_cv_adds_the_emphasis_of_the_postings_ats(
     calls, state = fake_chat
     state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
     monkeypatch.setattr(generated_cv, "select_job_for_generation",
-                        lambda user_id, job_id: ("post", uuid.uuid4(), "why", ats))
+                        lambda user_id, job_id: ("post", uuid.uuid4(), "why", ats, None))
     monkeypatch.setattr(generated_cv, "insert_generated_cv",
                         lambda *args: uuid.uuid4())
 
@@ -596,3 +596,77 @@ def test_every_object_in_a_model_schema_closes_its_properties(schema):
     # Claude rejects a schema with any open object, which reaches the user only
     # as "the AI model call failed". Ollama accepts it, so local runs hide this.
     assert all(o.get("additionalProperties") is False for o in _objects(schema))
+
+
+# the analysis in the CV and letter prompts
+
+ASSESSMENT = {"fit": 42, "graded_on": "2026-11-04", "requirements": [
+    _requirement(text="Rust", status="missing", importance="preferred",
+                 evidence="CV shows Go."),
+    _requirement(text="Go", status="met", evidence="Five years at Company 1."),
+    _requirement(text="Kafka", status="transferable",
+                 evidence="RabbitMQ at Company 2."),
+]}
+
+
+def test_requirements_section_lists_facts_required_first_and_no_grade():
+    section = analysis.requirements_section(ASSESSMENT)
+
+    assert section.splitlines()[3:] == [
+        "- met (required): Go. Five years at Company 1.",
+        "- transferable (required): Kafka. RabbitMQ at Company 2.",
+        "- missing (preferred): Rust. CV shows Go.",
+    ]
+    assert "42" not in section
+
+
+@pytest.mark.parametrize("assessment", [None, {}, {"requirements": []}])
+def test_requirements_section_is_empty_for_older_analyses(assessment):
+    assert analysis.requirements_section(assessment) == ""
+
+
+def test_the_cv_prompt_carries_the_requirements_before_the_posting():
+    prompt = cv_generation._build_prompt("cv", "why", "post", None, ASSESSMENT)
+
+    assert (prompt.index("# ANALYSIS OF THIS POSTING")
+            < prompt.index("met (required): Go")
+            < prompt.index("# JOB POST"))
+
+
+def test_the_letter_prompt_carries_the_requirements_before_the_answers():
+    prompt = cover_letter._build_prompt({"profile_text": "p"}, "why", {}, "post",
+                                        ASSESSMENT)
+
+    assert (prompt.index("# ANALYSIS OF THIS POSTING")
+            < prompt.index("met (required): Go")
+            < prompt.index("# CANDIDATE'S ANSWERS"))
+
+
+def test_an_older_analysis_leaves_both_prompts_without_the_section():
+    assert "# REQUIREMENTS CHECKED" not in cv_generation._build_prompt(
+        "cv", "why", "post", None, None)
+    assert "# REQUIREMENTS CHECKED" not in cover_letter._build_prompt(
+        {}, "why", {}, "post", None)
+
+
+def test_both_prompts_say_how_to_treat_each_status():
+    for prompt in (cv_generation.generate_cv_prompt,
+                   cover_letter.cover_letter_prompt):
+        assert "## Using the analysis" in prompt
+        assert "not a source of facts" in prompt
+        assert "**`missing`**" in prompt and "**`transferable`**" in prompt
+
+
+async def test_generate_cv_sends_the_stored_assessment_to_the_model(
+        fake_chat, monkeypatch):
+    calls, state = fake_chat
+    state["answer"] = json.dumps({"locale": "fr", "cv": {"profile_text": "p"}})
+    monkeypatch.setattr(
+        generated_cv, "select_job_for_generation",
+        lambda user_id, job_id: ("post", uuid.uuid4(), "why", None, ASSESSMENT))
+    monkeypatch.setattr(generated_cv, "insert_generated_cv",
+                        lambda *args: uuid.uuid4())
+
+    await cv_generation.generate_cv(uuid.uuid4(), uuid.uuid4(), cv_md="my cv")
+
+    assert "met (required): Go" in calls[0][1]

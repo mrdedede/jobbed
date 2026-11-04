@@ -93,6 +93,31 @@ def build_prompt(cv_md: str, job: Tuple) -> str:
             f"# JOB POST\n\n## {title} -- {company}\n\n{description}")
 
 
+def requirements_section(assessment: Optional[dict]) -> str:
+    """What was checked against the CV, for the prompts that write from it.
+
+    Facts only: no grade or fit, which would only tempt a writer to argue with
+    them. Required ones first, the order an application should answer them in.
+
+    Args:
+        assessment: As stored in ai_analysis.assessment; None on older analyses.
+
+    Returns:
+        A prompt section ending in a newline, or "" when there is nothing to
+        add, which leaves the prompt as it was.
+    """
+    requirements = (assessment or {}).get("requirements")
+
+    if not requirements:
+        return ""
+
+    ordered = sorted(requirements, key=lambda r: r["importance"] != "required")
+    lines = [f"- {r['status']} ({r['importance']}): {r['text']}. {r['evidence']}"
+             for r in ordered]
+
+    return "--------\n# REQUIREMENTS CHECKED\n\n" + "\n".join(lines) + "\n"
+
+
 def _squash(text: str) -> str:
     return " ".join(text.split()).casefold()
 

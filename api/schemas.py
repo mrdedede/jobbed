@@ -13,6 +13,8 @@ from uuid import UUID
 from pydantic import (AfterValidator, BaseModel, ConfigDict, Field,
                       StringConstraints, field_validator, model_validator)
 
+from job_scraper.text import strip_invisible
+
 Email = Annotated[str, StringConstraints(
     strip_whitespace=True, to_lower=True, max_length=254,
     pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
@@ -229,11 +231,17 @@ class GenCvOut(BaseModel):
     depth_analysis: Optional[str] = None  # the posting's analysis, for the job drawer
     created_at: datetime  # when it was generated; edits keep it
     url: str  # the posting
+    fact_flags: List[dict] = []  # numbers and names its source CV lacks
 
 
 # A user's edit of a generated CV: same shape as the `cv` object of
 # ai.cv_generation.CV_SCHEMA (tests/test_api_cv_generation.py pins the fields).
-CvText = Annotated[str, Field(max_length=5_000)]
+def _visible(text: str) -> str:
+    """Text pasted into an editor can carry the same invisible characters."""
+    return strip_invisible(text)[0]
+
+
+CvText = Annotated[str, AfterValidator(_visible), Field(max_length=5_000)]
 CvList = Annotated[List[CvText], Field(max_length=50)]
 
 
@@ -323,10 +331,12 @@ class LetterOut(BaseModel):
     answers: dict
     letter: str
     created_at: datetime
+    fact_flags: List[dict] = []  # numbers its sources lack
 
 
 class LetterUpdate(_Strict):
-    letter: Annotated[str, StringConstraints(
+    # Cleaned first, so a letter of nothing but invisible characters is empty.
+    letter: Annotated[str, AfterValidator(_visible), StringConstraints(
         strip_whitespace=True, min_length=1, max_length=20_000)]
 
 

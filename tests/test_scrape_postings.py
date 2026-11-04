@@ -664,3 +664,17 @@ async def test_render_postings_stores_only_what_the_browser_recovers(
 async def test_render_postings_without_a_failed_file_does_nothing(ingest_env):
     assert (await scrape_postings.render_postings(pool=FakePool({})))[
         "candidates"] == 0
+
+
+async def test_invisible_characters_are_stripped_from_every_text_field(fake):
+    fake.pages[row()["url"]] = jsonld(
+        title="Dev&#8203;eloper",
+        description="Build\u200b things\U000e0041",
+        hiringOrganization={"name": "Ac\u200bme"},
+        jobLocation={"address": {"addressLocality": "Par\ufeffis"}},
+    )
+
+    job = await fetch_job(row(), fake)
+
+    assert (job.title, job.company, job.place) == ("Developer", "Acme", "Paris")
+    assert job.description == "Build things"

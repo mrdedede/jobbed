@@ -62,6 +62,16 @@ use them.
 An English letter for a French posting is a failed answer, even if everything
 else is perfect.
 
+## Writing style
+
+Write the way a clear, careful professional would, in the `locale` language.
+
+- Plain verbs and concrete nouns. No stock phrases ("leverage", "fast-paced environment", "I am thrilled") and none of their equivalents in the output language.
+- No em dashes as punctuation, and no "not just X but Y" constructions.
+- Vary how sentences open: not every one starts with "I" or its equivalent. Do not default to lists of three.
+
+The ground rule wins: never add or sharpen a claim for style. A metric stays exactly as the CV gives it.
+
 ## The letter
 
 - 250 to 400 words, three to five paragraphs, plain text.

@@ -18,7 +18,8 @@ from db.tables import ai_analysis, cover_letters, generated_cv, job_postings
 # INSERTIONS
 
 def insert_cover_letter(user_id: UUID, cv_id: UUID, job_id: UUID,
-                        locale: str, answers: dict, letter: str) -> UUID:
+                        locale: str, answers: dict, letter: str,
+                        fact_flags: Optional[List[dict]] = None) -> UUID:
     """Store one cover letter against the generated CV it was written from.
 
     Args:
@@ -28,6 +29,7 @@ def insert_cover_letter(user_id: UUID, cv_id: UUID, job_id: UUID,
         locale: Language the letter is written in ("en", "es", "fr", "pt").
         answers: The user's own inputs to the generation, stored as jsonb.
         letter: The letter text, paragraphs separated by blank lines.
+        fact_flags: What `ai.fact_check.check_letter` found, stored as jsonb.
 
     Returns:
         The id of the new cover_letters row.
@@ -37,7 +39,8 @@ def insert_cover_letter(user_id: UUID, cv_id: UUID, job_id: UUID,
             the database rejects the insertion.
     """
     # SQL: INSERT INTO cover_letters (user_id, generated_cv_id, job_id,
-    #      locale, answers, letter) VALUES (?, ?, ?, ?, ?, ?) RETURNING id
+    #      locale, answers, letter, fact_flags)
+    #      VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id
     stmt = cover_letters.insert().returning(cover_letters.c.id).values(
         user_id=user_id,
         generated_cv_id=cv_id,
@@ -45,6 +48,7 @@ def insert_cover_letter(user_id: UUID, cv_id: UUID, job_id: UUID,
         locale=locale,
         answers=answers,
         letter=letter,
+        fact_flags=fact_flags or [],
     )
     # SQL: SELECT 1 FROM generated_cv WHERE id = ? AND user_id = ? AND job_id = ?
     owned = select(generated_cv.c.id).where(
@@ -143,6 +147,7 @@ _LETTER_COLUMNS = (
         ai_analysis.c.adequation_grade, ai_analysis.c.depth_analysis,
         cover_letters.c.locale, cover_letters.c.answers,
         cover_letters.c.letter, cover_letters.c.created_at,
+        cover_letters.c.fact_flags,
     )
     .select_from(cover_letters)
     .join(generated_cv, generated_cv.c.id == cover_letters.c.generated_cv_id)

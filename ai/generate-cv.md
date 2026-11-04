@@ -49,6 +49,16 @@ A job post in French gets a CV fully in French. A job post in Spanish gets a
 CV fully in Spanish. An English CV for a French posting is a failed answer,
 even if everything else is perfect.
 
+## Writing style
+
+The CV is read by a person after the parser. Write it the way a clear, careful professional would, in the `locale` language.
+
+- Plain verbs and concrete nouns. No stock phrases ("leveraged", "spearheaded", "fast-paced environment") and none of their equivalents in the output language.
+- No em dashes as punctuation, and no "not just X but Y" constructions.
+- Vary how bullets open: the same verb should not start every bullet of a job. Do not default to lists of three.
+
+The ground rule wins: never add or sharpen a claim for style. A metric stays exactly as the source CV gives it.
+
 ## The fields
 
 **`locale`** — the language the JOB POST is written in, as `en` (English), `es` (Spanish), `fr` (French), or `pt` (Portuguese). Use `en` only when the job post is actually in English, or in a language outside these four. Never pick `en` because the candidate's CV or the analysis is in English. Everything below is written in this language (see the language rule).

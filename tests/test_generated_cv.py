@@ -159,7 +159,7 @@ def test_select_generated_cvs_returns_this_users_cvs_newest_first(
     generated_cv.insert_generated_cv(
         user, "pt", {"profile_text": "perfil"}, job_id, analysis_id)
 
-    (cv_id, title, company, grade, locale, cv, job_id_, analysis, created_at, url), = \
+    (cv_id, title, company, grade, locale, cv, job_id_, analysis, created_at, url, _), = \
         generated_cv.select_generated_cvs(user)
 
     assert (title, company, grade, locale) == (
@@ -210,3 +210,15 @@ def test_update_generated_cv_is_scoped_to_the_owner(user, other_user, graded_job
 
     assert generated_cv.update_generated_cv(user, cv_id, {"profile_text": "editado"}) is True
     assert generated_cv.select_generated_cv(user, cv_id)[5] == {"profile_text": "editado"}
+
+
+def test_fact_flags_round_trip_and_default_to_empty(user, graded_job):
+    job_id, analysis_id = graded_job
+    flags = [{"kind": "number", "value": "40"}]
+
+    flagged = generated_cv.insert_generated_cv(
+        user, "fr", {}, job_id, analysis_id, flags)
+    plain = generated_cv.insert_generated_cv(user, "fr", {}, job_id, analysis_id)
+
+    assert generated_cv.select_generated_cv(user, flagged)[10] == flags
+    assert generated_cv.select_generated_cv(user, plain)[10] == []

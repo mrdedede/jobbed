@@ -509,3 +509,40 @@ def test_a_cv_edit_rejects_an_unknown_certification_field(as_user, chat):
         **EDITED, "certifications": [{"name": "CKA", "issuer": "", "year": "", "x": 1}]}})
 
     assert response.status_code == 422
+
+
+# INVISIBLE CHARACTERS AND FACT FLAGS
+
+def test_a_generated_cv_is_stored_without_invisible_characters(as_user, chat):
+    uid, (job_id,) = graded_user()
+    chat["answer"] = json.dumps({"locale": "fr", "cv": {
+        "profile_text": "G\u200bo\U000e0041", "experiences": [{"bullets": ["a\u202eb"]}]}})
+
+    body = finish(as_user(uid), job_id)
+
+    assert body["cv"]["cv"] == {"profile_text": "Go", "experiences": [{"bullets": ["ab"]}]}
+
+
+def test_a_generated_cv_carries_its_fact_flags(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    chat["answer"] = json.dumps({"locale": "fr", "cv": {
+        "profile_text": "Réduit de 987 %", "experiences": [{"company": "Nowhere Inc"}]}})
+
+    body = finish(c, job_id)
+
+    flags = [{"kind": "number", "value": "987"}, {"kind": "employer", "value": "Nowhere Inc"}]
+    assert body["cv"]["fact_flags"] == flags
+    assert c.get("/v1/me/generated-cvs").json()["items"][0]["fact_flags"] == flags
+
+
+def test_a_cv_edit_is_stored_without_invisible_characters(as_user, chat):
+    uid, (job_id,) = graded_user()
+    c = as_user(uid)
+    cv_id = generated(c, job_id)
+
+    put = c.put(f"/v1/me/generated-cvs/{cv_id}",
+                json={"cv": {**EDITED, "profile_text": "Fixed\u200b by\ufeff hand."}})
+
+    assert put.status_code == 200
+    assert put.json()["cv"]["profile_text"] == "Fixed by hand."

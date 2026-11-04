@@ -139,6 +139,7 @@ generated_cv = Table(
     Column("ai_analysis_id", UUID(as_uuid=True), ForeignKey("ai_analysis.id", ondelete="CASCADE"), nullable=False),
     Column("locale", String),
     Column("cv", JSONB, nullable=False),
+    Column("fact_flags", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Index("ix_generated_cv_user_created", "user_id", text("created_at DESC")),
 )
@@ -155,6 +156,7 @@ cover_letters = Table(
     Column("locale", String),
     Column("answers", JSONB, nullable=False),
     Column("letter", Text, nullable=False),
+    Column("fact_flags", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
     Column("created_at", TIMESTAMP(timezone=True), server_default=func.now()),
     Index("ix_cover_letters_user_created", "user_id", text("created_at DESC")),
 )

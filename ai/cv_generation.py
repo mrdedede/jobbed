@@ -7,6 +7,7 @@ rewrite does not have to rediscover it.
 
 import asyncio
 import json
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -14,10 +15,14 @@ import httpx
 
 from ai import gateway
 from ai.analysis import requirements_section
+from ai.fact_check import check_cv
 from db import generated_cv as db_generated_cv
 from db import users
 from job_scraper import paths
+from job_scraper.text import strip_invisible_json
 from ai.exceptions import NoActiveCv, NoAnalysisForJob, UnusableAnswer
+
+logger = logging.getLogger(__name__)
 
 with open(paths.GENERATE_CV_MD, "r") as f:
     generate_cv_prompt = f.read()
@@ -185,6 +190,13 @@ async def generate_cv(user_id: UUID, job_id: UUID,
     except (ValueError, KeyError, TypeError) as exc:
         raise UnusableAnswer(f"unusable model answer: {raw[:200]!r}") from exc
 
-    return await asyncio.to_thread(
+    cv, removed = strip_invisible_json(cv)
+    cv_id = await asyncio.to_thread(
         db_generated_cv.insert_generated_cv,
-        user_id, locale, cv, job_id, analysis_id)
+        user_id, locale, cv, job_id, analysis_id, check_cv(cv, cv_md))
+
+    if removed:
+        logger.warning("removed %s invisible characters from generated cv %s",
+                       removed, cv_id)
+
+    return cv_id

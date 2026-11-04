@@ -679,7 +679,7 @@ async def cancel_generations() -> None:
 def _gen_cv_out(row) -> GenCvOut:
     return GenCvOut(cv_id=row[0], title=row[1], company=row[2], adequation_grade=row[3],
                     locale=row[4], cv=row[5], job_id=row[6], depth_analysis=row[7], created_at=row[8],
-                    url=row[9])
+                    url=row[9], fact_flags=row[10])
 
 
 @router.post("/cvs/generate", response_model=GenCvStarted,
@@ -733,7 +733,8 @@ def _letter_out(row) -> LetterOut:
     return LetterOut(
         letter_id=row[0], cv_id=row[1], job_id=row[2], title=row[3],
         company=row[4], adequation_grade=row[5], depth_analysis=row[6],
-        locale=row[7], answers=row[8], letter=row[9], created_at=row[10])
+        locale=row[7], answers=row[8], letter=row[9], created_at=row[10],
+        fact_flags=row[11])
 
 
 @router.post("/cover-letters/generate", response_model=LetterStarted,

@@ -8,6 +8,7 @@ only source of motivation, so the model has no reason to make one up.
 
 import asyncio
 import json
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -16,8 +17,12 @@ import httpx
 from ai import gateway
 from ai.analysis import requirements_section
 from ai.exceptions import NoGeneratedCv, UnusableAnswer
+from ai.fact_check import check_letter
 from db import cover_letters as db_letters
 from job_scraper import paths
+from job_scraper.text import strip_invisible
+
+logger = logging.getLogger(__name__)
 
 with open(paths.COVER_LETTER_MD, "r") as f:
     cover_letter_prompt = f.read()
@@ -97,13 +102,22 @@ async def generate_cover_letter(user_id: UUID, cv_id: UUID, answers: dict,
 
     try:
         answer = json.loads(raw)
-        locale, letter = answer["locale"], answer["letter"].strip()
+        locale = answer["locale"]
+        letter, removed = strip_invisible(answer["letter"])
+        letter = letter.strip()
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise UnusableAnswer(f"unusable model answer: {raw[:200]!r}") from exc
 
     if not letter:
         raise UnusableAnswer("the model wrote an empty letter")
 
-    return await asyncio.to_thread(
+    letter_id = await asyncio.to_thread(
         db_letters.insert_cover_letter,
-        user_id, cv_id, job_id, locale, answers, letter)
+        user_id, cv_id, job_id, locale, answers, letter,
+        check_letter(letter, cv, answers, description or ""))
+
+    if removed:
+        logger.warning("removed %s invisible characters from cover letter %s",
+                       removed, letter_id)
+
+    return letter_id

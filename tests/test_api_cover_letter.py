@@ -205,3 +205,44 @@ def test_the_letter_prompt_gets_the_requirements_of_a_real_analysis(as_user, cha
 
     assert "# REQUIREMENTS CHECKED" in chat["prompt"]
     assert "- met (required): the job. the CV" in chat["prompt"]
+
+
+def test_a_generated_letter_is_stored_without_invisible_characters(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+    chat["answer"] = json.dumps({"locale": "fr", "letter": "Bon\u200bjour\U000e0041"})
+
+    assert finish(c, cv_id)["letter"]["letter"] == "Bonjour"
+
+
+def test_a_letter_of_only_invisible_characters_is_unusable(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+    chat["answer"] = json.dumps({"locale": "fr", "letter": "\u200b\ufeff"})
+
+    assert finish(c, cv_id)["status"] == "failed"
+
+
+def test_a_generated_letter_carries_its_fact_flags(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+    chat["answer"] = json.dumps({"locale": "fr", "letter": "J'ai géré 987 personnes."})
+
+    letter = finish(c, cv_id)["letter"]
+
+    assert letter["fact_flags"] == [{"kind": "number", "value": "987"}]
+    assert c.get("/v1/me/cover-letters").json()["items"][0]["fact_flags"] == letter["fact_flags"]
+
+
+def test_a_letter_edit_is_stored_without_invisible_characters(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+    letter_id = finish(c, cv_id)["letter"]["letter_id"]
+
+    edited = c.put(f"/v1/me/cover-letters/{letter_id}", json={"letter": "Edi\u200bted."})
+
+    assert edited.json()["letter"] == "Edited."
+
+
+def test_a_letter_edit_of_only_invisible_characters_is_422(as_user, chat):
+    _, c, cv_id = user_with_cv(as_user)
+    letter_id = finish(c, cv_id)["letter"]["letter_id"]
+
+    assert c.put(f"/v1/me/cover-letters/{letter_id}",
+                 json={"letter": "\u200b\ufeff"}).status_code == 422

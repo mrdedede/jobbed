@@ -19,7 +19,8 @@ from db.tables import ai_analysis, generated_cv, job_postings
 # INSERTIONS
 
 def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
-                         analysis_id: UUID) -> UUID:
+                         analysis_id: UUID,
+                         fact_flags: Optional[List[dict]] = None) -> UUID:
     """Store one generated CV against the posting and user it was written for.
 
     Args:
@@ -29,6 +30,7 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
             as jsonb.
         job_id: The posting the CV targets.
         analysis_id: The ai_analysis row the generation was tailored against.
+        fact_flags: What `ai.fact_check.check_cv` found, stored as jsonb.
 
     Returns:
         The id of the new generated_cv row.
@@ -38,13 +40,14 @@ def insert_generated_cv(user_id: UUID, locale: str, cv: dict, job_id: UUID,
             posting, or the database rejects the insertion.
     """
     # SQL: INSERT INTO generated_cv (user_id, locale, cv, job_id,
-    #      ai_analysis_id) VALUES (?, ?, ?, ?, ?) RETURNING id
+    #      ai_analysis_id, fact_flags) VALUES (?, ?, ?, ?, ?, ?) RETURNING id
     stmt = generated_cv.insert().returning(generated_cv.c.id).values(
         user_id=user_id,
         locale=locale,
         cv=cv,
         job_id=job_id,
         ai_analysis_id=analysis_id,
+        fact_flags=fact_flags or [],
     )
     # SQL: SELECT 1 FROM ai_analysis WHERE id = ? AND user_id = ? AND job_id = ?
     owned = select(ai_analysis.c.id).where(
@@ -202,7 +205,8 @@ def count_jobs_for_cv(user_id: UUID, min_grade: int = 0,
 
 # SQL: SELECT generated_cv.id, job_postings.title, job_postings.company,
 #      ai_analysis.adequation_grade, generated_cv.locale, generated_cv.cv,
-#      generated_cv.job_id, ai_analysis.depth_analysis, generated_cv.created_at, job_postings.url
+#      generated_cv.job_id, ai_analysis.depth_analysis, generated_cv.created_at, job_postings.url,
+#      generated_cv.fact_flags
 #      FROM generated_cv
 #      JOIN job_postings ON job_postings.id = generated_cv.job_id
 #      JOIN ai_analysis ON ai_analysis.id = generated_cv.ai_analysis_id
@@ -211,7 +215,7 @@ _CV_COLUMNS = (
         generated_cv.c.id, job_postings.c.title, job_postings.c.company,
         ai_analysis.c.adequation_grade, generated_cv.c.locale,
         generated_cv.c.cv, generated_cv.c.job_id, ai_analysis.c.depth_analysis, generated_cv.c.created_at,
-        job_postings.c.url,
+        job_postings.c.url, generated_cv.c.fact_flags,
     )
     .select_from(generated_cv)
     .join(job_postings, job_postings.c.id == generated_cv.c.job_id)

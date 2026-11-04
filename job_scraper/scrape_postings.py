@@ -54,6 +54,7 @@ from bs4 import BeautifulSoup
 
 from job_scraper import paths
 from job_scraper.api_sources import API_SOURCES
+from job_scraper.text import strip_invisible
 from job_scraper.fetching import (
     dig,
     fetch_result,
@@ -116,7 +117,7 @@ def _tidy(text: str) -> str:
     "a\\n    \\n    \\nb" kept its padding, and "\\n{3,}" alone never matched
     it. Collapsing before capping keeps padding from eating MAX_DESCRIPTION.
     """
-    text = _SPACES.sub(" ", text or "")
+    text = _SPACES.sub(" ", strip_invisible(text or "")[0])
     text = "\n".join(line.strip() for line in text.split("\n"))
 
     return _BLANK_LINES.sub("\n\n", text).strip()[:MAX_DESCRIPTION]
@@ -442,9 +443,9 @@ async def fetch_job(row: Dict[str, str], client: httpx.AsyncClient,
         # enough to matter -- Quanteam's title reached "&#8211;" after one
         # pass. Descriptions already get two passes for free, since _clean
         # unescapes and then parses the result as HTML.
-        return unescape(
+        return strip_invisible(unescape(
             unescape(found.get(key) or row.get(key) or "")
-        ).strip()
+        ))[0].strip()
 
     return Job(
         company=pick("company"),
